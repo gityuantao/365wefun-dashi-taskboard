@@ -1,0 +1,53 @@
+{
+  "teamId": "90161712199",
+  "spaceId": "90167718544",
+  "lists": {
+    "task": { "id": "901616282651", "name": "任务" },
+    "version": { "id": "901616282740", "name": "版本" },
+    "taskSandbox": { "id": "901616314492", "name": "任务-Sandbox" },
+    "versionSandbox": { "id": "901616314494", "name": "版本-Sandbox" }
+  },
+  "taskStatusMap": {
+    "收件箱": "inbox",
+    "分析中": "analyzing",
+    "待开发": "ready_for_development",
+    "开发中": "developing",
+    "待测试": "ready_for_test",
+    "测试中": "testing",
+    "待验收": "ready_for_acceptance",
+    "验收中": "accepting",
+    "待发布": "ready_for_release",
+    "已发布": "published",
+    "已取消": "canceled"
+  },
+  "versionStatusMap": {
+    "规划中": "planning",
+    "进行中": "active",
+    "待发布": "ready_for_release",
+    "发布中": "releasing",
+    "发布失败": "release_failed",
+    "已发布": "published",
+    "已取消": "canceled"
+  },
+  "fields": {
+    "task": {
+      "自动化纳管": { "id": "368e6e92-8193-492c-9e82-d293e5d236e0", "type": "checkbox" },
+      "操作请求": { "id": "bbe64f2a-3000-4340-bd4c-50896b7005e6", "type": "drop_down" },
+      "操作请求ID": { "id": "dd8df01e-cd53-41c4-add3-e6e810fbeec6", "type": "short_text" },
+      "执行摘要": { "id": "ee42cba2-e092-45bd-b0d0-7fc22c12db85", "type": "text" },
+      "证据链接": { "id": "f023b922-e209-4f8b-a5cc-6c1f1f21d543", "type": "text" },
+      "来源任务": { "id": "ae941c7e-dfd7-4823-8c2e-7d4ac602e310", "type": "short_text" },
+      "来源版本": { "id": "5c48a62d-d52a-40bd-a768-80ff604de637", "type": "short_text" },
+      "灰度候选": { "id": "47e90233-758f-4c6e-93f1-0c6d9691587d", "type": "checkbox" }
+    },
+    "version": {
+      "操作请求": { "id": "beacbfd2-5dff-49e6-9919-fef1a490d0f9", "type": "drop_down" },
+      "操作请求ID": { "id": "dd8df01e-cd53-41c4-add3-e6e810fbeec6", "type": "short_text" },
+      "Release Commit": { "id": "5ccd4a44-4ddb-41ac-a8b1-d6b23fe39e0c", "type": "short_text" },
+      "Manifest摘要": { "id": "f08aa1ba-c752-41fb-9354-2db0692574b7", "type": "text" },
+      "发布尝试ID": { "id": "98aa62be-3fc1-4c3d-9478-f460a3beb9b7", "type": "short_text" },
+      "平台状态摘要": { "id": "f6a6a4cc-057f-4d5a-bfc3-287b8d6cf8fc", "type": "text" },
+      "发布阻塞": { "id": "e8b9befa-0e03-443a-bd57-635b94b81b0a", "type": "drop_down" }
+    }
+  }
+}
