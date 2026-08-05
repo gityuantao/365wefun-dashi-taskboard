@@ -45,12 +45,40 @@ function makeClient(overrides = {}) {
       name: "录音回放按钮",
       description: "修复录音回放",
       status: { status: "分析中" },
+      custom_fields: [
+        { id: "field-version", name: "目标版本", value: "version-9" },
+      ],
     }),
     postComment: async () => ({}),
     updateCustomField: async () => ({}),
     ...overrides,
   };
 }
+
+test("analysis blocks when the task has no target version", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const result = await executeAnalysis({
+    job: { id: "job-a5", commandId: "cmd-a5", jobType: "analyze", payload: { taskId: "task-1" } },
+    db: harness.db,
+    client: makeClient({
+      getTask: async () => ({
+        id: "task-1",
+        name: "录音回放按钮",
+        description: "修复录音回放",
+        status: { status: "分析中" },
+        custom_fields: [],
+      }),
+    }),
+    codex: { run: async () => ({ exitCode: 0, stdout: validOutput(), stderr: "" }) },
+    now: NOW,
+  });
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /target version/i);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "analyzing");
+});
 
 test("analysis completes and advances the task to ready for development", async (t) => {
   const harness = await createCloudWorkerHarness();

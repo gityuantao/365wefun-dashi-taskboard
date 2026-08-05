@@ -27,6 +27,7 @@ import {
 } from "../orchestration/release/version-aggregator.mjs";
 import { handleConfirmRelease } from "../orchestration/application/release-commands.mjs";
 import { createWebAdapter } from "../orchestration/release/adapters/web.mjs";
+import { checkDevelopmentOrder } from "../orchestration/application/development-order.mjs";
 import { runCodex } from "../orchestration/runner/codex-runner.mjs";
 import {
   createTaskWorktree,
@@ -170,17 +171,29 @@ const handlers = {
       summary: fieldId(config, taskListKey, "执行摘要"),
     },
   }),
-  develop: async (job) => executeDevelopment({
-    job,
-    db,
-    client: await clientFactory({ token }),
-    codex,
-    gitOps,
-    now: new Date().toISOString(),
-    fieldIds: {
-      evidence: fieldId(config, taskListKey, "证据链接"),
-    },
-  }),
+  develop: async (job) => {
+    const gate = await checkDevelopmentOrder({
+      db,
+      taskId: job.payload.taskId,
+      client: await clientFactory({ token }),
+      listId: config.lists[taskListKey].id,
+      now: new Date().toISOString(),
+    });
+    if (gate.blocked) {
+      return { status: "failed", error: `waiting: ${gate.reason}` };
+    }
+    return executeDevelopment({
+      job,
+      db,
+      client: await clientFactory({ token }),
+      codex,
+      gitOps,
+      now: new Date().toISOString(),
+      fieldIds: {
+        evidence: fieldId(config, taskListKey, "证据链接"),
+      },
+    });
+  },
   accept: async (job) => executeAcceptance({
     job,
     db,

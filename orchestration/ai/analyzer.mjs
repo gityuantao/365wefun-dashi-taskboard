@@ -48,6 +48,15 @@ export async function executeAnalysis({
       openQuestions: parsed.open_questions,
     };
   }
+  const targetVersion = task.custom_fields?.find(
+    (field) => field.name === "目标版本" || field.id === "field-version",
+  )?.value ?? null;
+  if (!targetVersion) {
+    return {
+      status: "failed",
+      error: "needs_human: task must be linked to a target version before analysis can complete",
+    };
+  }
 
   await client.postComment(
     task.id,
