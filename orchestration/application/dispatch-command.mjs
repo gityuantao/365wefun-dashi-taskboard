@@ -1,7 +1,11 @@
 import { DomainError } from "../domain/errors.mjs";
 import { createDomainEvent } from "../domain/events.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
-import { appendCommandResult, loadEventHead } from "../persistence/d1-event-store.mjs";
+import {
+  appendCommandResult,
+  loadCommandResult,
+  loadEventHead,
+} from "../persistence/d1-event-store.mjs";
 import { TASK_COMMAND_HANDLERS } from "./task-command-handlers.mjs";
 import { VERSION_COMMAND_HANDLERS } from "./version-command-handlers.mjs";
 
@@ -9,6 +13,31 @@ const INITIAL_STATES = { task: "inbox", version: "planning" };
 const HANDLERS = { task: TASK_COMMAND_HANDLERS, version: VERSION_COMMAND_HANDLERS };
 
 export async function dispatchCommand({ db, command, now }) {
+  const existing = await loadCommandResult(db, command.id);
+  if (existing) {
+    return {
+      commandId: existing.commandId,
+      status: existing.status,
+      aggregateType: existing.result.aggregateType,
+      aggregateId: existing.result.aggregateId,
+      version: existing.result.version,
+      events: existing.result.events,
+    };
+  }
+
+  const current = await loadAggregate(db, command.aggregateType, command.aggregateId);
+  if (current.version !== command.expectedVersion - 1) {
+    throw new DomainError("VERSION_CONFLICT", [
+      `Aggregate ${command.aggregateType}:${command.aggregateId}`,
+      `is at version ${current.version}, command expects version ${command.expectedVersion - 1}`,
+    ].join(" "), {
+      aggregateType: command.aggregateType,
+      aggregateId: command.aggregateId,
+      currentVersion: current.version,
+      expectedVersion: command.expectedVersion,
+    });
+  }
+
   const handlers = HANDLERS[command.aggregateType];
   const handler = handlers?.[command.type];
   if (!handler) {
@@ -19,7 +48,6 @@ export async function dispatchCommand({ db, command, now }) {
     );
   }
 
-  const current = await loadAggregate(db, command.aggregateType, command.aggregateId);
   const currentState = current.state ?? INITIAL_STATES[command.aggregateType];
   const transition = handler(currentState, command.parameters);
 

@@ -1,4 +1,5 @@
 import { normalizeWorkflowSnapshot } from "../../shared/workflow-control-flow.mjs";
+import { routeOrchestrationRequest } from "./orchestration-routes.mjs";
 
 const JSON_BODY_LIMIT = 1024 * 1024;
 const ATTACHMENT_BODY_LIMIT = 25 * 1024 * 1024;
@@ -1853,6 +1854,13 @@ async function attachmentContent(env, id, request) {
 
 async function routeApi(request, env, actor, url) {
   const { pathname } = url;
+
+  if (
+    pathname === "/api/orchestration/commands"
+    || /^\/api\/orchestration\/commands\/[^/]+$/.test(pathname)
+  ) {
+    return routeOrchestrationRequest(request, env);
+  }
 
   if (pathname === "/api/meta") {
     if (request.method !== "GET") methodNotAllowed(["GET"]);

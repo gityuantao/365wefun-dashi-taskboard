@@ -26,6 +26,7 @@ async function requireCloudImplementation() {
 
 export async function createCloudWorkerHarness({
   sharedSecret = "two-person-shared-secret",
+  bindings = {},
 } = {}) {
   await requireCloudImplementation();
   const persistenceRoot = await mkdtemp(path.join(os.tmpdir(), "taskboard-cloud-worker-"));
@@ -37,6 +38,7 @@ export async function createCloudWorkerHarness({
     bindings: {
       TASKBOARD_ENVIRONMENT: "production",
       TASKBOARD_SHARED_SECRET: sharedSecret,
+      ...bindings,
     },
     d1Databases: { DB: "taskboard-test" },
     r2Buckets: { ATTACHMENTS: "taskboard-test-attachments" },
