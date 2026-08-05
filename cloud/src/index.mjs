@@ -1,5 +1,6 @@
 import { normalizeWorkflowSnapshot } from "../../shared/workflow-control-flow.mjs";
 import { routeOrchestrationRequest } from "./orchestration-routes.mjs";
+import { routeRunnerRequest } from "./runner-routes.mjs";
 
 const JSON_BODY_LIMIT = 1024 * 1024;
 const ATTACHMENT_BODY_LIMIT = 25 * 1024 * 1024;
@@ -1860,6 +1861,13 @@ async function routeApi(request, env, actor, url) {
     || /^\/api\/orchestration\/commands\/[^/]+$/.test(pathname)
   ) {
     return routeOrchestrationRequest(request, env);
+  }
+
+  if (
+    pathname === "/api/runner/jobs/next"
+    || /^\/api\/runner\/jobs\/[^/]+\/result$/.test(pathname)
+  ) {
+    return routeRunnerRequest(request, env, url);
   }
 
   if (pathname === "/api/meta") {
