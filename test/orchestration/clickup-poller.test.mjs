@@ -44,14 +44,10 @@ const CONFIG = {
   fields: {
     task: {
       自动化纳管: { id: "field-managed", type: "checkbox" },
-      操作请求: { id: "field-request", type: "drop_down" },
-      操作请求ID: { id: "field-request-id", type: "short_text" },
       目标版本: { id: "field-version", type: "short_text" },
     },
     taskSandbox: {
       自动化纳管: { id: "field-managed", type: "checkbox" },
-      操作请求: { id: "field-request", type: "drop_down" },
-      操作请求ID: { id: "field-request-id", type: "short_text" },
       目标版本: { id: "field-version", type: "short_text" },
     },
     version: {
@@ -65,7 +61,7 @@ const CONFIG = {
   },
 };
 
-function sandboxTask({ id = "task-1", status = "测试中", managed = true, request = "测试通过", requestId = "ev-test-1", version = null } = {}) {
+function sandboxTask({ id = "task-1", status = "测试中", managed = true, version = null } = {}) {
   return {
     id,
     name: "Sample",
@@ -73,8 +69,6 @@ function sandboxTask({ id = "task-1", status = "测试中", managed = true, requ
     status: { status },
     custom_fields: [
       { id: "field-managed", name: "自动化纳管", value: managed },
-      { id: "field-request", name: "操作请求", value: request },
-      { id: "field-request-id", name: "操作请求ID", value: requestId },
       { id: "field-version", name: "目标版本", value: version },
     ],
     updated_at: NOW,
@@ -116,7 +110,7 @@ test("poller processes tasks without requiring a managed flag", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const env = await makeEnv(harness, [
-    sandboxTask({ status: "收件箱", managed: false, request: null }),
+    sandboxTask({ status: "收件箱", managed: false }),
   ]);
   const result = await pollClickUpOnce(env, { now: NOW });
   assert.equal(result.processed, 1);
@@ -186,7 +180,7 @@ test("poller records invalid commands without throwing", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const env = await makeEnv(harness, [
-    sandboxTask({ status: "收件箱", request: "测试通过" }),
+    sandboxTask({ status: "收件箱" }),
   ]);
   const result = await pollClickUpOnce(env, { now: NOW });
   assert.equal(result.processed, 1);

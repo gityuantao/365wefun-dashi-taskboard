@@ -51,14 +51,10 @@ const CONFIG = {
   fields: {
     task: {
       自动化纳管: { id: "field-managed", type: "checkbox" },
-      操作请求: { id: "field-request", type: "drop_down" },
-      操作请求ID: { id: "field-request-id", type: "short_text" },
       目标版本: { id: "field-version", type: "short_text" },
     },
     taskSandbox: {
       自动化纳管: { id: "field-managed", type: "checkbox" },
-      操作请求: { id: "field-request", type: "drop_down" },
-      操作请求ID: { id: "field-request-id", type: "short_text" },
       目标版本: { id: "field-version", type: "short_text" },
     },
     version: {},
@@ -75,8 +71,6 @@ function task(status) {
     status: { status },
     custom_fields: [
       { id: "field-managed", name: "自动化纳管", value: true },
-      { id: "field-request", name: "操作请求", value: null },
-      { id: "field-request-id", name: "操作请求ID", value: null },
       { id: "field-version", name: "目标版本", value: "version-demo-1" },
     ],
     updated_at: NOW,
@@ -245,8 +239,6 @@ try {
       listId: "901616314492",
       status: "ready_for_release",
       managed: true,
-      operationRequest: null,
-      operationRequestId: null,
       targetVersion: versionId,
       assignee: null,
       updatedAt: NOW,

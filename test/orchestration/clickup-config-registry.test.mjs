@@ -41,7 +41,6 @@ const VALID_CONFIG = {
   fields: {
     task: {
       自动化纳管: { id: "368e6e92-8193-492c-9e82-d293e5d236e0", type: "checkbox" },
-      操作请求: { id: "bbe64f2a-3000-4340-bd4c-50896b7005e6", type: "drop_down" },
       执行摘要: { id: "ee42cba2-e092-45bd-b0d0-7fc22c12db85", type: "text" },
     },
     version: {

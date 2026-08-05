@@ -66,15 +66,6 @@ export function normalizeTask(payload, config, listKind = "task") {
   const clickupStatus = payload.status?.status === "to do" ? "收件箱" : payload.status?.status;
   const status = resolveTaskStatus(config, clickupStatus);
   const custom = customFieldMap(payload);
-  const requestField = custom.get(fieldId(config, listKind, "操作请求"));
-  const operationRequest = toNullableString(dropdownName(
-    requestField,
-    requestField?.value ?? null,
-    fieldConfig(config, listKind, "操作请求").options,
-  ));
-  const operationRequestId = toNullableString(
-    fieldValue(custom, fieldId(config, listKind, "操作请求ID")),
-  );
   const targetVersion = toNullableString(
     fieldValue(custom, fieldId(config, listKind, "目标版本")),
   );
@@ -83,8 +74,6 @@ export function normalizeTask(payload, config, listKind = "task") {
   );
   const keyFields = {
     status,
-    operationRequest,
-    operationRequestId,
     targetVersion,
     assignee,
   };

@@ -22,7 +22,7 @@ const CONFIG = loadClickUpConfig({
   fields: {
     task: {
       自动化纳管: { id: "field-managed", type: "checkbox" },
-      操作请求: { id: "field-request", type: "drop_down" },
+      执行摘要: { id: "field-summary", type: "text" },
     },
     version: {},
     taskSandbox: {},
@@ -113,11 +113,11 @@ test("flushOutbox writes custom fields through the field id mapping", async (t) 
     updateCustomField: async (id, fieldId, value) => calls.push([id, fieldId, value]),
   };
   await enqueueMutation(harness.db, mutationBase({
-    field: "操作请求",
-    target: "测试通过",
+    field: "执行摘要",
+    target: "测试摘要内容",
   }));
   await flushOutbox(harness.db, client, { now: NOW, config: CONFIG });
-  assert.deepEqual(calls, [["task-1", "field-request", "测试通过"]]);
+  assert.deepEqual(calls, [["task-1", "field-summary", "测试摘要内容"]]);
 });
 
 test("confirmMutation idempotently confirms a mutation", async (t) => {
