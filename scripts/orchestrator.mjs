@@ -28,6 +28,7 @@ import {
 import { handleConfirmRelease } from "../orchestration/application/release-commands.mjs";
 import { createWebAdapter } from "../orchestration/release/adapters/web.mjs";
 import { checkDevelopmentOrder } from "../orchestration/application/development-order.mjs";
+import { assignTaskVersion } from "../orchestration/application/version-assignment.mjs";
 import { runCodex } from "../orchestration/runner/codex-runner.mjs";
 import {
   createTaskWorktree,
@@ -159,18 +160,31 @@ const codex = {
 };
 
 const taskListKey = (runtime.listSet ?? "sandbox") === "production" ? "task" : "taskSandbox";
+const versionListKey = (runtime.listSet ?? "sandbox") === "production" ? "version" : "versionSandbox";
 
 const handlers = {
-  analyze: async (job) => executeAnalysis({
-    job,
-    db,
-    client: await clientFactory({ token }),
-    codex,
-    now: new Date().toISOString(),
-    fieldIds: {
-      summary: fieldId(config, taskListKey, "执行摘要"),
-    },
-  }),
+  analyze: async (job) => {
+    await assignTaskVersion({
+      taskId: job.payload.taskId,
+      client: await clientFactory({ token }),
+      config,
+      taskListKey,
+      versionListKey,
+      codex,
+      now: new Date().toISOString(),
+      log,
+    });
+    return executeAnalysis({
+      job,
+      db,
+      client: await clientFactory({ token }),
+      codex,
+      now: new Date().toISOString(),
+      fieldIds: {
+        summary: fieldId(config, taskListKey, "执行摘要"),
+      },
+    });
+  },
   develop: async (job) => {
     const gate = await checkDevelopmentOrder({
       db,

@@ -97,6 +97,10 @@ export function createClickUpClient({
       const data = await listTasks(listId, page);
       return data.tasks ?? [];
     },
+    createTask: (listId, data) => request(
+      `/list/${encodeURIComponent(listId)}/task`,
+      { method: "POST", body: data },
+    ),
     updateTaskStatus: (taskId, status) => request(
       `/task/${encodeURIComponent(taskId)}`,
       { method: "PUT", body: { status } },
