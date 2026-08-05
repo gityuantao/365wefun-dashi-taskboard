@@ -15,7 +15,11 @@ import { flushOutbox } from "../orchestration/clickup/outbox.mjs";
 import { executeAcceptance } from "../orchestration/ai/acceptance.mjs";
 import { executeAnalysis } from "../orchestration/ai/analyzer.mjs";
 import { executeDevelopment } from "../orchestration/ai/developer.mjs";
-import { normalizeVersion, saveSnapshot } from "../orchestration/clickup/snapshot.mjs";
+import {
+  loadLastConfirmed,
+  normalizeVersion,
+  saveSnapshot,
+} from "../orchestration/clickup/snapshot.mjs";
 import { enqueueMutation } from "../orchestration/clickup/outbox.mjs";
 import { createDomainEvent } from "../orchestration/domain/events.mjs";
 import { parseCommandEnvelope } from "../orchestration/domain/commands.mjs";
@@ -355,7 +359,11 @@ async function syncStatuses(now) {
     const map = row.aggregate_type === "version" ? config.versionStatusMap : config.taskStatusMap;
     const clickupStatus = Object.entries(map).find(([, value]) => value === row.state)?.[0];
     if (!clickupStatus) continue;
-    const mutationId = `sync-${row.aggregate_type}-${row.aggregate_id}-${row.aggregate_version}`;
+    // 读取 ClickUp 最新快照：只有实际状态与聚合状态不一致时才写回，
+    // 避免幂等跳过导致用户手动改的状态（如版本提前拖到发布中）不被纠正。
+    const snapshot = await loadLastConfirmed(db, row.aggregate_type, row.aggregate_id);
+    if (snapshot && snapshot.status === row.state) continue;
+    const mutationId = `sync-${row.aggregate_type}-${row.aggregate_id}-${row.aggregate_version}-${now}`;
     const existing = await db
       .prepare("SELECT status FROM outbox_mutations WHERE id = ?")
       .bind(mutationId)
