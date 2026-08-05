@@ -106,6 +106,24 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
       await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind(jobId).run();
     }
   }
+  // 验收作业需要分析阶段的验收标准
+  let acceptanceCriteria = [];
+  if (jobType === "accept") {
+    const analysisRows = await env.DB
+      .prepare(
+        "SELECT result FROM runner_jobs WHERE id LIKE ? AND job_type = 'analyze' AND status = 'completed' ORDER BY completed_at DESC LIMIT 1",
+      )
+      .bind(`${snapshot.id}-analyze-%`)
+      .all();
+    const analysis = analysisRows.results[0];
+    if (analysis) {
+      try {
+        acceptanceCriteria = JSON.parse(analysis.result)?.summary?.acceptance_criteria ?? [];
+      } catch {
+        // 分析结果解析失败时按无验收标准处理
+      }
+    }
+  }
   await enqueueJob(env.DB, {
     jobId,
     commandId: `auto-${jobType}-${snapshot.id}`,
@@ -118,7 +136,7 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
       versionBranch: snapshot.targetVersion
         ? `version/${snapshot.targetVersion}`
         : undefined,
-      acceptanceCriteria: [],
+      acceptanceCriteria,
     },
     payloadHash: snapshot.fieldsHash,
     expiresAt: addMinutes(now, 15),

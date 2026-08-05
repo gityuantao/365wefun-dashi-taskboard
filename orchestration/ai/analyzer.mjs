@@ -42,7 +42,7 @@ export async function executeAnalysis({
   client,
   codex,
   now,
-  fieldIds = { summary: "field-summary" },
+  fieldIds = { summary: "field-summary", acceptance: null },
 }) {
   const task = await client.getTask(job.payload.taskId);
   const run = await codex.run({
@@ -110,14 +110,16 @@ export async function executeAnalysis({
     task.id,
     `✅ 分析完成：${concise(parsed.scope)}（验收标准 ${parsed.acceptance_criteria.length} 条）`,
   );
-  await client.updateCustomField(
-    task.id,
-    fieldIds.summary,
-    JSON.stringify({
-      scope: parsed.scope,
-      acceptance_criteria: parsed.acceptance_criteria,
-    }),
-  );
+  await client.updateCustomField(task.id, fieldIds.summary, parsed.scope);
+  if (fieldIds.acceptance) {
+    await client.updateCustomField(
+      task.id,
+      fieldIds.acceptance,
+      parsed.acceptance_criteria
+        .map((criterion, index) => `${index + 1}. ${criterion.criterion}`)
+        .join("\n"),
+    );
+  }
 
   const aggregate = await loadAggregate(db, "task", task.id);
   const command = parseCommandEnvelope({

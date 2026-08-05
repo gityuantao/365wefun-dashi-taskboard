@@ -204,6 +204,7 @@ const handlers = {
       now: new Date().toISOString(),
       fieldIds: {
         summary: fieldId(config, taskListKey, "执行摘要"),
+        acceptance: fieldId(config, taskListKey, "验收标准"),
       },
     });
   },
