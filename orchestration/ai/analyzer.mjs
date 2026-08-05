@@ -12,7 +12,7 @@ function extractJson(stdout) {
 
 function concise(text, max = 60) {
   const clean = String(text ?? "").replace(/\s+/g, " ").trim();
-  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+  return clean.length > max ? clean.slice(0, max) : clean;
 }
 
 async function markNeedsHuman({ db, taskId, jobId, now, reason }) {
