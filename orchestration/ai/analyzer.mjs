@@ -75,7 +75,7 @@ export async function executeAnalysis({
         [
           "需要补充信息才能继续分析，请回复：",
           ...parsed.open_questions.map((question, index) => `${index + 1}. ${concise(question.question, 80)}`),
-          "回复后请把任务状态改回「分析中」，我会自动重新分析。",
+          "回复后请把任务状态改回「分析中」。",
         ].join("\n"),
       );
     } catch {
@@ -95,7 +95,7 @@ export async function executeAnalysis({
     try {
       await client.postComment(
         task.id,
-        "请补充目标版本信息（或留空由我自动分配），然后把任务状态改回「分析中」，我会自动重新分析。",
+        "请补充目标版本信息（或留空），补充后把任务状态改回「分析中」。",
       );
     } catch {
       // 评论失败不掩盖 needs_human 结论
