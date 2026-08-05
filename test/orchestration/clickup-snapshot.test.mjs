@@ -23,7 +23,6 @@ const CONFIG = loadClickUpConfig({
   versionStatusMap: { 规划中: "planning", 发布中: "releasing" },
   fields: {
     task: {
-      自动化纳管: { id: "field-managed", type: "checkbox" },
       操作请求: { id: "field-request", type: "drop_down" },
       操作请求ID: { id: "field-request-id", type: "short_text" },
       目标版本: { id: "field-version", type: "short_text" },
@@ -41,7 +40,6 @@ function taskPayload(overrides = {}) {
     name: "Sample task",
     status: { status: "收件箱" },
     custom_fields: [
-      { id: "field-managed", name: "自动化纳管", value: true },
       { id: "field-request", name: "操作请求", value: "测试通过" },
       { id: "field-request-id", name: "操作请求ID", value: "req-1" },
       { id: "field-version", name: "目标版本", value: "version-9" },
@@ -55,7 +53,6 @@ test("normalizeTask extracts canonical state and key custom fields by id", () =>
   const snapshot = normalizeTask(taskPayload(), CONFIG);
   assert.equal(snapshot.id, "task-1");
   assert.equal(snapshot.status, "inbox");
-  assert.equal(snapshot.managed, true);
   assert.equal(snapshot.operationRequest, "测试通过");
   assert.equal(snapshot.operationRequestId, "req-1");
   assert.equal(snapshot.targetVersion, "version-9");
@@ -68,7 +65,6 @@ test("normalizeTask rejects unknown statuses and handles missing fields", () => 
     /UNKNOWN_STATUS/,
   );
   const snapshot = normalizeTask(taskPayload({ custom_fields: [] }), CONFIG);
-  assert.equal(snapshot.managed, false);
   assert.equal(snapshot.operationRequest, null);
   assert.equal(snapshot.targetVersion, null);
 });
@@ -107,7 +103,6 @@ test("saveSnapshot and loadLastConfirmed round-trip through D1", async (t) => {
   await saveSnapshot(harness.db, { type: "task", snapshot });
   const loaded = await loadLastConfirmed(harness.db, "task", "task-1");
   assert.equal(loaded.status, "inbox");
-  assert.equal(loaded.managed, true);
   assert.equal(loaded.fieldsHash, snapshot.fieldsHash);
 
   const updated = normalizeTask(
@@ -123,10 +118,10 @@ test("compareSnapshots reports field-level changes", () => {
   const confirmed = normalizeTask(taskPayload(), CONFIG);
   assert.deepEqual(compareSnapshots(null, confirmed), [
     { field: "status", from: null, to: "inbox" },
-    { field: "managed", from: null, to: true },
     { field: "operationRequest", from: null, to: "测试通过" },
     { field: "operationRequestId", from: null, to: "req-1" },
     { field: "targetVersion", from: null, to: "version-9" },
+    { field: "updatedAt", from: null, to: "2026-08-04T00:00:00.000Z" },
   ]);
   const moved = normalizeTask(taskPayload({ status: { status: "验收中" } }), CONFIG);
   assert.deepEqual(compareSnapshots(confirmed, moved), [

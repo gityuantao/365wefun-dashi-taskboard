@@ -42,6 +42,17 @@ export async function executeAnalysis({
     return { status: "failed", error: "missing scope or acceptance_criteria" };
   }
   if (Array.isArray(parsed.open_questions) && parsed.open_questions.length > 0) {
+    try {
+      await client.postComment(
+        task.id,
+        [
+          "分析需要人工澄清，请补充以下信息（补充后系统会自动重新分析）：",
+          ...parsed.open_questions.map((question, index) => `${index + 1}. ${question.question}`),
+        ].join("\n"),
+      );
+    } catch {
+      // 评论失败不掩盖 needs_human 结论
+    }
     return {
       status: "failed",
       error: "needs_human: open questions require human input",

@@ -43,10 +43,13 @@ async function ensureStateJob(env, snapshot, now) {
   if (active) return;
   const jobId = `${snapshot.id}-${jobType}-${aggregate.version}`;
   const existing = await env.DB
-    .prepare("SELECT status, completed_at FROM runner_jobs WHERE id = ?")
+    .prepare("SELECT status, completed_at, result FROM runner_jobs WHERE id = ?")
     .bind(jobId)
     .first();
   if (existing && (existing.status === "queued" || existing.status === "claimed")) return;
+  if (existing?.status === "failed" && existing.result?.includes("needs_human")) {
+    return;
+  }
   const retryWindowMinutes = Number(env.CLICKUP_JOB_RETRY_MINUTES ?? 5);
   if (
     existing?.status === "failed"
@@ -102,6 +105,14 @@ export async function pollClickUpOnce(env, {
       continue;
     }
     processed += 1;
+    if (changes.some((change) => change.field === "updatedAt")) {
+      await env.DB
+        .prepare(
+          "DELETE FROM runner_jobs WHERE command_id = ? AND status = 'failed' AND result LIKE '%needs_human%'",
+        )
+        .bind(`auto-analyze-${snapshot.id}`)
+        .run();
+    }
     await handleOperationRequest(env, snapshot, now, commands, config);
     let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
     if (snapshot.status === "inbox" && aggregate.version === 0) {

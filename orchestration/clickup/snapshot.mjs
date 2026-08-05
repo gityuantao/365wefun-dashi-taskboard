@@ -65,7 +65,6 @@ export function normalizeTask(payload, config, listKind = "task") {
   }
   const status = resolveTaskStatus(config, payload.status?.status);
   const custom = customFieldMap(payload);
-  const managed = managedBoolean(fieldValue(custom, fieldId(config, listKind, "自动化纳管")));
   const requestField = custom.get(fieldId(config, listKind, "操作请求"));
   const operationRequest = toNullableString(dropdownName(
     requestField,
@@ -83,7 +82,6 @@ export function normalizeTask(payload, config, listKind = "task") {
   );
   const keyFields = {
     status,
-    managed,
     operationRequest,
     operationRequestId,
     targetVersion,
@@ -169,11 +167,11 @@ export async function loadLastConfirmed(db, type, id) {
 
 const COMPARED_FIELDS = [
   "status",
-  "managed",
   "operationRequest",
   "operationRequestId",
   "targetVersion",
   "blocked",
+  "updatedAt",
 ];
 
 export function compareSnapshots(confirmed, current) {
