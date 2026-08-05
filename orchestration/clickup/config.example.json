@@ -39,17 +39,6 @@
       "灰度候选": { "id": "47e90233-758f-4c6e-93f1-0c6d9691587d", "type": "checkbox" }
     },
     "version": {
-      "操作请求": {
-        "id": "beacbfd2-5dff-49e6-9919-fef1a490d0f9",
-        "type": "drop_down",
-        "options": {
-          "f58cf036-136e-4180-93e5-ab910aa50b80": "确认发布",
-          "36ea2d6b-d4f4-4fa9-a4c5-e9c94146aaa3": "撤回发布",
-          "4a12f24b-8ed0-460e-93f6-7bc351c9f6a4": "重新发布",
-          "4db00f10-12fa-41a8-a3a9-b23cfd37f040": "取消"
-        }
-      },
-      "操作请求ID": { "id": "dd8df01e-cd53-41c4-add3-e6e810fbeec6", "type": "short_text" },
       "Release Commit": { "id": "5ccd4a44-4ddb-41ac-a8b1-d6b23fe39e0c", "type": "short_text" },
       "Manifest摘要": { "id": "f08aa1ba-c752-41fb-9354-2db0692574b7", "type": "text" },
       "发布尝试ID": { "id": "98aa62be-3fc1-4c3d-9478-f460a3beb9b7", "type": "short_text" },
@@ -69,17 +58,6 @@
       "目标版本": { "id": "33c5b241-6147-4a95-9232-c7530b637aa9", "type": "short_text" }
     },
     "versionSandbox": {
-      "操作请求": {
-        "id": "beacbfd2-5dff-49e6-9919-fef1a490d0f9",
-        "type": "drop_down",
-        "options": {
-          "f58cf036-136e-4180-93e5-ab910aa50b80": "确认发布",
-          "36ea2d6b-d4f4-4fa9-a4c5-e9c94146aaa3": "撤回发布",
-          "4a12f24b-8ed0-460e-93f6-7bc351c9f6a4": "重新发布",
-          "4db00f10-12fa-41a8-a3a9-b23cfd37f040": "取消"
-        }
-      },
-      "操作请求ID": { "id": "dd8df01e-cd53-41c4-add3-e6e810fbeec6", "type": "short_text" },
       "Release Commit": { "id": "5ccd4a44-4ddb-41ac-a8b1-d6b23fe39e0c", "type": "short_text" },
       "Manifest摘要": { "id": "f08aa1ba-c752-41fb-9354-2db0692574b7", "type": "text" },
       "发布尝试ID": { "id": "98aa62be-3fc1-4c3d-9478-f460a3beb9b7", "type": "short_text" },

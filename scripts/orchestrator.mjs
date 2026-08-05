@@ -299,11 +299,12 @@ async function ensureVersionActive(versionId, now) {
 
 async function releaseCoordinator(now) {
   const client = await clientFactory({ token });
-  const versions = await client.getVersionsByList(config.lists.versionSandbox.id);
+  const versions = await client.getVersionsByList(config.lists[versionListKey].id);
   for (const payload of versions) {
-    const snapshot = normalizeVersion(payload, config, "versionSandbox");
+    const snapshot = normalizeVersion(payload, config, versionListKey);
     await saveSnapshot(db, { type: "version", snapshot, readAt: now });
-    if (snapshot.operationRequest !== "确认发布") continue;
+    // 状态驱动：用户把版本状态改为「发布中」即触发发布
+    if (snapshot.status !== "releasing") continue;
     const versionId = snapshot.id;
     await ensureVersionActive(versionId, now);
     const existingManifest = await loadManifest({ db, versionId });

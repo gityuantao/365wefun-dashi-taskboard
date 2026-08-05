@@ -19,10 +19,11 @@ export async function handleConfirmRelease({
     return { status: "rejected", error: "version has no frozen manifest" };
   }
   const version = await loadAggregate(db, "version", versionId);
+  const attempt = Date.now();
   await dispatchCommand({
     db,
     command: parseCommandEnvelope({
-      id: `release-start-${versionId}`,
+      id: `release-start-${versionId}-${attempt}`,
       type: "start_release",
       aggregateType: "version",
       aggregateId: versionId,
@@ -30,7 +31,7 @@ export async function handleConfirmRelease({
       actorId,
       issuedAt: now,
       reason: "confirmed release",
-      parameters: {},
+      parameters: { evidenceId: `release-attempt-${versionId}-${attempt}` },
     }),
     now,
   });
@@ -41,7 +42,7 @@ export async function handleConfirmRelease({
     await dispatchCommand({
       db,
       command: parseCommandEnvelope({
-        id: `release-succeeded-${versionId}`,
+        id: `release-succeeded-${versionId}-${attempt}`,
         type: "release_succeeded",
         aggregateType: "version",
         aggregateId: versionId,
@@ -77,7 +78,7 @@ export async function handleConfirmRelease({
     await dispatchCommand({
       db,
       command: parseCommandEnvelope({
-        id: `release-failed-${versionId}`,
+        id: `release-failed-${versionId}-${attempt}`,
         type: "release_failed",
         aggregateType: "version",
         aggregateId: versionId,

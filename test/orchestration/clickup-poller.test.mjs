@@ -51,11 +51,9 @@ const CONFIG = {
       目标版本: { id: "field-version", type: "short_text" },
     },
     version: {
-      操作请求: { id: "field-ver-request", type: "drop_down" },
       发布阻塞: { id: "field-ver-block", type: "drop_down" },
     },
     versionSandbox: {
-      操作请求: { id: "field-ver-request", type: "drop_down" },
       发布阻塞: { id: "field-ver-block", type: "drop_down" },
     },
   },

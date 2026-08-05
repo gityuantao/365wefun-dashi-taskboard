@@ -26,7 +26,6 @@ const CONFIG = loadClickUpConfig({
       目标版本: { id: "field-version", type: "short_text" },
     },
     version: {
-      操作请求: { id: "field-ver-request", type: "drop_down" },
       发布阻塞: { id: "field-ver-block", type: "drop_down" },
     },
   },
@@ -72,13 +71,11 @@ test("normalizeVersion maps the version list statuses", () => {
     id: "version-1",
     status: { status: "发布中" },
     custom_fields: [
-      { id: "field-ver-request", name: "操作请求", value: "确认发布" },
       { id: "field-ver-block", name: "发布阻塞", value: "未阻塞" },
     ],
     updated_at: "2026-08-04T00:00:00.000Z",
   }, CONFIG);
   assert.equal(snapshot.status, "releasing");
-  assert.equal(snapshot.operationRequest, "确认发布");
   assert.equal(snapshot.blocked, false);
 });
 

@@ -93,12 +93,6 @@ export function normalizeVersion(payload, config, listKind = "version") {
   }
   const status = resolveVersionStatus(config, payload.status?.status);
   const custom = customFieldMap(payload);
-  const requestField = custom.get(fieldId(config, listKind, "操作请求"));
-  const operationRequest = toNullableString(dropdownName(
-    requestField,
-    requestField?.value ?? null,
-    fieldConfig(config, listKind, "操作请求").options,
-  ));
   const blockedField = custom.get(fieldId(config, listKind, "发布阻塞"));
   const blockedRaw = dropdownName(
     blockedField,
@@ -106,7 +100,7 @@ export function normalizeVersion(payload, config, listKind = "version") {
     fieldConfig(config, listKind, "发布阻塞").options,
   );
   const blocked = blockedRaw === "已阻塞" || managedBoolean(blockedRaw);
-  const keyFields = { status, operationRequest, blocked };
+  const keyFields = { status, blocked };
   return {
     id: payload.id,
     listId: toNullableString(payload.list?.id),
@@ -157,8 +151,6 @@ export async function loadLastConfirmed(db, type, id) {
 
 const COMPARED_FIELDS = [
   "status",
-  "operationRequest",
-  "operationRequestId",
   "targetVersion",
   "blocked",
   "updatedAt",

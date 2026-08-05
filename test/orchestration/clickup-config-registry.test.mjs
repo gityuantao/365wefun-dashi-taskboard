@@ -44,7 +44,6 @@ const VALID_CONFIG = {
       执行摘要: { id: "ee42cba2-e092-45bd-b0d0-7fc22c12db85", type: "text" },
     },
     version: {
-      操作请求: { id: "beacbfd2-5dff-49e6-9919-fef1a490d0f9", type: "drop_down" },
       "Release Commit": { id: "5ccd4a44-4ddb-41ac-a8b1-d6b23fe39e0c", type: "short_text" },
     },
   },
@@ -101,7 +100,7 @@ test("field id lookup returns stable ids and rejects unknown fields", () => {
     fieldId(config, "task", "自动化纳管"),
     "368e6e92-8193-492c-9e82-d293e5d236e0",
   );
-  assert.equal(fieldId(config, "version", "操作请求"), "beacbfd2-5dff-49e6-9919-fef1a490d0f9");
+  assert.equal(fieldId(config, "version", "Release Commit"), "5ccd4a44-4ddb-41ac-a8b1-d6b23fe39e0c");
   assert.throws(() => fieldId(config, "task", "不存在的字段"), /UNKNOWN_FIELD/);
   assert.throws(() => fieldId(config, "project", "自动化纳管"), /UNKNOWN_FIELD/);
 });
