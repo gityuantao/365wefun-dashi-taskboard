@@ -25,6 +25,26 @@ export async function executeAcceptance({
   const { taskId, acceptanceCriteria, commitSha } = job.payload;
   try {
     const task = await client.getTask(taskId);
+    // 验收开始：立即推进到「验收中」，下一轮状态同步会写回 ClickUp
+    let aggregate = await loadAggregate(db, "task", taskId);
+    if (aggregate.state === "ready_for_acceptance") {
+      await dispatchCommand({
+        db,
+        command: parseCommandEnvelope({
+          id: `acceptance-start-${job.id}`,
+          type: "start_acceptance",
+          aggregateType: "task",
+          aggregateId: taskId,
+          expectedVersion: aggregate.version + 1,
+          actorId: "runner-acceptor",
+          issuedAt: now,
+          reason: "acceptance started",
+          parameters: {},
+        }),
+        now,
+      });
+      aggregate = await loadAggregate(db, "task", taskId);
+    }
     const run = await codex.run({
       prompt: buildAcceptancePrompt(task, acceptanceCriteria, commitSha),
       workdir: job.payload.workdir,
@@ -47,25 +67,6 @@ export async function executeAcceptance({
       (field) => field.name === "目标版本" || field.id === "field-version",
     )?.value ?? null;
 
-    let aggregate = await loadAggregate(db, "task", taskId);
-    if (aggregate.state === "ready_for_acceptance") {
-      await dispatchCommand({
-        db,
-        command: parseCommandEnvelope({
-          id: `acceptance-start-${job.id}`,
-          type: "start_acceptance",
-          aggregateType: "task",
-          aggregateId: taskId,
-          expectedVersion: aggregate.version + 1,
-          actorId: "runner-acceptor",
-          issuedAt: now,
-          reason: "acceptance started",
-          parameters: {},
-        }),
-        now,
-      });
-      aggregate = await loadAggregate(db, "task", taskId);
-    }
     if (parsed.acceptance_result === "accepted") {
       if (!targetVersion) {
         return { status: "failed", error: "task has no target version" };
