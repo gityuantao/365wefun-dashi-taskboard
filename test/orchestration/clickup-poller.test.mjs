@@ -126,7 +126,7 @@ test("poller processes tasks without requiring a managed flag", async (t) => {
   assert.equal(aggregate.version, 1);
 });
 
-test("poller turns a managed test-pass request into a command", async (t) => {
+test("poller treats a move to 待验收 as test passed", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   for (let index = 0; index < 5; index += 1) {
@@ -134,7 +134,7 @@ test("poller turns a managed test-pass request into a command", async (t) => {
       "development_completed", "start_test"][index];
     await dispatchTask(harness, `poll-task-cmd-${index}`, type, index + 1);
   }
-  const env = await makeEnv(harness, [sandboxTask()]);
+  const env = await makeEnv(harness, [sandboxTask({ status: "待验收" })]);
   const result = await pollClickUpOnce(env, { now: NOW });
   assert.equal(result.processed, 1);
   assert.equal(result.commands.length, 1);
@@ -145,7 +145,7 @@ test("poller turns a managed test-pass request into a command", async (t) => {
   assert.equal(aggregate.version, 6);
 });
 
-test("poller passes the request id as evidence for test failures", async (t) => {
+test("poller treats a move back to 待开发 as test failed", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   for (let index = 0; index < 5; index += 1) {
@@ -154,7 +154,7 @@ test("poller passes the request id as evidence for test failures", async (t) => 
     await dispatchTask(harness, `poll-task-cmd-${index}`, type, index + 1);
   }
   const env = await makeEnv(harness, [
-    sandboxTask({ request: "测试不通过", requestId: "ev-fail-1" }),
+    sandboxTask({ status: "待开发" }),
   ]);
   const result = await pollClickUpOnce(env, { now: NOW });
   assert.equal(result.commands[0].type, "test_failed");
@@ -171,7 +171,7 @@ test("poller is idempotent for unchanged snapshots", async (t) => {
       "development_completed", "start_test"][index];
     await dispatchTask(harness, `poll-task-cmd-${index}`, type, index + 1);
   }
-  const env = await makeEnv(harness, [sandboxTask()]);
+  const env = await makeEnv(harness, [sandboxTask({ status: "待验收" })]);
   const first = await pollClickUpOnce(env, { now: NOW });
   assert.equal(first.commands.length, 1);
   const second = await pollClickUpOnce(env, { now: NOW });
@@ -197,14 +197,18 @@ test("poller records invalid commands without throwing", async (t) => {
   assert.equal(aggregate.version, 1);
 });
 
-test("poller ignores operation requests that are not yet supported", async (t) => {
+test("poller ignores unsupported status moves", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
+  for (let index = 0; index < 5; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development",
+      "development_completed", "start_test"][index];
+    await dispatchTask(harness, `poll-task-cmd-${index}`, type, index + 1);
+  }
   const env = await makeEnv(harness, [
-    sandboxTask({ request: "纳入自动化" }),
+    sandboxTask({ status: "已发布" }),
   ]);
   const result = await pollClickUpOnce(env, { now: NOW });
-  assert.equal(result.processed, 1);
   assert.equal(result.commands.length, 0);
 });
 

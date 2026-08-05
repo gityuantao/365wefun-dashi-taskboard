@@ -18,8 +18,6 @@ import {
   resolveCurrentDevVersionName,
 } from "../../orchestration/application/version-gate.mjs";
 
-const SUPPORTED_OPERATION_REQUESTS = new Set(["测试通过", "测试不通过"]);
-
 function jobTypeForState(status) {
   if (status === "inbox") return "analyze";
   if (status === "analyzing") return "analyze";
@@ -163,7 +161,7 @@ export async function pollClickUpOnce(env, {
     }
 
     if (changes.length === 0) {
-      await handleOperationRequest(env, snapshot, now, commands, config);
+      await handleStatusDrivenFlow(env, snapshot, now, commands, config);
       await ensureStateJob(env, snapshot, now, currentDevVersion);
       continue;
     }
@@ -182,7 +180,7 @@ export async function pollClickUpOnce(env, {
         .bind(`auto-analyze-${snapshot.id}`)
         .run();
     }
-    await handleOperationRequest(env, snapshot, now, commands, config);
+    await handleStatusDrivenFlow(env, snapshot, now, commands, config);
     if (snapshot.status === "inbox" && aggregate.version === 0) {
       const started = await runCommand(env, parseCommandEnvelope({
         id: `poller-start-analysis-${snapshot.id}`,
@@ -213,45 +211,43 @@ export async function pollClickUpOnce(env, {
   return { processed, commands };
 }
 
-async function handleOperationRequest(env, snapshot, now, commands, config) {
-  if (!SUPPORTED_OPERATION_REQUESTS.has(snapshot.operationRequest)) {
-    return;
-  }
+/**
+ * 状态驱动流程：不再依赖「操作请求」字段。
+ * 用户在 ClickUp 里把任务从「待测试」拖到「待验收」= 测试通过；
+ * 拖回「待开发」= 测试不通过（退回返工）。系统看到状态变化即推进。
+ */
+async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
   let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
-  if (["测试通过", "测试不通过"].includes(snapshot.operationRequest)) {
-    if (aggregate.state === "ready_for_test") {
-      const startTestId = `poller-start-test-${snapshot.id}-${aggregate.version + 1}`;
-      if (!(await loadCommandResult(env.DB, startTestId))) {
-        const startTest = parseCommandEnvelope({
-          id: startTestId,
-          type: "start_test",
-          aggregateType: "task",
-          aggregateId: snapshot.id,
-          expectedVersion: aggregate.version + 1,
-          actorId: "system-poller",
-          issuedAt: now,
-          reason: "test started by operation request",
-          parameters: {},
-        });
-        commands.push(await runCommand(env, startTest, now, config));
-      }
-      aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  if (aggregate.state === "ready_for_test") {
+    const startTestId = `poller-start-test-${snapshot.id}-${aggregate.version + 1}`;
+    if (!(await loadCommandResult(env.DB, startTestId))) {
+      const startTest = parseCommandEnvelope({
+        id: startTestId,
+        type: "start_test",
+        aggregateType: "task",
+        aggregateId: snapshot.id,
+        expectedVersion: aggregate.version + 1,
+        actorId: "system-poller",
+        issuedAt: now,
+        reason: "test started by status change",
+        parameters: {},
+      });
+      commands.push(await runCommand(env, startTest, now, config));
     }
-    if (aggregate.state !== "testing") return;
+    aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   }
-  const operationCommand = await buildOperationCommand(
-    env,
-    snapshot,
-    now,
-    aggregate.version + 1,
-  );
-  if (operationCommand && !(await loadCommandResult(env.DB, operationCommand.id))) {
-    commands.push(await runCommand(env, operationCommand, now, config));
+  if (aggregate.state !== "testing") return;
+  const expectedVersion = aggregate.version + 1;
+  let type = null;
+  let reason = null;
+  if (snapshot.status === "ready_for_acceptance") {
+    type = "test_passed";
+    reason = "status moved to 待验收";
+  } else if (snapshot.status === "ready_for_development") {
+    type = "test_failed";
+    reason = "status moved back to 待开发";
   }
-}
-
-async function buildOperationCommand(env, snapshot, now, expectedVersion) {
-  if (!SUPPORTED_OPERATION_REQUESTS.has(snapshot.operationRequest)) return null;
+  if (!type) return;
   const common = {
     id: `poller-${snapshot.id}-${expectedVersion}`,
     aggregateType: "task",
@@ -259,21 +255,15 @@ async function buildOperationCommand(env, snapshot, now, expectedVersion) {
     expectedVersion,
     actorId: "system-poller",
     issuedAt: now,
-    reason: `operation request: ${snapshot.operationRequest}`,
+    reason,
   };
-  if (snapshot.operationRequest === "测试通过") {
-    return parseCommandEnvelope({ ...common, type: "test_passed", parameters: {} });
+  const parameters = type === "test_failed"
+    ? { evidenceId: `operation-${snapshot.id}` }
+    : {};
+  const command = parseCommandEnvelope({ ...common, type, parameters });
+  if (!(await loadCommandResult(env.DB, command.id))) {
+    commands.push(await runCommand(env, command, now, config));
   }
-  if (snapshot.operationRequest === "测试不通过") {
-    return parseCommandEnvelope({
-      ...common,
-      type: "test_failed",
-      parameters: {
-        evidenceId: snapshot.operationRequestId ?? `operation-${snapshot.id}`,
-      },
-    });
-  }
-  return null;
 }
 
 function clickupStatusName(config, aggregateType, canonical) {
