@@ -305,8 +305,9 @@ async function runCommand(env, command, now, config) {
       const comment = stateChangeText(command.aggregateType, event.data.from, event.data.to);
       if (comment) {
         try {
-          await env.clientFactory({ token: env.CLICKUP_API_TOKEN })
-            .then((client) => client.postComment(command.aggregateId, comment));
+          const factory = env.clientFactory ?? createClickUpClient;
+          const client = await factory({ token: env.CLICKUP_API_TOKEN });
+          await client.postComment(command.aggregateId, comment);
         } catch {
           // 评论失败不影响状态推进
         }
