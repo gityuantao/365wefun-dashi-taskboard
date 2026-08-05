@@ -121,7 +121,13 @@ test("saveSnapshot and loadLastConfirmed round-trip through D1", async (t) => {
 
 test("compareSnapshots reports field-level changes", () => {
   const confirmed = normalizeTask(taskPayload(), CONFIG);
-  assert.deepEqual(compareSnapshots(null, confirmed), [{ field: "status", from: null, to: "inbox" }]);
+  assert.deepEqual(compareSnapshots(null, confirmed), [
+    { field: "status", from: null, to: "inbox" },
+    { field: "managed", from: null, to: true },
+    { field: "operationRequest", from: null, to: "测试通过" },
+    { field: "operationRequestId", from: null, to: "req-1" },
+    { field: "targetVersion", from: null, to: "version-9" },
+  ]);
   const moved = normalizeTask(taskPayload({ status: { status: "验收中" } }), CONFIG);
   assert.deepEqual(compareSnapshots(confirmed, moved), [
     { field: "status", from: "inbox", to: "accepting" },

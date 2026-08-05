@@ -43,18 +43,22 @@ function managedBoolean(value) {
   return value === true || value === "true" || value === 1 || value === "1";
 }
 
-export function normalizeTask(payload, config) {
+export function normalizeTask(payload, config, listKind = "task") {
   if (!payload || typeof payload.id !== "string" || payload.id === "") {
     throw new DomainError("INVALID_PAYLOAD", "Task payload must include a non-empty id");
   }
   const status = resolveTaskStatus(config, payload.status?.status);
   const custom = customFieldMap(payload);
-  const managed = managedBoolean(fieldValue(custom, fieldId(config, "task", "自动化纳管")));
-  const operationRequest = toNullableString(fieldValue(custom, fieldId(config, "task", "操作请求")));
-  const operationRequestId = toNullableString(
-    fieldValue(custom, fieldId(config, "task", "操作请求ID")),
+  const managed = managedBoolean(fieldValue(custom, fieldId(config, listKind, "自动化纳管")));
+  const operationRequest = toNullableString(
+    fieldValue(custom, fieldId(config, listKind, "操作请求")),
   );
-  const targetVersion = toNullableString(fieldValue(custom, fieldId(config, "task", "目标版本")));
+  const operationRequestId = toNullableString(
+    fieldValue(custom, fieldId(config, listKind, "操作请求ID")),
+  );
+  const targetVersion = toNullableString(
+    fieldValue(custom, fieldId(config, listKind, "目标版本")),
+  );
   const assignee = toNullableString(
     payload.assignees?.[0]?.username ?? payload.assignee?.username,
   );
@@ -75,16 +79,16 @@ export function normalizeTask(payload, config) {
   };
 }
 
-export function normalizeVersion(payload, config) {
+export function normalizeVersion(payload, config, listKind = "version") {
   if (!payload || typeof payload.id !== "string" || payload.id === "") {
     throw new DomainError("INVALID_PAYLOAD", "Version payload must include a non-empty id");
   }
   const status = resolveVersionStatus(config, payload.status?.status);
   const custom = customFieldMap(payload);
   const operationRequest = toNullableString(
-    fieldValue(custom, fieldId(config, "version", "操作请求")),
+    fieldValue(custom, fieldId(config, listKind, "操作请求")),
   );
-  const blockedRaw = fieldValue(custom, fieldId(config, "version", "发布阻塞"));
+  const blockedRaw = fieldValue(custom, fieldId(config, listKind, "发布阻塞"));
   const blocked = blockedRaw === "已阻塞" || managedBoolean(blockedRaw);
   const keyFields = { status, operationRequest, blocked };
   return {
@@ -145,7 +149,14 @@ const COMPARED_FIELDS = [
 
 export function compareSnapshots(confirmed, current) {
   if (!confirmed) {
-    return [{ field: "status", from: null, to: current.status }];
+    const changes = [];
+    for (const field of COMPARED_FIELDS) {
+      const to = current[field] ?? null;
+      if (to !== null) {
+        changes.push({ field, from: null, to });
+      }
+    }
+    return changes;
   }
   const changes = [];
   for (const field of COMPARED_FIELDS) {

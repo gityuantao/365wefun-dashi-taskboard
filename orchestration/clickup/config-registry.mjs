@@ -58,7 +58,7 @@ export function loadClickUpConfig(value) {
 
   const fields = value.fields ?? {};
   assertConfigObject(fields, 'Config field "fields" must be an object');
-  for (const listKind of ["task", "version"]) {
+  for (const listKind of LIST_KEYS) {
     const entries = fields[listKind] ?? {};
     assertConfigObject(entries, `Config fields.${listKind} must be an object`);
     for (const [name, field] of Object.entries(entries)) {
@@ -80,8 +80,9 @@ export function loadClickUpConfig(value) {
     taskStatusMap: { ...value.taskStatusMap },
     versionStatusMap: { ...value.versionStatusMap },
     fields: {
-      task: { ...(fields.task ?? {}) },
-      version: { ...(fields.version ?? {}) },
+      ...Object.fromEntries(
+        LIST_KEYS.map((key) => [key, { ...(fields[key] ?? {}) }]),
+      ),
     },
   };
   return deepFreeze(config);
