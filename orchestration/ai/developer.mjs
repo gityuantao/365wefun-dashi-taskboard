@@ -46,26 +46,29 @@ export async function executeDevelopment({
       return { status: "failed", error: "missing change_summary" };
     }
     const startAggregate = await loadAggregate(db, "task", taskId);
-    await dispatchCommand({
-      db,
-      command: parseCommandEnvelope({
-        id: `development-start-${job.id}`,
-        type: "start_development",
-        aggregateType: "task",
-        aggregateId: taskId,
-        expectedVersion: startAggregate.version + 1,
-        actorId: "runner-developer",
-        issuedAt: now,
-        reason: "development started",
-        parameters: {},
-      }),
-      now,
-    });
+    if (startAggregate.state !== "developing") {
+      await dispatchCommand({
+        db,
+        command: parseCommandEnvelope({
+          id: `development-start-${job.id}`,
+          type: "start_development",
+          aggregateType: "task",
+          aggregateId: taskId,
+          expectedVersion: startAggregate.version + 1,
+          actorId: "runner-developer",
+          issuedAt: now,
+          reason: "development started",
+          parameters: {},
+        }),
+        now,
+      });
+    }
     await gitOps.commitAll(worktree.worktreePath, `Task ${taskId}: ${parsed.change_summary}`);
     const pr = await gitOps.createPullRequest({
       repoPath,
       branch: worktree.branch,
       base: versionBranch ?? baseRef,
+      baseRef,
       title: `Task ${taskId}: ${task.name}`,
       body: [
         `改动摘要：${parsed.change_summary}`,
@@ -99,6 +102,28 @@ export async function executeDevelopment({
       changeSummary: parsed.change_summary,
     };
   } catch (error) {
+    try {
+      const current = await loadAggregate(db, "task", taskId);
+      if (current.state === "developing") {
+        await dispatchCommand({
+          db,
+          command: parseCommandEnvelope({
+            id: `development-failed-${job.id}`,
+            type: "development_failed",
+            aggregateType: "task",
+            aggregateId: taskId,
+            expectedVersion: current.version + 1,
+            actorId: "runner-developer",
+            issuedAt: now,
+            reason: "development failed",
+            parameters: { evidenceId: `development-${job.id}` },
+          }),
+          now,
+        });
+      }
+    } catch {
+      // 回退失败不掩盖原始错误
+    }
     return { status: "failed", error: error.message };
   }
 }

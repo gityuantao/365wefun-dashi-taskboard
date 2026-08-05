@@ -1,6 +1,7 @@
 import { dispatchCommand } from "../application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
+import { loadLastConfirmed } from "../clickup/snapshot.mjs";
 
 export async function loadAllTaskSnapshots(db) {
   const rows = await db
@@ -10,16 +11,25 @@ export async function loadAllTaskSnapshots(db) {
 }
 
 export async function checkVersionGate({ db, versionId }) {
+  const versionSnapshot = await loadLastConfirmed(db, "version", versionId);
+  const matchKey = versionSnapshot?.name ?? versionId;
   const tasks = (await loadAllTaskSnapshots(db)).filter(
-    (task) => task.targetVersion === versionId,
+    (task) => task.targetVersion === matchKey,
   );
   const reasons = [];
   if (tasks.length === 0) {
     reasons.push("version has no tasks");
   }
-  const notReady = tasks.filter((task) => task.status !== "ready_for_release");
+  const notReady = [];
+  for (const task of tasks) {
+    const aggregate = await loadAggregate(db, "task", task.id);
+    const state = aggregate.state ?? task.status;
+    if (state !== "ready_for_release") {
+      notReady.push(task);
+    }
+  }
   if (notReady.length > 0) {
-    reasons.push(`tasks not ready for release: ${notReady.map((task) => task.id).join(", ")}`);
+    reasons.push(`tasks not ready for release: ${[...new Set(notReady.map((task) => task.id))].join(", ")}`);
   }
   const blockers = await db
     .prepare("SELECT object_id FROM blockers WHERE status = 'open' AND object_type = 'task'")
@@ -47,8 +57,10 @@ export async function freezeManifest({ db, versionId, now }) {
   if (!gate.pass) {
     return { status: "rejected", reasons: gate.reasons };
   }
+  const versionSnapshot = await loadLastConfirmed(db, "version", versionId);
+  const matchKey = versionSnapshot?.name ?? versionId;
   const tasks = (await loadAllTaskSnapshots(db)).filter(
-    (task) => task.targetVersion === versionId,
+    (task) => task.targetVersion === matchKey,
   );
   const taskIds = tasks.map((task) => task.id).sort();
   const manifest = {

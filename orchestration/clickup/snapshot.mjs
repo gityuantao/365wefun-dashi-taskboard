@@ -1,5 +1,6 @@
 import { DomainError } from "../domain/errors.mjs";
 import {
+  fieldConfig,
   fieldId,
   resolveTaskStatus,
   resolveVersionStatus,
@@ -39,6 +40,21 @@ function fieldValue(custom, id) {
   return custom.get(id)?.value ?? null;
 }
 
+function dropdownName(field, value, options) {
+  if (typeof value !== "string" && typeof value !== "number") return value;
+  const candidates = [
+    ...(field?.type_config?.options ?? []),
+  ];
+  const byId = new Map([
+    ...candidates.map((option) => [option.id, option.name]),
+    ...candidates.map((option, index) => [String(index), option.name]),
+    ...Object.entries(options ?? {}),
+    ...Object.entries(options ?? {}).map(([, name], index) => [String(index), name]),
+  ]);
+  const key = String(value);
+  return byId.get(key) ?? (typeof value === "number" ? String(value) : value);
+}
+
 function managedBoolean(value) {
   return value === true || value === "true" || value === 1 || value === "1";
 }
@@ -50,9 +66,12 @@ export function normalizeTask(payload, config, listKind = "task") {
   const status = resolveTaskStatus(config, payload.status?.status);
   const custom = customFieldMap(payload);
   const managed = managedBoolean(fieldValue(custom, fieldId(config, listKind, "自动化纳管")));
-  const operationRequest = toNullableString(
-    fieldValue(custom, fieldId(config, listKind, "操作请求")),
-  );
+  const requestField = custom.get(fieldId(config, listKind, "操作请求"));
+  const operationRequest = toNullableString(dropdownName(
+    requestField,
+    requestField?.value ?? null,
+    fieldConfig(config, listKind, "操作请求").options,
+  ));
   const operationRequestId = toNullableString(
     fieldValue(custom, fieldId(config, listKind, "操作请求ID")),
   );
@@ -73,6 +92,7 @@ export function normalizeTask(payload, config, listKind = "task") {
   return {
     id: payload.id,
     listId: toNullableString(payload.list?.id),
+    name: toNullableString(payload.name),
     ...keyFields,
     updatedAt: toNullableString(payload.updated_at),
     fieldsHash: hashFields(keyFields),
@@ -85,15 +105,24 @@ export function normalizeVersion(payload, config, listKind = "version") {
   }
   const status = resolveVersionStatus(config, payload.status?.status);
   const custom = customFieldMap(payload);
-  const operationRequest = toNullableString(
-    fieldValue(custom, fieldId(config, listKind, "操作请求")),
+  const requestField = custom.get(fieldId(config, listKind, "操作请求"));
+  const operationRequest = toNullableString(dropdownName(
+    requestField,
+    requestField?.value ?? null,
+    fieldConfig(config, listKind, "操作请求").options,
+  ));
+  const blockedField = custom.get(fieldId(config, listKind, "发布阻塞"));
+  const blockedRaw = dropdownName(
+    blockedField,
+    blockedField?.value ?? null,
+    fieldConfig(config, listKind, "发布阻塞").options,
   );
-  const blockedRaw = fieldValue(custom, fieldId(config, listKind, "发布阻塞"));
   const blocked = blockedRaw === "已阻塞" || managedBoolean(blockedRaw);
   const keyFields = { status, operationRequest, blocked };
   return {
     id: payload.id,
     listId: toNullableString(payload.list?.id),
+    name: toNullableString(payload.name),
     ...keyFields,
     updatedAt: toNullableString(payload.updated_at),
     fieldsHash: hashFields(keyFields),

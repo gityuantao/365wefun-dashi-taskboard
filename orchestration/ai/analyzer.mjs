@@ -42,7 +42,11 @@ export async function executeAnalysis({
     return { status: "failed", error: "missing scope or acceptance_criteria" };
   }
   if (Array.isArray(parsed.open_questions) && parsed.open_questions.length > 0) {
-    return { status: "failed", error: "needs_human: open questions require human input" };
+    return {
+      status: "failed",
+      error: "needs_human: open questions require human input",
+      openQuestions: parsed.open_questions,
+    };
   }
 
   await client.postComment(

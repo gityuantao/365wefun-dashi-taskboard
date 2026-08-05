@@ -1,0 +1,344 @@
+// ClickUp 编排 MVP 本地运行时：轮询调度 + Outbox + Companion 执行器，一体常驻进程。
+// 用法：node scripts/orchestrator.mjs（配置见 .data/orchestration.json 或 ORCHESTRATION_CONFIG）
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Miniflare } from "miniflare";
+import { pollClickUpOnce } from "../cloud/src/clickup-poller.mjs";
+import { createClickUpClient } from "../orchestration/clickup/client.mjs";
+import {
+  fieldId,
+  loadClickUpConfig,
+} from "../orchestration/clickup/config-registry.mjs";
+import { flushOutbox } from "../orchestration/clickup/outbox.mjs";
+import { executeAcceptance } from "../orchestration/ai/acceptance.mjs";
+import { executeAnalysis } from "../orchestration/ai/analyzer.mjs";
+import { executeDevelopment } from "../orchestration/ai/developer.mjs";
+import { normalizeVersion, saveSnapshot } from "../orchestration/clickup/snapshot.mjs";
+import { createDomainEvent } from "../orchestration/domain/events.mjs";
+import { parseCommandEnvelope } from "../orchestration/domain/commands.mjs";
+import { appendCommandResult } from "../orchestration/persistence/d1-event-store.mjs";
+import {
+  checkVersionGate,
+  freezeManifest,
+  loadManifest,
+} from "../orchestration/release/version-aggregator.mjs";
+import { handleConfirmRelease } from "../orchestration/application/release-commands.mjs";
+import { createWebAdapter } from "../orchestration/release/adapters/web.mjs";
+import { runCodex } from "../orchestration/runner/codex-runner.mjs";
+import {
+  createTaskWorktree,
+  runInWorktree,
+} from "../orchestration/runner/worktree.mjs";
+import { claimJob, completeJob } from "../orchestration/persistence/d1-runner-jobs.mjs";
+import { loadAggregate } from "../orchestration/persistence/d1-aggregate-store.mjs";
+
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CONFIG_PATH = process.env.ORCHESTRATION_CONFIG
+  ?? path.join(PROJECT_ROOT, ".data", "orchestration.json");
+const MIGRATIONS_DIR = path.join(PROJECT_ROOT, "cloud", "migrations");
+
+function log(message) {
+  console.log(`[${new Date().toISOString()}] ${message}`);
+}
+
+const runtime = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+const token = process.env.CLICKUP_API_TOKEN
+  ?? readFileSync(runtime.tokenPath, "utf8").trim();
+const config = loadClickUpConfig(
+  JSON.parse(readFileSync(path.join(PROJECT_ROOT, runtime.clickupConfigPath), "utf8")),
+);
+
+const persistRoot = path.join(PROJECT_ROOT, ".data", "orchestration-d1");
+mkdirSync(persistRoot, { recursive: true });
+const miniflare = new Miniflare({
+  modules: true,
+  scriptPath: path.join(PROJECT_ROOT, "cloud", "src", "index.mjs"),
+  modulesRoot: PROJECT_ROOT,
+  compatibilityDate: "2026-07-24",
+  bindings: {
+    TASKBOARD_ENVIRONMENT: "production",
+    TASKBOARD_SHARED_SECRET: "orchestration-local",
+  },
+  d1Databases: { DB: "orchestration-db" },
+  r2Buckets: { ATTACHMENTS: "orchestration-attachments" },
+  defaultPersistRoot: persistRoot,
+  d1Persist: true,
+  r2Persist: true,
+});
+await miniflare.ready;
+const db = await miniflare.getD1Database("DB");
+const migrations = readdirSync(MIGRATIONS_DIR)
+  .filter((name) => /^\d+.*\.sql$/.test(name))
+  .sort();
+const existingTable = await db
+  .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'projects'")
+  .first();
+if (!existingTable) {
+  for (const name of migrations) {
+    await db.exec(readFileSync(path.join(MIGRATIONS_DIR, name), "utf8"));
+  }
+}
+
+const clientFactory = async ({ token: clientToken }) => createClickUpClient({
+  token: clientToken,
+});
+
+function pollEnv() {
+  return {
+    DB: db,
+    CLICKUP_API_TOKEN: token,
+    CLICKUP_CONFIG: JSON.stringify(config),
+    CLICKUP_LIST_SET: runtime.listSet ?? "sandbox",
+    CLICKUP_REPO_PATH: runtime.repoPath,
+    CLICKUP_WORKTREES_ROOT: runtime.worktreesRoot,
+    CLICKUP_BASE_REF: runtime.baseRef ?? "main",
+  };
+}
+
+const gitOps = {
+  createWorktree: ({ repoPath, taskId, baseRef, worktreesRoot }) => createTaskWorktree({
+    repoPath,
+    taskId,
+    baseRef,
+    worktreesRoot,
+  }),
+  commitAll: (worktreePath, message) => {
+    runInWorktree(worktreePath, ["add", "-A"]);
+    const commit = runInWorktree(worktreePath, ["commit", "-m", message]);
+    const output = `${commit.stdout}\n${commit.stderr}`;
+    if (commit.status !== 0 && !/nothing to commit/.test(output)) {
+      throw new Error(`git commit failed: ${output.trim()}`);
+    }
+  },
+  createPullRequest: ({ repoPath, branch, base, baseRef, title, body }) => {
+    if (base && base !== "main") {
+      const remote = execFileSync(
+        "git",
+        ["-C", repoPath, "ls-remote", "--heads", "origin", `refs/heads/${base}`],
+        { encoding: "utf8" },
+      ).trim();
+      if (!remote) {
+        execFileSync("git", ["-C", repoPath, "branch", base, baseRef ?? "main"], {
+          stdio: "ignore",
+        });
+        execFileSync("git", ["-C", repoPath, "push", "-u", "origin", base], {
+          stdio: "ignore",
+        });
+      }
+    }
+    execFileSync("git", ["-C", repoPath, "push", "-u", "origin", branch], {
+      stdio: "ignore",
+    });
+    const url = execFileSync(
+      "gh",
+      [
+        "pr", "create",
+        "--repo", "gityuantao/365wefun",
+        "--base", base,
+        "--head", branch,
+        "--title", title,
+        "--body", body,
+      ],
+      { encoding: "utf8" },
+    ).trim();
+    return { url };
+  },
+};
+
+const codex = {
+  run: async ({ prompt, workdir, taskId }) => runCodex({
+    workdir: workdir ?? runtime.repoPath,
+    prompt,
+    timeoutMinutes: runtime.codexTimeoutMinutes ?? 20,
+    codexBin: runtime.codexBin ?? "codex",
+  }),
+};
+
+const taskListKey = (runtime.listSet ?? "sandbox") === "production" ? "task" : "taskSandbox";
+
+const handlers = {
+  analyze: async (job) => executeAnalysis({
+    job,
+    db,
+    client: await clientFactory({ token }),
+    codex,
+    now: new Date().toISOString(),
+    fieldIds: {
+      summary: fieldId(config, taskListKey, "执行摘要"),
+    },
+  }),
+  develop: async (job) => executeDevelopment({
+    job,
+    db,
+    client: await clientFactory({ token }),
+    codex,
+    gitOps,
+    now: new Date().toISOString(),
+    fieldIds: {
+      evidence: fieldId(config, taskListKey, "证据链接"),
+    },
+  }),
+  accept: async (job) => executeAcceptance({
+    job,
+    db,
+    client: await clientFactory({ token }),
+    codex,
+    now: new Date().toISOString(),
+  }),
+};
+
+async function recoverOrphanedLeases() {
+  // 单进程运行时：启动时把所有 claimed 作业重置为 queued，回收中断进程的租约。
+  await db
+    .prepare(
+      "UPDATE runner_jobs SET status = 'queued', device_id = NULL WHERE status = 'claimed'",
+    )
+    .run();
+}
+
+async function ensureVersionActive(versionId, now) {
+  const aggregate = await loadAggregate(db, "version", versionId);
+  if (aggregate.version > 0) return;
+  const event = await createDomainEvent({
+    id: `seed-${versionId}`,
+    sequence: 1,
+    aggregateType: "version",
+    aggregateId: versionId,
+    aggregateVersion: 1,
+    type: "version.activated",
+    commandId: `seed-cmd-${versionId}`,
+    actorId: "system",
+    occurredAt: now,
+    data: { from: "planning", to: "active" },
+    previousHash: null,
+  });
+  await appendCommandResult(db, {
+    command: parseCommandEnvelope({
+      id: `seed-cmd-${versionId}`,
+      type: "activate_version",
+      aggregateType: "version",
+      aggregateId: versionId,
+      expectedVersion: 1,
+      actorId: "system",
+      issuedAt: now,
+      reason: "version activated",
+      parameters: {},
+    }),
+    events: [event],
+    projection: { state: "active", snapshot: { kind: "version" } },
+  });
+}
+
+async function releaseCoordinator(now) {
+  const client = await clientFactory({ token });
+  const versions = await client.getVersionsByList(config.lists.versionSandbox.id);
+  for (const payload of versions) {
+    const snapshot = normalizeVersion(payload, config, "versionSandbox");
+    await saveSnapshot(db, { type: "version", snapshot, readAt: now });
+    if (snapshot.operationRequest !== "确认发布") continue;
+    const versionId = snapshot.id;
+    await ensureVersionActive(versionId, now);
+    const existingManifest = await loadManifest({ db, versionId });
+    if (!existingManifest) {
+      const gate = await checkVersionGate({ db, versionId });
+      if (!gate.pass) {
+        log(`version ${versionId} gate: ${gate.reasons.join("; ")}`);
+        continue;
+      }
+      const frozen = await freezeManifest({ db, versionId, now });
+      log(`version ${versionId} manifest ${frozen.status}`);
+    }
+    const versionAggregate = await loadAggregate(db, "version", versionId);
+    if (versionAggregate.state === "published") continue;
+    const adapter = createWebAdapter({
+      deployer: {
+        preflight: async () => ({ ok: true }),
+        upload: async ({ versionId: vid }) => ({
+          object: `releases/${vid}/index.html`,
+        }),
+        switchEntry: async () => ({ url: "https://e365.example.com" }),
+        healthCheck: async () => ({ ok: true, status: 200 }),
+      },
+    });
+    const result = await handleConfirmRelease({
+      db,
+      versionId,
+      actorId: "system-poller",
+      actorRoles: ["release_manager"],
+      now,
+      adapter,
+    });
+    log(`version ${versionId} release -> ${result.status}${result.error ? `: ${result.error}` : ""}`);
+  }
+}
+
+async function tick() {
+  const now = new Date().toISOString();
+  try {
+    try {
+      const poll = await pollClickUpOnce(pollEnv(), { now, clientFactory });
+      if (poll.processed > 0) {
+        log(`poller: ${poll.processed} changed, ${poll.commands.length} commands`);
+        for (const command of poll.commands) {
+          log(`  command ${command.type} -> ${command.status}${command.error ? `: ${command.error}` : ""}`);
+        }
+      }
+    } catch (error) {
+      log(`poller error: ${error.message}`);
+    }
+    try {
+      await flushOutbox(db, await clientFactory({ token }), { now, config });
+    } catch (error) {
+      log(`outbox error: ${error.message}`);
+    }
+    for (const jobType of ["analyze", "develop", "accept"]) {
+      let job;
+      try {
+        job = await claimJob(db, { deviceId: runtime.deviceId, jobType, now });
+      } catch (error) {
+        log(`claim ${jobType} error: ${error.message}`);
+        continue;
+      }
+      if (!job) continue;
+      log(`claimed ${jobType} job ${job.id}`);
+      const handler = handlers[job.jobType];
+      let result;
+      try {
+        result = await handler(job);
+      } catch (error) {
+        result = { status: "failed", error: error.message };
+      }
+      const finalStatus = result.status === "completed" ? "completed" : "failed";
+      try {
+        await completeJob(db, {
+          jobId: job.id,
+          deviceId: runtime.deviceId,
+          fencingToken: job.fencingToken,
+          status: finalStatus,
+          result,
+          now,
+        });
+      } catch (error) {
+        log(`complete ${jobType} job ${job.id} error: ${error.message}`);
+      }
+      log(`${jobType} job ${job.id} -> ${finalStatus}`);
+      if (finalStatus === "failed") {
+        log(`  error: ${JSON.stringify(result.error ?? result)}`);
+      }
+    }
+    try {
+      await releaseCoordinator(now);
+    } catch (error) {
+      log(`release coordinator error: ${error.message}`);
+    }
+  } catch (error) {
+    log(`tick error: ${error.message}`);
+  }
+}
+
+await recoverOrphanedLeases();
+log(`orchestrator started: device=${runtime.deviceId} repo=${runtime.repoPath} list=${runtime.listSet ?? "sandbox"}`);
+await tick();
+setInterval(tick, runtime.pollIntervalMs ?? 30_000);

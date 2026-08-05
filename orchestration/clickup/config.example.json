@@ -32,7 +32,18 @@
   "fields": {
     "task": {
       "自动化纳管": { "id": "368e6e92-8193-492c-9e82-d293e5d236e0", "type": "checkbox" },
-      "操作请求": { "id": "bbe64f2a-3000-4340-bd4c-50896b7005e6", "type": "drop_down" },
+      "操作请求": {
+        "id": "bbe64f2a-3000-4340-bd4c-50896b7005e6",
+        "type": "drop_down",
+        "options": {
+          "b15be5f1-bf0e-4730-b298-b7d15a23aa4c": "测试通过",
+          "b34ef6f4-d950-4035-b3d2-df8f30785deb": "测试不通过",
+          "b9fb22b6-a527-4238-a1af-b38ea2ce78b5": "确认发布",
+          "462bbf97-7208-4ee8-8e85-5ae9e2ab6a9f": "撤回发布",
+          "ff490c6e-b0b1-4516-9081-5748ef016755": "取消",
+          "bf753b72-d2ee-4503-b873-1dff9e401ca5": "纳入自动化"
+        }
+      },
       "操作请求ID": { "id": "dd8df01e-cd53-41c4-add3-e6e810fbeec6", "type": "short_text" },
       "执行摘要": { "id": "ee42cba2-e092-45bd-b0d0-7fc22c12db85", "type": "text" },
       "证据链接": { "id": "f023b922-e209-4f8b-a5cc-6c1f1f21d543", "type": "text" },
@@ -41,13 +52,72 @@
       "灰度候选": { "id": "47e90233-758f-4c6e-93f1-0c6d9691587d", "type": "checkbox" }
     },
     "version": {
-      "操作请求": { "id": "beacbfd2-5dff-49e6-9919-fef1a490d0f9", "type": "drop_down" },
+      "操作请求": {
+        "id": "beacbfd2-5dff-49e6-9919-fef1a490d0f9",
+        "type": "drop_down",
+        "options": {
+          "f58cf036-136e-4180-93e5-ab910aa50b80": "确认发布",
+          "36ea2d6b-d4f4-4fa9-a4c5-e9c94146aaa3": "撤回发布",
+          "4a12f24b-8ed0-460e-93f6-7bc351c9f6a4": "重新发布",
+          "4db00f10-12fa-41a8-a3a9-b23cfd37f040": "取消"
+        }
+      },
       "操作请求ID": { "id": "dd8df01e-cd53-41c4-add3-e6e810fbeec6", "type": "short_text" },
       "Release Commit": { "id": "5ccd4a44-4ddb-41ac-a8b1-d6b23fe39e0c", "type": "short_text" },
       "Manifest摘要": { "id": "f08aa1ba-c752-41fb-9354-2db0692574b7", "type": "text" },
       "发布尝试ID": { "id": "98aa62be-3fc1-4c3d-9478-f460a3beb9b7", "type": "short_text" },
       "平台状态摘要": { "id": "f6a6a4cc-057f-4d5a-bfc3-287b8d6cf8fc", "type": "text" },
-      "发布阻塞": { "id": "e8b9befa-0e03-443a-bd57-635b94b81b0a", "type": "drop_down" }
+      "发布阻塞": {
+        "id": "e8b9befa-0e03-443a-bd57-635b94b81b0a",
+        "type": "drop_down",
+        "options": {
+          "56435a9a-a819-41ff-bc02-a87ee9a47802": "未阻塞",
+          "11ce9664-7c1c-41cc-b7b1-4ad0ae52fb22": "已阻塞"
+        }
+      }
+    },
+    "taskSandbox": {
+      "自动化纳管": { "id": "368e6e92-8193-492c-9e82-d293e5d236e0", "type": "checkbox" },
+      "操作请求": {
+        "id": "bbe64f2a-3000-4340-bd4c-50896b7005e6",
+        "type": "drop_down",
+        "options": {
+          "b15be5f1-bf0e-4730-b298-b7d15a23aa4c": "测试通过",
+          "b34ef6f4-d950-4035-b3d2-df8f30785deb": "测试不通过",
+          "b9fb22b6-a527-4238-a1af-b38ea2ce78b5": "确认发布",
+          "462bbf97-7208-4ee8-8e85-5ae9e2ab6a9f": "撤回发布",
+          "ff490c6e-b0b1-4516-9081-5748ef016755": "取消",
+          "bf753b72-d2ee-4503-b873-1dff9e401ca5": "纳入自动化"
+        }
+      },
+      "操作请求ID": { "id": "dd8df01e-cd53-41c4-add3-e6e810fbeec6", "type": "short_text" },
+      "执行摘要": { "id": "ee42cba2-e092-45bd-b0d0-7fc22c12db85", "type": "text" },
+      "证据链接": { "id": "f023b922-e209-4f8b-a5cc-6c1f1f21d543", "type": "text" },
+      "目标版本": { "id": "33c5b241-6147-4a95-9232-c7530b637aa9", "type": "short_text" }
+    },
+    "versionSandbox": {
+      "操作请求": {
+        "id": "beacbfd2-5dff-49e6-9919-fef1a490d0f9",
+        "type": "drop_down",
+        "options": {
+          "f58cf036-136e-4180-93e5-ab910aa50b80": "确认发布",
+          "36ea2d6b-d4f4-4fa9-a4c5-e9c94146aaa3": "撤回发布",
+          "4a12f24b-8ed0-460e-93f6-7bc351c9f6a4": "重新发布",
+          "4db00f10-12fa-41a8-a3a9-b23cfd37f040": "取消"
+        }
+      },
+      "操作请求ID": { "id": "dd8df01e-cd53-41c4-add3-e6e810fbeec6", "type": "short_text" },
+      "Release Commit": { "id": "5ccd4a44-4ddb-41ac-a8b1-d6b23fe39e0c", "type": "short_text" },
+      "Manifest摘要": { "id": "f08aa1ba-c752-41fb-9354-2db0692574b7", "type": "text" },
+      "发布尝试ID": { "id": "98aa62be-3fc1-4c3d-9478-f460a3beb9b7", "type": "short_text" },
+      "发布阻塞": {
+        "id": "e8b9befa-0e03-443a-bd57-635b94b81b0a",
+        "type": "drop_down",
+        "options": {
+          "56435a9a-a819-41ff-bc02-a87ee9a47802": "未阻塞",
+          "11ce9664-7c1c-41cc-b7b1-4ad0ae52fb22": "已阻塞"
+        }
+      }
     }
   }
 }

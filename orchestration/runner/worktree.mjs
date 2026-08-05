@@ -30,15 +30,23 @@ export function createTaskWorktree({
     worktreesRoot ?? path.join(repoPath, ".worktrees"),
     `task-${taskId}`,
   );
-  const result = git(repoPath, ["worktree", "add", "-b", branch, worktreePath, baseRef]);
-  if (result.status !== 0) {
+  const existingBranch = git(repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+  const existingWorktree = git(repoPath, ["worktree", "list", "--porcelain"]);
+  if (existingWorktree.stdout.includes(`worktree ${worktreePath}`)) {
+    return { worktreePath, branch, reused: true };
+  }
+  const result = existingBranch.status === 0
+    ? ["worktree", "add", worktreePath, branch]
+    : ["worktree", "add", "-b", branch, worktreePath, baseRef];
+  const finalResult = git(repoPath, result);
+  if (finalResult.status !== 0) {
     throw new DomainError(
       "WORKTREE_CREATE_FAILED",
-      `Failed to create worktree for ${taskId}: ${result.stderr}`,
+      `Failed to create worktree for ${taskId}: ${finalResult.stderr}`,
       { taskId },
     );
   }
-  return { worktreePath, branch };
+  return { worktreePath, branch, reused: existingBranch.status === 0 };
 }
 
 export function runInWorktree(worktreePath, args) {

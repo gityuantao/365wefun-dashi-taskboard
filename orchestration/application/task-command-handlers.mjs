@@ -17,6 +17,13 @@ export const TASK_COMMAND_HANDLERS = {
   development_completed(state) {
     return decideTaskTransition({ from: state, to: "ready_for_test" });
   },
+  development_failed(state, parameters) {
+    return decideTaskTransition({
+      from: state,
+      to: "ready_for_development",
+      evidenceId: evidence(parameters),
+    });
+  },
   start_test(state) {
     return decideTaskTransition({ from: state, to: "testing" });
   },

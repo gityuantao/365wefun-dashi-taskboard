@@ -11,18 +11,63 @@ import {
 import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
 import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-store.mjs";
 import { enqueueJob } from "../../orchestration/persistence/d1-runner-jobs.mjs";
+import { loadCommandResult } from "../../orchestration/persistence/d1-event-store.mjs";
 
 const SUPPORTED_OPERATION_REQUESTS = new Set(["测试通过", "测试不通过"]);
 
 function jobTypeForState(status) {
   if (status === "inbox") return "analyze";
+  if (status === "analyzing") return "analyze";
   if (status === "ready_for_development") return "develop";
+  if (status === "developing") return "develop";
   if (status === "ready_for_acceptance") return "accept";
+  if (status === "accepting") return "accept";
   return null;
 }
 
 function addMinutes(iso, minutes) {
   return new Date(new Date(iso).getTime() + minutes * 60_000).toISOString();
+}
+
+async function ensureStateJob(env, snapshot, now) {
+  const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  const jobType = jobTypeForState(aggregate.state ?? snapshot.status);
+  if (!jobType) return;
+  const jobId = `${snapshot.id}-${jobType}-${aggregate.version}`;
+  const existing = await env.DB
+    .prepare("SELECT status, completed_at FROM runner_jobs WHERE id = ?")
+    .bind(jobId)
+    .first();
+  if (existing && (existing.status === "queued" || existing.status === "claimed")) return;
+  const retryWindowMinutes = Number(env.CLICKUP_JOB_RETRY_MINUTES ?? 5);
+  if (
+    existing?.status === "failed"
+    && existing.completed_at
+    && existing.completed_at > addMinutes(now, -retryWindowMinutes)
+  ) {
+    return;
+  }
+  if (existing) {
+    await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind(jobId).run();
+  }
+  await enqueueJob(env.DB, {
+    jobId,
+    commandId: `auto-${jobType}-${snapshot.id}`,
+    jobType,
+    payload: {
+      taskId: snapshot.id,
+      repoPath: env.CLICKUP_REPO_PATH,
+      worktreesRoot: env.CLICKUP_WORKTREES_ROOT,
+      baseRef: env.CLICKUP_BASE_REF ?? "main",
+      versionBranch: snapshot.targetVersion
+        ? `version/${snapshot.targetVersion}`
+        : undefined,
+      acceptanceCriteria: [],
+    },
+    payloadHash: snapshot.fieldsHash,
+    expiresAt: addMinutes(now, 15),
+    createdAt: now,
+  });
 }
 
 export async function pollClickUpOnce(env, {
@@ -43,14 +88,15 @@ export async function pollClickUpOnce(env, {
     const snapshot = normalizeTask(payload, config, taskListKey);
     const confirmed = await loadLastConfirmed(env.DB, "task", snapshot.id);
     const changes = compareSnapshots(confirmed, snapshot);
-    if (changes.length === 0) continue;
-    processed += 1;
-    if (snapshot.managed && changes.some((change) => change.field === "operationRequest")) {
-      const command = await buildOperationCommand(env, snapshot, now);
-      if (command) {
-        commands.push(await runCommand(env, command, now));
+    if (changes.length === 0) {
+      if (snapshot.managed) {
+        await handleOperationRequest(env, snapshot, now, commands);
+        await ensureStateJob(env, snapshot, now);
       }
+      continue;
     }
+    processed += 1;
+    await handleOperationRequest(env, snapshot, now, commands);
     if (snapshot.managed) {
       let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
       if (snapshot.status === "inbox" && aggregate.version === 0) {
@@ -68,27 +114,7 @@ export async function pollClickUpOnce(env, {
         commands.push(started);
         aggregate = await loadAggregate(env.DB, "task", snapshot.id);
       }
-      const jobType = jobTypeForState(snapshot.status);
-      if (jobType && !(snapshot.status === "inbox" && aggregate.version === 0)) {
-        await enqueueJob(env.DB, {
-          jobId: `${snapshot.id}-${jobType}-${aggregate.version}`,
-          commandId: `auto-${jobType}-${snapshot.id}`,
-          jobType,
-          payload: {
-            taskId: snapshot.id,
-            repoPath: env.CLICKUP_REPO_PATH,
-            worktreesRoot: env.CLICKUP_WORKTREES_ROOT,
-            baseRef: env.CLICKUP_BASE_REF ?? "main",
-            versionBranch: snapshot.targetVersion
-              ? `version/${snapshot.targetVersion}`
-              : undefined,
-            acceptanceCriteria: [],
-          },
-          payloadHash: snapshot.fieldsHash,
-          expiresAt: addMinutes(now, 15),
-          createdAt: now,
-        });
-      }
+      await ensureStateJob(env, snapshot, now);
     }
     await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });
   }
@@ -105,14 +131,50 @@ export async function pollClickUpOnce(env, {
   return { processed, commands };
 }
 
-async function buildOperationCommand(env, snapshot, now) {
+async function handleOperationRequest(env, snapshot, now, commands) {
+  if (!snapshot.managed || !SUPPORTED_OPERATION_REQUESTS.has(snapshot.operationRequest)) {
+    return;
+  }
+  let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  if (["测试通过", "测试不通过"].includes(snapshot.operationRequest)) {
+    if (aggregate.state === "ready_for_test") {
+      const startTestId = `poller-start-test-${snapshot.id}-${aggregate.version + 1}`;
+      if (!(await loadCommandResult(env.DB, startTestId))) {
+        const startTest = parseCommandEnvelope({
+          id: startTestId,
+          type: "start_test",
+          aggregateType: "task",
+          aggregateId: snapshot.id,
+          expectedVersion: aggregate.version + 1,
+          actorId: "system-poller",
+          issuedAt: now,
+          reason: "test started by operation request",
+          parameters: {},
+        });
+        commands.push(await runCommand(env, startTest, now));
+      }
+      aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+    }
+    if (aggregate.state !== "testing") return;
+  }
+  const operationCommand = await buildOperationCommand(
+    env,
+    snapshot,
+    now,
+    aggregate.version + 1,
+  );
+  if (operationCommand && !(await loadCommandResult(env.DB, operationCommand.id))) {
+    commands.push(await runCommand(env, operationCommand, now));
+  }
+}
+
+async function buildOperationCommand(env, snapshot, now, expectedVersion) {
   if (!SUPPORTED_OPERATION_REQUESTS.has(snapshot.operationRequest)) return null;
-  const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   const common = {
-    id: `poller-${snapshot.id}-${aggregate.version + 1}`,
+    id: `poller-${snapshot.id}-${expectedVersion}`,
     aggregateType: "task",
     aggregateId: snapshot.id,
-    expectedVersion: aggregate.version + 1,
+    expectedVersion,
     actorId: "system-poller",
     issuedAt: now,
     reason: `operation request: ${snapshot.operationRequest}`,

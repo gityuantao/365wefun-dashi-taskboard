@@ -65,6 +65,9 @@ export function loadClickUpConfig(value) {
       assertConfigObject(field, `Config fields.${listKind}.${name} must be an object`);
       assertNonEmptyString(field.id, `fields.${listKind}.${name}.id`);
       assertNonEmptyString(field.type, `fields.${listKind}.${name}.type`);
+      if (field.options !== undefined) {
+        assertConfigObject(field.options, `Config fields.${listKind}.${name}.options must be an object`);
+      }
     }
   }
 
@@ -112,7 +115,7 @@ export function resolveVersionStatus(config, clickupStatus) {
   return canonical;
 }
 
-export function fieldId(config, listKind, name) {
+export function fieldConfig(config, listKind, name) {
   const field = config.fields[listKind]?.[name];
   if (field === undefined) {
     throw new DomainError(
@@ -121,5 +124,9 @@ export function fieldId(config, listKind, name) {
       { listKind, field: name },
     );
   }
-  return field.id;
+  return field;
+}
+
+export function fieldId(config, listKind, name) {
+  return fieldConfig(config, listKind, name).id;
 }
