@@ -13,6 +13,10 @@ import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-stor
 import { enqueueJob } from "../../orchestration/persistence/d1-runner-jobs.mjs";
 import { loadCommandResult } from "../../orchestration/persistence/d1-event-store.mjs";
 import { enqueueMutation } from "../../orchestration/clickup/outbox.mjs";
+import {
+  checkTaskVersionGate,
+  resolveCurrentDevVersionName,
+} from "../../orchestration/application/version-gate.mjs";
 
 const SUPPORTED_OPERATION_REQUESTS = new Set(["测试通过", "测试不通过"]);
 
@@ -30,36 +34,53 @@ function addMinutes(iso, minutes) {
   return new Date(new Date(iso).getTime() + minutes * 60_000).toISOString();
 }
 
-async function ensureStateJob(env, snapshot, now) {
+async function ensureStateJob(env, snapshot, now, currentDevVersion) {
   const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   const jobType = jobTypeForState(aggregate.state ?? snapshot.status);
   if (!jobType) return;
-  const active = await env.DB
-    .prepare(
-      "SELECT id FROM runner_jobs WHERE command_id = ? AND status IN ('queued', 'claimed')",
-    )
-    .bind(`auto-${jobType}-${snapshot.id}`)
-    .first();
-  if (active) return;
   const jobId = `${snapshot.id}-${jobType}-${aggregate.version}`;
   const existing = await env.DB
     .prepare("SELECT status, completed_at, result FROM runner_jobs WHERE id = ?")
     .bind(jobId)
     .first();
-  if (existing && (existing.status === "queued" || existing.status === "claimed")) return;
-  if (existing?.status === "failed" && existing.result?.includes("needs_human")) {
+
+  // 版本门禁：非当前开发版本的任务不派发任何作业。
+  // 无版本任务放行，让分析阶段先分配版本。
+  const gate = checkTaskVersionGate({
+    targetVersion: snapshot.targetVersion,
+    currentDevVersion,
+  });
+  if (gate.blocked) {
+    // 保留 waiting_version 失败记录，解禁后由下方逻辑立即重新入队
     return;
   }
-  const retryWindowMinutes = Number(env.CLICKUP_JOB_RETRY_MINUTES ?? 5);
-  if (
-    existing?.status === "failed"
-    && existing.completed_at
-    && existing.completed_at > addMinutes(now, -retryWindowMinutes)
-  ) {
-    return;
-  }
-  if (existing) {
+
+  if (existing?.status === "failed" && existing.result?.includes("waiting_version")) {
+    // 版本已轮到当前：删除旧的等待作业，立即重新入队
     await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind(jobId).run();
+  } else {
+    const active = await env.DB
+      .prepare(
+        "SELECT id FROM runner_jobs WHERE command_id = ? AND status IN ('queued', 'claimed')",
+      )
+      .bind(`auto-${jobType}-${snapshot.id}`)
+      .first();
+    if (active) return;
+    if (existing && (existing.status === "queued" || existing.status === "claimed")) return;
+    if (existing?.status === "failed" && existing.result?.includes("needs_human")) {
+      return;
+    }
+    const retryWindowMinutes = Number(env.CLICKUP_JOB_RETRY_MINUTES ?? 5);
+    if (
+      existing?.status === "failed"
+      && existing.completed_at
+      && existing.completed_at > addMinutes(now, -retryWindowMinutes)
+    ) {
+      return;
+    }
+    if (existing) {
+      await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind(jobId).run();
+    }
   }
   await enqueueJob(env.DB, {
     jobId,
@@ -94,14 +115,31 @@ export async function pollClickUpOnce(env, {
   const commands = [];
   let processed = 0;
 
+  const versions = await client.getVersionsByList(config.lists[versionListKey].id);
+  const currentDevVersion = resolveCurrentDevVersionName(versions);
+
   const tasks = await client.getTasksByList(config.lists[taskListKey].id);
   for (const payload of tasks) {
     const snapshot = normalizeTask(payload, config, taskListKey);
     const confirmed = await loadLastConfirmed(env.DB, "task", snapshot.id);
     const changes = compareSnapshots(confirmed, snapshot);
+
+    // 版本门禁：非当前开发版本的任务不做任何操作（分析/开发/测试/验收均不允许）
+    const gate = checkTaskVersionGate({
+      targetVersion: snapshot.targetVersion,
+      currentDevVersion,
+    });
+    if (gate.blocked) {
+      if (changes.length > 0) {
+        processed += 1;
+        await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });
+      }
+      continue;
+    }
+
     if (changes.length === 0) {
       await handleOperationRequest(env, snapshot, now, commands, config);
-      await ensureStateJob(env, snapshot, now);
+      await ensureStateJob(env, snapshot, now, currentDevVersion);
       continue;
     }
     processed += 1;
@@ -130,11 +168,10 @@ export async function pollClickUpOnce(env, {
       commands.push(started);
       aggregate = await loadAggregate(env.DB, "task", snapshot.id);
     }
-    await ensureStateJob(env, snapshot, now);
+    await ensureStateJob(env, snapshot, now, currentDevVersion);
     await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });
   }
 
-  const versions = await client.getVersionsByList(config.lists[versionListKey].id);
   for (const payload of versions) {
     const snapshot = normalizeVersion(payload, config, versionListKey);
     const confirmed = await loadLastConfirmed(env.DB, "version", snapshot.id);

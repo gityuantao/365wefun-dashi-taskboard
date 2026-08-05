@@ -63,8 +63,14 @@ const CONFIG = {
       操作请求ID: { id: "field-request-id", type: "short_text" },
       目标版本: { id: "field-version", type: "short_text" },
     },
-    version: {},
-    versionSandbox: {},
+    version: {
+      操作请求: { id: "field-ver-request", type: "drop_down" },
+      发布阻塞: { id: "field-ver-block", type: "drop_down" },
+    },
+    versionSandbox: {
+      操作请求: { id: "field-ver-request", type: "drop_down" },
+      发布阻塞: { id: "field-ver-block", type: "drop_down" },
+    },
   },
 };
 
@@ -96,7 +102,9 @@ async function makeEnv(harness, taskProvider) {
     CLICKUP_WORKTREES_ROOT: "/tmp/repo-e2e/.wt",
     clientFactory: async () => ({
       getTasksByList: async () => [taskProvider()],
-      getVersionsByList: async () => [],
+      getVersionsByList: async () => [
+        { id: "version-e2e-1", name: "version-e2e-1", status: { status: "进行中" } },
+      ],
       getTask: async () => taskProvider(),
       postComment: async () => ({}),
       updateCustomField: async () => ({}),

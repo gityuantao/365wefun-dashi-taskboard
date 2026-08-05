@@ -64,7 +64,7 @@ const CONFIG = {
   },
 };
 
-function sandboxTask({ id = "task-1", status = "测试中", managed = true, request = "测试通过", requestId = "ev-test-1" } = {}) {
+function sandboxTask({ id = "task-1", status = "测试中", managed = true, request = "测试通过", requestId = "ev-test-1", version = null } = {}) {
   return {
     id,
     name: "Sample",
@@ -74,13 +74,13 @@ function sandboxTask({ id = "task-1", status = "测试中", managed = true, requ
       { id: "field-managed", name: "自动化纳管", value: managed },
       { id: "field-request", name: "操作请求", value: request },
       { id: "field-request-id", name: "操作请求ID", value: requestId },
-      { id: "field-version", name: "目标版本", value: null },
+      { id: "field-version", name: "目标版本", value: version },
     ],
     updated_at: NOW,
   };
 }
 
-async function makeEnv(harness, tasks) {
+async function makeEnv(harness, tasks, versions = []) {
   return {
     DB: harness.db,
     CLICKUP_API_TOKEN: "pk-test",
@@ -88,7 +88,7 @@ async function makeEnv(harness, tasks) {
     CLICKUP_LIST_SET: "sandbox",
     clientFactory: async () => ({
       getTasksByList: async () => tasks,
-      getVersionsByList: async () => [],
+      getVersionsByList: async () => versions,
     }),
   };
 }
@@ -211,4 +211,37 @@ test("config registry validates the poller configuration", () => {
   const config = loadClickUpConfig(CONFIG);
   assert.equal(config.lists.taskSandbox.id, "901616314492");
   assert.equal(config.fields.taskSandbox["自动化纳管"].id, "field-managed");
+});
+
+test("poller ignores tasks whose version is not the current dev version", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "收件箱", request: null, version: "1.0.2" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+    { id: "v2", name: "1.0.2", status: { status: "进行中" } },
+  ]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(result.commands.length, 0);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.version, 0);
+  const job = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE command_id LIKE 'auto-analyze-%'")
+    .first();
+  assert.equal(job, null);
+});
+
+test("poller processes tasks of the current dev version", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "收件箱", request: null, version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+    { id: "v2", name: "1.0.2", status: { status: "进行中" } },
+  ]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(result.commands.length, 1);
+  assert.equal(result.commands[0].type, "start_analysis");
 });

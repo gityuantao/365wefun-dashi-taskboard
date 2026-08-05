@@ -29,6 +29,11 @@ import { handleConfirmRelease } from "../orchestration/application/release-comma
 import { createWebAdapter } from "../orchestration/release/adapters/web.mjs";
 import { checkDevelopmentOrder } from "../orchestration/application/development-order.mjs";
 import { assignTaskVersion } from "../orchestration/application/version-assignment.mjs";
+import {
+  checkTaskVersionGate,
+  resolveCurrentDevVersionName,
+  targetVersionOfTask,
+} from "../orchestration/application/version-gate.mjs";
 import { runCodex } from "../orchestration/runner/codex-runner.mjs";
 import {
   createTaskWorktree,
@@ -164,9 +169,10 @@ const versionListKey = (runtime.listSet ?? "sandbox") === "production" ? "versio
 
 const handlers = {
   analyze: async (job) => {
-    await assignTaskVersion({
+    const client = await clientFactory({ token });
+    const assignment = await assignTaskVersion({
       taskId: job.payload.taskId,
-      client: await clientFactory({ token }),
+      client,
       config,
       taskListKey,
       versionListKey,
@@ -174,10 +180,22 @@ const handlers = {
       now: new Date().toISOString(),
       log,
     });
+    if (assignment.error) {
+      return { status: "failed", error: `version assignment failed: ${assignment.error}` };
+    }
+    const versions = await client.getVersionsByList(config.lists[versionListKey].id);
+    const currentDevVersion = resolveCurrentDevVersionName(versions);
+    const gate = checkTaskVersionGate({
+      targetVersion: assignment.versionName,
+      currentDevVersion,
+    });
+    if (gate.blocked) {
+      return { status: "failed", error: `waiting_version: ${gate.reason}` };
+    }
     return executeAnalysis({
       job,
       db,
-      client: await clientFactory({ token }),
+      client,
       codex,
       now: new Date().toISOString(),
       fieldIds: {
@@ -186,20 +204,29 @@ const handlers = {
     });
   },
   develop: async (job) => {
+    const client = await clientFactory({ token });
     const gate = await checkDevelopmentOrder({
       db,
       taskId: job.payload.taskId,
-      client: await clientFactory({ token }),
+      client,
       listId: config.lists[taskListKey].id,
       now: new Date().toISOString(),
     });
     if (gate.blocked) {
       return { status: "failed", error: `waiting: ${gate.reason}` };
     }
+    const task = await client.getTask(job.payload.taskId);
+    const targetVersion = targetVersionOfTask(task, config, taskListKey);
+    const versions = await client.getVersionsByList(config.lists[versionListKey].id);
+    const currentDevVersion = resolveCurrentDevVersionName(versions);
+    const versionGate = checkTaskVersionGate({ targetVersion, currentDevVersion });
+    if (versionGate.blocked) {
+      return { status: "failed", error: `waiting_version: ${versionGate.reason}` };
+    }
     return executeDevelopment({
       job,
       db,
-      client: await clientFactory({ token }),
+      client,
       codex,
       gitOps,
       now: new Date().toISOString(),
@@ -208,13 +235,24 @@ const handlers = {
       },
     });
   },
-  accept: async (job) => executeAcceptance({
-    job,
-    db,
-    client: await clientFactory({ token }),
-    codex,
-    now: new Date().toISOString(),
-  }),
+  accept: async (job) => {
+    const client = await clientFactory({ token });
+    const task = await client.getTask(job.payload.taskId);
+    const targetVersion = targetVersionOfTask(task, config, taskListKey);
+    const versions = await client.getVersionsByList(config.lists[versionListKey].id);
+    const currentDevVersion = resolveCurrentDevVersionName(versions);
+    const gate = checkTaskVersionGate({ targetVersion, currentDevVersion });
+    if (gate.blocked) {
+      return { status: "failed", error: `waiting_version: ${gate.reason}` };
+    }
+    return executeAcceptance({
+      job,
+      db,
+      client,
+      codex,
+      now: new Date().toISOString(),
+    });
+  },
 };
 
 async function recoverOrphanedLeases() {
