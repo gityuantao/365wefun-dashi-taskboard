@@ -2,6 +2,7 @@ import { dispatchCommand } from "../application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { buildDevelopmentPrompt } from "./prompts.mjs";
+import { stateChangeText } from "../clickup/state-comments.mjs";
 
 function extractJson(stdout) {
   const start = stdout.indexOf("{");
@@ -15,7 +16,7 @@ function concise(text, max = 60) {
   return clean.length > max ? clean.slice(0, max) : clean;
 }
 
-async function rollbackDevelopment({ db, taskId, jobId, now }) {
+async function rollbackDevelopment({ db, client, taskId, jobId, now }) {
   try {
     const current = await loadAggregate(db, "task", taskId);
     if (current.state !== "developing") return;
@@ -34,6 +35,14 @@ async function rollbackDevelopment({ db, taskId, jobId, now }) {
       }),
       now,
     });
+    const comment = stateChangeText("task", "developing", "ready_for_development");
+    if (comment) {
+      try {
+        await client.postComment(taskId, comment);
+      } catch {
+        // 评论失败不影响回退
+      }
+    }
   } catch {
     // 回退失败不掩盖原始错误
   }
@@ -74,6 +83,14 @@ export async function executeDevelopment({
         }),
         now,
       });
+      const comment = stateChangeText("task", "ready_for_development", "developing");
+      if (comment) {
+        try {
+          await client.postComment(taskId, comment);
+        } catch {
+          // 评论失败不影响开发
+        }
+      }
     }
     const run = await codex.run({
       prompt: buildDevelopmentPrompt(task, acceptanceCriteria),
@@ -81,18 +98,18 @@ export async function executeDevelopment({
       taskId,
     });
     if (run.exitCode !== 0) {
-      await rollbackDevelopment({ db, taskId, jobId: job.id, now });
+      await rollbackDevelopment({ db, client, taskId, jobId: job.id, now });
       return { status: "failed", error: `codex exited ${run.exitCode}: ${run.stderr}` };
     }
     let parsed;
     try {
       parsed = JSON.parse(extractJson(run.stdout));
     } catch {
-      await rollbackDevelopment({ db, taskId, jobId: job.id, now });
+      await rollbackDevelopment({ db, client, taskId, jobId: job.id, now });
       return { status: "failed", error: "invalid JSON output" };
     }
     if (typeof parsed.change_summary !== "string" || parsed.change_summary === "") {
-      await rollbackDevelopment({ db, taskId, jobId: job.id, now });
+      await rollbackDevelopment({ db, client, taskId, jobId: job.id, now });
       return { status: "failed", error: "missing change_summary" };
     }
     await gitOps.commitAll(worktree.worktreePath, `Task ${taskId}: ${parsed.change_summary}`);

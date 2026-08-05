@@ -2,6 +2,7 @@ import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { loadManifest } from "../release/version-aggregator.mjs";
 import { dispatchCommand } from "./dispatch-command.mjs";
+import { stateChangeText } from "../clickup/state-comments.mjs";
 
 export async function handleConfirmRelease({
   db,
@@ -10,6 +11,7 @@ export async function handleConfirmRelease({
   actorRoles = [],
   now,
   adapter,
+  client,
 }) {
   if (!actorRoles.some((role) => ["release_manager", "admin"].includes(role))) {
     return { status: "rejected", error: "UNAUTHORIZED: release_manager role required" };
@@ -35,6 +37,14 @@ export async function handleConfirmRelease({
     }),
     now,
   });
+  const startComment = stateChangeText("version", version.state, "releasing");
+  if (startComment && client) {
+    try {
+      await client.postComment(versionId, startComment);
+    } catch {
+      // 评论失败不影响发布
+    }
+  }
 
   try {
     const result = await adapter.release({ manifest });
@@ -72,6 +82,14 @@ export async function handleConfirmRelease({
         now,
       });
     }
+    const okComment = stateChangeText("version", "releasing", "published");
+    if (okComment && client) {
+      try {
+        await client.postComment(versionId, okComment);
+      } catch {
+        // 评论失败不影响发布结果
+      }
+    }
     return { status: "succeeded", result };
   } catch (error) {
     const failed = await loadAggregate(db, "version", versionId);
@@ -90,6 +108,14 @@ export async function handleConfirmRelease({
       }),
       now,
     });
+    const failComment = stateChangeText("version", "releasing", "release_failed", error.message);
+    if (failComment && client) {
+      try {
+        await client.postComment(versionId, failComment);
+      } catch {
+        // 评论失败不影响发布结果
+      }
+    }
     return { status: "failed", error: error.message };
   }
 }

@@ -2,6 +2,7 @@ import { dispatchCommand } from "../application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { buildAcceptancePrompt } from "./prompts.mjs";
+import { stateChangeText } from "../clickup/state-comments.mjs";
 
 function extractJson(stdout) {
   const start = stdout.indexOf("{");
@@ -43,6 +44,14 @@ export async function executeAcceptance({
         }),
         now,
       });
+      const comment = stateChangeText("task", "ready_for_acceptance", "accepting");
+      if (comment) {
+        try {
+          await client.postComment(taskId, comment);
+        } catch {
+          // 评论失败不影响验收
+        }
+      }
       aggregate = await loadAggregate(db, "task", taskId);
     }
     const run = await codex.run({
@@ -83,6 +92,14 @@ export async function executeAcceptance({
         parameters: { targetVersion },
       });
       const result = await dispatchCommand({ db, command, now });
+      const comment = stateChangeText("task", "accepting", "ready_for_release");
+      if (comment) {
+        try {
+          await client.postComment(taskId, comment);
+        } catch {
+          // 评论失败不影响验收结果
+        }
+      }
       return {
         status: "completed",
         commandId: result.commandId,

@@ -17,6 +17,7 @@ import {
   checkTaskVersionGate,
   resolveCurrentDevVersionName,
 } from "../../orchestration/application/version-gate.mjs";
+import { stateChangeText } from "../../orchestration/clickup/state-comments.mjs";
 
 function jobTypeForState(status) {
   if (status === "inbox") return "analyze";
@@ -283,6 +284,15 @@ async function runCommand(env, command, now, config) {
     const event = result.events?.[0];
     if (result.status === "succeeded" && event?.data?.to && config) {
       const clickupStatus = clickupStatusName(config, command.aggregateType, event.data.to);
+      const comment = stateChangeText(command.aggregateType, event.data.from, event.data.to);
+      if (comment) {
+        try {
+          await env.clientFactory({ token: env.CLICKUP_API_TOKEN })
+            .then((client) => client.postComment(command.aggregateId, comment));
+        } catch {
+          // 评论失败不影响状态推进
+        }
+      }
       if (clickupStatus) {
         await enqueueMutation(env.DB, {
           mutationId: `outbox-${command.id}`,

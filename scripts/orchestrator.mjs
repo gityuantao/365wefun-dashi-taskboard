@@ -341,6 +341,7 @@ async function releaseCoordinator(now) {
       actorRoles: ["release_manager"],
       now,
       adapter,
+      client,
     });
     log(`version ${versionId} release -> ${result.status}${result.error ? `: ${result.error}` : ""}`);
   }
