@@ -26,11 +26,14 @@ for (const row of aggregates.results) {
 }
 
 const jobs = await db
-  .prepare("SELECT id, job_type, status, completed_at FROM runner_jobs ORDER BY created_at DESC LIMIT 8")
+  .prepare("SELECT id, job_type, status, completed_at, result FROM runner_jobs ORDER BY created_at DESC LIMIT 3")
   .all();
 console.log("== jobs (recent) ==");
 for (const row of jobs.results) {
   console.log(`${row.id} ${row.job_type} ${row.status}${row.completed_at ? ` @ ${row.completed_at}` : ""}`);
+  if (row.result) {
+    console.log(`  result: ${row.result.slice(0, 800)}`);
+  }
 }
 
 const snapshots = await db

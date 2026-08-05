@@ -12,6 +12,7 @@ import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
 import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-store.mjs";
 import { enqueueJob } from "../../orchestration/persistence/d1-runner-jobs.mjs";
 import { loadCommandResult } from "../../orchestration/persistence/d1-event-store.mjs";
+import { enqueueMutation } from "../../orchestration/clickup/outbox.mjs";
 
 const SUPPORTED_OPERATION_REQUESTS = new Set(["测试通过", "测试不通过"]);
 
@@ -90,13 +91,13 @@ export async function pollClickUpOnce(env, {
     const changes = compareSnapshots(confirmed, snapshot);
     if (changes.length === 0) {
       if (snapshot.managed) {
-        await handleOperationRequest(env, snapshot, now, commands);
+        await handleOperationRequest(env, snapshot, now, commands, config);
         await ensureStateJob(env, snapshot, now);
       }
       continue;
     }
     processed += 1;
-    await handleOperationRequest(env, snapshot, now, commands);
+    await handleOperationRequest(env, snapshot, now, commands, config);
     if (snapshot.managed) {
       let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
       if (snapshot.status === "inbox" && aggregate.version === 0) {
@@ -110,7 +111,7 @@ export async function pollClickUpOnce(env, {
           issuedAt: now,
           reason: "task admitted to automation",
           parameters: {},
-        }), now);
+        }), now, config);
         commands.push(started);
         aggregate = await loadAggregate(env.DB, "task", snapshot.id);
       }
@@ -131,7 +132,7 @@ export async function pollClickUpOnce(env, {
   return { processed, commands };
 }
 
-async function handleOperationRequest(env, snapshot, now, commands) {
+async function handleOperationRequest(env, snapshot, now, commands, config) {
   if (!snapshot.managed || !SUPPORTED_OPERATION_REQUESTS.has(snapshot.operationRequest)) {
     return;
   }
@@ -151,7 +152,7 @@ async function handleOperationRequest(env, snapshot, now, commands) {
           reason: "test started by operation request",
           parameters: {},
         });
-        commands.push(await runCommand(env, startTest, now));
+        commands.push(await runCommand(env, startTest, now, config));
       }
       aggregate = await loadAggregate(env.DB, "task", snapshot.id);
     }
@@ -164,7 +165,7 @@ async function handleOperationRequest(env, snapshot, now, commands) {
     aggregate.version + 1,
   );
   if (operationCommand && !(await loadCommandResult(env.DB, operationCommand.id))) {
-    commands.push(await runCommand(env, operationCommand, now));
+    commands.push(await runCommand(env, operationCommand, now, config));
   }
 }
 
@@ -194,15 +195,38 @@ async function buildOperationCommand(env, snapshot, now, expectedVersion) {
   return null;
 }
 
-async function runCommand(env, command, now) {
+function clickupStatusName(config, aggregateType, canonical) {
+  const map = aggregateType === "version" ? config.versionStatusMap : config.taskStatusMap;
+  return Object.entries(map).find(([, value]) => value === canonical)?.[0] ?? null;
+}
+
+async function runCommand(env, command, now, config) {
   try {
     const result = await dispatchCommand({ db: env.DB, command, now });
-    return {
+    const outcome = {
       id: command.id,
       type: command.type,
       status: result.status,
       aggregateId: command.aggregateId,
     };
+    const event = result.events?.[0];
+    if (result.status === "succeeded" && event?.data?.to && config) {
+      const clickupStatus = clickupStatusName(config, command.aggregateType, event.data.to);
+      if (clickupStatus) {
+        await enqueueMutation(env.DB, {
+          mutationId: `outbox-${command.id}`,
+          objectType: command.aggregateType,
+          objectId: command.aggregateId,
+          field: "status",
+          expectedBefore: event.data.from ?? null,
+          target: clickupStatus,
+          actor: "system-poller",
+          expiresAt: addMinutes(now, 10),
+          createdAt: now,
+        });
+      }
+    }
+    return outcome;
   } catch (error) {
     return {
       id: command.id,

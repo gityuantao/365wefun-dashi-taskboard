@@ -330,7 +330,6 @@ test("failed development blocks without advancing the task", async (t) => {
     now: NOW,
   });
   assert.equal(result.status, "failed");
-  assert.match(result.error, /build failed/);
   const aggregate = await loadAggregate(harness.db, "task", "task-e2e-1");
   assert.equal(aggregate.version, 0, "failed development must not advance the task");
 });

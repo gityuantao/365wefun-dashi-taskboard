@@ -10,6 +10,30 @@ function extractJson(stdout) {
   return stdout.slice(start, end + 1);
 }
 
+async function rollbackDevelopment({ db, taskId, jobId, now }) {
+  try {
+    const current = await loadAggregate(db, "task", taskId);
+    if (current.state !== "developing") return;
+    await dispatchCommand({
+      db,
+      command: parseCommandEnvelope({
+        id: `development-failed-${jobId}`,
+        type: "development_failed",
+        aggregateType: "task",
+        aggregateId: taskId,
+        expectedVersion: current.version + 1,
+        actorId: "runner-developer",
+        issuedAt: now,
+        reason: "development failed",
+        parameters: { evidenceId: `development-${jobId}` },
+      }),
+      now,
+    });
+  } catch {
+    // 回退失败不掩盖原始错误
+  }
+}
+
 export async function executeDevelopment({
   job,
   db,
@@ -28,23 +52,6 @@ export async function executeDevelopment({
       baseRef,
       worktreesRoot,
     });
-    const run = await codex.run({
-      prompt: buildDevelopmentPrompt(task, acceptanceCriteria),
-      workdir: worktree.worktreePath,
-      taskId,
-    });
-    if (run.exitCode !== 0) {
-      return { status: "failed", error: `codex exited ${run.exitCode}: ${run.stderr}` };
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(extractJson(run.stdout));
-    } catch {
-      return { status: "failed", error: "invalid JSON output" };
-    }
-    if (typeof parsed.change_summary !== "string" || parsed.change_summary === "") {
-      return { status: "failed", error: "missing change_summary" };
-    }
     const startAggregate = await loadAggregate(db, "task", taskId);
     if (startAggregate.state !== "developing") {
       await dispatchCommand({
@@ -62,6 +69,26 @@ export async function executeDevelopment({
         }),
         now,
       });
+    }
+    const run = await codex.run({
+      prompt: buildDevelopmentPrompt(task, acceptanceCriteria),
+      workdir: worktree.worktreePath,
+      taskId,
+    });
+    if (run.exitCode !== 0) {
+      await rollbackDevelopment({ db, taskId, jobId: job.id, now });
+      return { status: "failed", error: `codex exited ${run.exitCode}: ${run.stderr}` };
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(extractJson(run.stdout));
+    } catch {
+      await rollbackDevelopment({ db, taskId, jobId: job.id, now });
+      return { status: "failed", error: "invalid JSON output" };
+    }
+    if (typeof parsed.change_summary !== "string" || parsed.change_summary === "") {
+      await rollbackDevelopment({ db, taskId, jobId: job.id, now });
+      return { status: "failed", error: "missing change_summary" };
     }
     await gitOps.commitAll(worktree.worktreePath, `Task ${taskId}: ${parsed.change_summary}`);
     const pr = await gitOps.createPullRequest({
@@ -102,28 +129,7 @@ export async function executeDevelopment({
       changeSummary: parsed.change_summary,
     };
   } catch (error) {
-    try {
-      const current = await loadAggregate(db, "task", taskId);
-      if (current.state === "developing") {
-        await dispatchCommand({
-          db,
-          command: parseCommandEnvelope({
-            id: `development-failed-${job.id}`,
-            type: "development_failed",
-            aggregateType: "task",
-            aggregateId: taskId,
-            expectedVersion: current.version + 1,
-            actorId: "runner-developer",
-            issuedAt: now,
-            reason: "development failed",
-            parameters: { evidenceId: `development-${job.id}` },
-          }),
-          now,
-        });
-      }
-    } catch {
-      // 回退失败不掩盖原始错误
-    }
+    await rollbackDevelopment({ db, taskId, jobId: job.id, now });
     return { status: "failed", error: error.message };
   }
 }

@@ -16,6 +16,7 @@ import { executeAcceptance } from "../orchestration/ai/acceptance.mjs";
 import { executeAnalysis } from "../orchestration/ai/analyzer.mjs";
 import { executeDevelopment } from "../orchestration/ai/developer.mjs";
 import { normalizeVersion, saveSnapshot } from "../orchestration/clickup/snapshot.mjs";
+import { enqueueMutation } from "../orchestration/clickup/outbox.mjs";
 import { createDomainEvent } from "../orchestration/domain/events.mjs";
 import { parseCommandEnvelope } from "../orchestration/domain/commands.mjs";
 import { appendCommandResult } from "../orchestration/persistence/d1-event-store.mjs";
@@ -274,6 +275,41 @@ async function releaseCoordinator(now) {
   }
 }
 
+function addMinutes(iso, minutes) {
+  return new Date(new Date(iso).getTime() + minutes * 60_000).toISOString();
+}
+
+async function syncStatuses(now) {
+  const aggregates = await db
+    .prepare(
+      "SELECT aggregate_type, aggregate_id, aggregate_version, state FROM orchestration_aggregates",
+    )
+    .all();
+  for (const row of aggregates.results) {
+    const map = row.aggregate_type === "version" ? config.versionStatusMap : config.taskStatusMap;
+    const clickupStatus = Object.entries(map).find(([, value]) => value === row.state)?.[0];
+    if (!clickupStatus) continue;
+    const mutationId = `sync-${row.aggregate_type}-${row.aggregate_id}-${row.aggregate_version}`;
+    const existing = await db
+      .prepare("SELECT status FROM outbox_mutations WHERE id = ?")
+      .bind(mutationId)
+      .first();
+    if (existing) continue;
+    await enqueueMutation(db, {
+      mutationId,
+      objectType: row.aggregate_type,
+      objectId: row.aggregate_id,
+      field: "status",
+      expectedBefore: null,
+      target: clickupStatus,
+      actor: "system-sync",
+      expiresAt: addMinutes(now, 10),
+      createdAt: now,
+    });
+    log(`sync ${row.aggregate_type} ${row.aggregate_id} -> ${clickupStatus}`);
+  }
+}
+
 async function tick() {
   const now = new Date().toISOString();
   try {
@@ -287,6 +323,11 @@ async function tick() {
       }
     } catch (error) {
       log(`poller error: ${error.message}`);
+    }
+    try {
+      await syncStatuses(now);
+    } catch (error) {
+      log(`status sync error: ${error.message}`);
     }
     try {
       await flushOutbox(db, await clientFactory({ token }), { now, config });
@@ -303,30 +344,7 @@ async function tick() {
       }
       if (!job) continue;
       log(`claimed ${jobType} job ${job.id}`);
-      const handler = handlers[job.jobType];
-      let result;
-      try {
-        result = await handler(job);
-      } catch (error) {
-        result = { status: "failed", error: error.message };
-      }
-      const finalStatus = result.status === "completed" ? "completed" : "failed";
-      try {
-        await completeJob(db, {
-          jobId: job.id,
-          deviceId: runtime.deviceId,
-          fencingToken: job.fencingToken,
-          status: finalStatus,
-          result,
-          now,
-        });
-      } catch (error) {
-        log(`complete ${jobType} job ${job.id} error: ${error.message}`);
-      }
-      log(`${jobType} job ${job.id} -> ${finalStatus}`);
-      if (finalStatus === "failed") {
-        log(`  error: ${JSON.stringify(result.error ?? result)}`);
-      }
+      void runJob(job, now);
     }
     try {
       await releaseCoordinator(now);
@@ -335,6 +353,40 @@ async function tick() {
     }
   } catch (error) {
     log(`tick error: ${error.message}`);
+  }
+}
+
+async function runJob(job, now) {
+  const handler = handlers[job.jobType];
+  let result;
+  try {
+    result = await handler(job);
+  } catch (error) {
+    result = { status: "failed", error: error.message };
+  }
+  const finalStatus = result.status === "completed" ? "completed" : "failed";
+  try {
+    await completeJob(db, {
+      jobId: job.id,
+      deviceId: runtime.deviceId,
+      fencingToken: job.fencingToken,
+      status: finalStatus,
+      result,
+      now,
+    });
+  } catch (error) {
+    log(`complete ${job.jobType} job ${job.id} error: ${error.message}`);
+  }
+  log(`${job.jobType} job ${job.id} -> ${finalStatus}`);
+  if (finalStatus === "failed") {
+    log(`  error: ${JSON.stringify(result.error ?? result)}`);
+  }
+  try {
+    const syncNow = new Date().toISOString();
+    await syncStatuses(syncNow);
+    await flushOutbox(db, await clientFactory({ token }), { now: syncNow, config });
+  } catch (error) {
+    log(`post-job sync error: ${error.message}`);
   }
 }
 
