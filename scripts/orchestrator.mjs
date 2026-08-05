@@ -30,6 +30,7 @@ import {
   loadManifest,
 } from "../orchestration/release/version-aggregator.mjs";
 import { handleConfirmRelease } from "../orchestration/application/release-commands.mjs";
+import { correctionText } from "../orchestration/clickup/state-comments.mjs";
 import { createWebAdapter } from "../orchestration/release/adapters/web.mjs";
 import { checkDevelopmentOrder } from "../orchestration/application/development-order.mjs";
 import { assignTaskVersion } from "../orchestration/application/version-assignment.mjs";
@@ -366,6 +367,16 @@ async function syncStatuses(now) {
     // 避免幂等跳过导致用户手动改的状态（如版本提前拖到发布中）不被纠正。
     const snapshot = await loadLastConfirmed(db, row.aggregate_type, row.aggregate_id);
     if (snapshot && snapshot.status === row.state) continue;
+    // 系统纠正手动漂移的状态时，评论区说明原因
+    const correction = correctionText(row.aggregate_type, row.state, snapshot?.status ?? null);
+    if (correction) {
+      try {
+        const client = await clientFactory({ token });
+        await client.postComment(row.aggregate_id, correction);
+      } catch {
+        // 评论失败不影响状态纠正
+      }
+    }
     const mutationId = `sync-${row.aggregate_type}-${row.aggregate_id}-${row.aggregate_version}-${now}`;
     const existing = await db
       .prepare("SELECT status FROM outbox_mutations WHERE id = ?")
