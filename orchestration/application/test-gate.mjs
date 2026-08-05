@@ -17,7 +17,25 @@ export async function handleTestDecision({
   if (!actorRoles.some((role) => TESTER_ROLES.has(role))) {
     return { status: "rejected", error: "UNAUTHORIZED: tester role required" };
   }
-  const aggregate = await loadAggregate(db, "task", taskId);
+  let aggregate = await loadAggregate(db, "task", taskId);
+  if (aggregate.state === "ready_for_test") {
+    await dispatchCommand({
+      db,
+      command: parseCommandEnvelope({
+        id: `test-start-${taskId}-${aggregate.version + 1}`,
+        type: "start_test",
+        aggregateType: "task",
+        aggregateId: taskId,
+        expectedVersion: aggregate.version + 1,
+        actorId,
+        issuedAt: now,
+        reason: "test started",
+        parameters: {},
+      }),
+      now,
+    });
+    aggregate = await loadAggregate(db, "task", taskId);
+  }
   const command = parseCommandEnvelope({
     id: commandId ?? `test-${taskId}-${aggregate.version + 1}`,
     type: decision === "pass" ? "test_passed" : "test_failed",

@@ -69,7 +69,7 @@ export async function pollClickUpOnce(env, {
         aggregate = await loadAggregate(env.DB, "task", snapshot.id);
       }
       const jobType = jobTypeForState(snapshot.status);
-      if (jobType && aggregate.version > 0) {
+      if (jobType && !(snapshot.status === "inbox" && aggregate.version === 0)) {
         await enqueueJob(env.DB, {
           jobId: `${snapshot.id}-${jobType}-${aggregate.version}`,
           commandId: `auto-${jobType}-${snapshot.id}`,

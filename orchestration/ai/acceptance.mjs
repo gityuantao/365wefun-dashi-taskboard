@@ -42,7 +42,25 @@ export async function executeAcceptance({
       (field) => field.name === "目标版本" || field.id === "field-version",
     )?.value ?? null;
 
-    const aggregate = await loadAggregate(db, "task", taskId);
+    let aggregate = await loadAggregate(db, "task", taskId);
+    if (aggregate.state === "ready_for_acceptance") {
+      await dispatchCommand({
+        db,
+        command: parseCommandEnvelope({
+          id: `acceptance-start-${job.id}`,
+          type: "start_acceptance",
+          aggregateType: "task",
+          aggregateId: taskId,
+          expectedVersion: aggregate.version + 1,
+          actorId: "runner-acceptor",
+          issuedAt: now,
+          reason: "acceptance started",
+          parameters: {},
+        }),
+        now,
+      });
+      aggregate = await loadAggregate(db, "task", taskId);
+    }
     if (parsed.acceptance_result === "accepted") {
       if (!targetVersion) {
         return { status: "failed", error: "task has no target version" };
