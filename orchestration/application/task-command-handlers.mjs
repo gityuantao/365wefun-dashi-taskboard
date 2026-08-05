@@ -43,4 +43,7 @@ export const TASK_COMMAND_HANDLERS = {
       evidenceId: evidence(parameters),
     });
   },
+  publish_task(state) {
+    return decideTaskTransition({ from: state, to: "published" });
+  },
 };
