@@ -34,6 +34,13 @@ async function ensureStateJob(env, snapshot, now) {
   const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   const jobType = jobTypeForState(aggregate.state ?? snapshot.status);
   if (!jobType) return;
+  const active = await env.DB
+    .prepare(
+      "SELECT id FROM runner_jobs WHERE command_id = ? AND status IN ('queued', 'claimed')",
+    )
+    .bind(`auto-${jobType}-${snapshot.id}`)
+    .first();
+  if (active) return;
   const jobId = `${snapshot.id}-${jobType}-${aggregate.version}`;
   const existing = await env.DB
     .prepare("SELECT status, completed_at FROM runner_jobs WHERE id = ?")
