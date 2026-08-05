@@ -69,6 +69,11 @@ test("normalizeTask rejects unknown statuses and handles missing fields", () => 
   assert.equal(snapshot.targetVersion, null);
 });
 
+test("normalizeTask treats ClickUp built-in to do as inbox", () => {
+  const snapshot = normalizeTask(taskPayload({ status: { status: "to do" } }), CONFIG);
+  assert.equal(snapshot.status, "inbox");
+});
+
 test("normalizeVersion maps the version list statuses", () => {
   const snapshot = normalizeVersion({
     id: "version-1",

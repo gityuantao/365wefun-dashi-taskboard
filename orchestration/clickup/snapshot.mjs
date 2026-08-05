@@ -63,7 +63,8 @@ export function normalizeTask(payload, config, listKind = "task") {
   if (!payload || typeof payload.id !== "string" || payload.id === "") {
     throw new DomainError("INVALID_PAYLOAD", "Task payload must include a non-empty id");
   }
-  const status = resolveTaskStatus(config, payload.status?.status);
+  const clickupStatus = payload.status?.status === "to do" ? "收件箱" : payload.status?.status;
+  const status = resolveTaskStatus(config, clickupStatus);
   const custom = customFieldMap(payload);
   const requestField = custom.get(fieldId(config, listKind, "操作请求"));
   const operationRequest = toNullableString(dropdownName(
