@@ -1,0 +1,2 @@
+CREATE TABLE task_rework (task_id TEXT PRIMARY KEY, round INTEGER NOT NULL CHECK (round >= 0), updated_at TEXT NOT NULL);
+CREATE TABLE blockers (id TEXT PRIMARY KEY, object_type TEXT NOT NULL CHECK (object_type IN ('task', 'version')), object_id TEXT NOT NULL, type TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('open', 'resolved')), created_at TEXT NOT NULL, resolved_at TEXT);
