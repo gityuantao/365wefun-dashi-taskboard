@@ -111,17 +111,18 @@ async function dispatchTask(harness, id, type, version, parameters = {}) {
   });
 }
 
-test("poller saves snapshots and skips unmanaged tasks", async (t) => {
+test("poller processes tasks without requiring a managed flag", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const env = await makeEnv(harness, [
-    sandboxTask({ managed: false, request: null }),
+    sandboxTask({ status: "收件箱", managed: false, request: null }),
   ]);
   const result = await pollClickUpOnce(env, { now: NOW });
   assert.equal(result.processed, 1);
-  assert.equal(result.commands.length, 0);
+  assert.equal(result.commands.length, 1);
+  assert.equal(result.commands[0].type, "start_analysis");
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.version, 0);
+  assert.equal(aggregate.version, 1);
 });
 
 test("poller turns a managed test-pass request into a command", async (t) => {

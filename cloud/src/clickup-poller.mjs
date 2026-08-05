@@ -97,33 +97,29 @@ export async function pollClickUpOnce(env, {
     const confirmed = await loadLastConfirmed(env.DB, "task", snapshot.id);
     const changes = compareSnapshots(confirmed, snapshot);
     if (changes.length === 0) {
-      if (snapshot.managed) {
-        await handleOperationRequest(env, snapshot, now, commands, config);
-        await ensureStateJob(env, snapshot, now);
-      }
+      await handleOperationRequest(env, snapshot, now, commands, config);
+      await ensureStateJob(env, snapshot, now);
       continue;
     }
     processed += 1;
     await handleOperationRequest(env, snapshot, now, commands, config);
-    if (snapshot.managed) {
-      let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
-      if (snapshot.status === "inbox" && aggregate.version === 0) {
-        const started = await runCommand(env, parseCommandEnvelope({
-          id: `poller-start-analysis-${snapshot.id}`,
-          type: "start_analysis",
-          aggregateType: "task",
-          aggregateId: snapshot.id,
-          expectedVersion: 1,
-          actorId: "system-poller",
-          issuedAt: now,
-          reason: "task admitted to automation",
-          parameters: {},
-        }), now, config);
-        commands.push(started);
-        aggregate = await loadAggregate(env.DB, "task", snapshot.id);
-      }
-      await ensureStateJob(env, snapshot, now);
+    let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+    if (snapshot.status === "inbox" && aggregate.version === 0) {
+      const started = await runCommand(env, parseCommandEnvelope({
+        id: `poller-start-analysis-${snapshot.id}`,
+        type: "start_analysis",
+        aggregateType: "task",
+        aggregateId: snapshot.id,
+        expectedVersion: 1,
+        actorId: "system-poller",
+        issuedAt: now,
+        reason: "task admitted to automation",
+        parameters: {},
+      }), now, config);
+      commands.push(started);
+      aggregate = await loadAggregate(env.DB, "task", snapshot.id);
     }
+    await ensureStateJob(env, snapshot, now);
     await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });
   }
 
@@ -140,7 +136,7 @@ export async function pollClickUpOnce(env, {
 }
 
 async function handleOperationRequest(env, snapshot, now, commands, config) {
-  if (!snapshot.managed || !SUPPORTED_OPERATION_REQUESTS.has(snapshot.operationRequest)) {
+  if (!SUPPORTED_OPERATION_REQUESTS.has(snapshot.operationRequest)) {
     return;
   }
   let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
