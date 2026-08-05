@@ -21,6 +21,7 @@ const CONFIG = {
   taskStatusMap: {
     收件箱: "inbox",
     分析中: "analyzing",
+    待补充信息: "waiting_info",
     待开发: "ready_for_development",
     开发中: "developing",
     待测试: "ready_for_test",
@@ -244,4 +245,46 @@ test("poller processes tasks of the current dev version", async (t) => {
   const result = await pollClickUpOnce(env, { now: NOW });
   assert.equal(result.commands.length, 1);
   assert.equal(result.commands[0].type, "start_analysis");
+});
+
+test("poller leaves tasks in waiting_info alone", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await dispatchTask(harness, "seed-waiting", "start_analysis", 1);
+  await dispatchTask(harness, "seed-waiting-2", "analysis_needs_human", 2);
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待补充信息", request: null, version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(result.commands.length, 0);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  const job = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE command_id LIKE 'auto-analyze-%'")
+    .first();
+  assert.equal(job, null);
+});
+
+test("poller resumes analysis when the user changes status back", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await dispatchTask(harness, "seed-waiting-3", "start_analysis", 1);
+  await dispatchTask(harness, "seed-waiting-4", "analysis_needs_human", 2);
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "分析中", request: null, version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(result.commands.length, 1);
+  assert.equal(result.commands[0].type, "analysis_restarted");
+  assert.equal(result.commands[0].status, "succeeded");
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "analyzing");
+  const job = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE job_type = 'analyze' AND status = 'queued'")
+    .first();
+  assert.ok(job, "expected a queued analyze job after resume");
 });

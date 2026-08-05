@@ -15,6 +15,27 @@ function concise(text, max = 60) {
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
 }
 
+async function markNeedsHuman({ db, taskId, jobId, now, reason }) {
+  const aggregate = await loadAggregate(db, "task", taskId);
+  if (aggregate.state !== "analyzing") return;
+  const command = parseCommandEnvelope({
+    id: `analysis-needs-human-${jobId}`,
+    type: "analysis_needs_human",
+    aggregateType: "task",
+    aggregateId: taskId,
+    expectedVersion: aggregate.version + 1,
+    actorId: "runner-analyzer",
+    issuedAt: now,
+    reason,
+    parameters: {},
+  });
+  try {
+    await dispatchCommand({ db, command, now });
+  } catch (error) {
+    // 状态推进失败不掩盖 needs_human 结论；下一次恢复流程仍可处理
+  }
+}
+
 export async function executeAnalysis({
   job,
   db,
@@ -47,12 +68,14 @@ export async function executeAnalysis({
     return { status: "failed", error: "missing scope or acceptance_criteria" };
   }
   if (Array.isArray(parsed.open_questions) && parsed.open_questions.length > 0) {
+    await markNeedsHuman({ db, taskId: task.id, jobId: job.id, now, reason: "analysis needs human input" });
     try {
       await client.postComment(
         task.id,
         [
           "需要补充信息才能继续分析，请回复：",
           ...parsed.open_questions.map((question, index) => `${index + 1}. ${concise(question.question, 80)}`),
+          "回复后请把任务状态改回「分析中」，我会自动重新分析。",
         ].join("\n"),
       );
     } catch {
@@ -68,6 +91,15 @@ export async function executeAnalysis({
     (field) => field.name === "目标版本" || field.id === "field-version",
   )?.value ?? null;
   if (!targetVersion) {
+    await markNeedsHuman({ db, taskId: task.id, jobId: job.id, now, reason: "task must be linked to a target version" });
+    try {
+      await client.postComment(
+        task.id,
+        "请补充目标版本信息（或留空由我自动分配），然后把任务状态改回「分析中」，我会自动重新分析。",
+      );
+    } catch {
+      // 评论失败不掩盖 needs_human 结论
+    }
     return {
       status: "failed",
       error: "needs_human: task must be linked to a target version before analysis can complete",

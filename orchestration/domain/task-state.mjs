@@ -3,6 +3,7 @@ import { DomainError } from "./errors.mjs";
 export const TASK_STATES = [
   "inbox",
   "analyzing",
+  "waiting_info",
   "ready_for_development",
   "developing",
   "ready_for_test",
@@ -19,6 +20,8 @@ const TERMINAL_STATES = new Set(["published", "canceled"]);
 const TASK_TRANSITIONS = new Map([
   ["inbox:analyzing", { to: "analyzing", eventType: "task.analysis_started" }],
   ["analyzing:ready_for_development", { to: "ready_for_development", eventType: "task.analysis_completed" }],
+  ["analyzing:waiting_info", { to: "waiting_info", eventType: "task.analysis_needs_human" }],
+  ["waiting_info:analyzing", { to: "analyzing", eventType: "task.analysis_restarted" }],
   ["ready_for_development:developing", { to: "developing", eventType: "task.development_started" }],
   ["developing:ready_for_test", { to: "ready_for_test", eventType: "task.development_completed" }],
   [

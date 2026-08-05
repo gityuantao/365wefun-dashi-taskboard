@@ -30,6 +30,31 @@ function jobTypeForState(status) {
   return null;
 }
 
+async function resumeAnalysisAfterInfo(env, snapshot, now, commands, config) {
+  // 清除 needs_human 失败记录，恢复分析后允许重新入队
+  await env.DB
+    .prepare(
+      "DELETE FROM runner_jobs WHERE command_id = ? AND status = 'failed' AND result LIKE '%needs_human%'",
+    )
+    .bind(`auto-analyze-${snapshot.id}`)
+    .run();
+  const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  const commandId = `poller-resume-analysis-${snapshot.id}-${aggregate.version + 1}`;
+  if (await loadCommandResult(env.DB, commandId)) return;
+  const command = parseCommandEnvelope({
+    id: commandId,
+    type: "analysis_restarted",
+    aggregateType: "task",
+    aggregateId: snapshot.id,
+    expectedVersion: aggregate.version + 1,
+    actorId: "system-poller",
+    issuedAt: now,
+    reason: "task status changed back from waiting_info",
+    parameters: {},
+  });
+  commands.push(await runCommand(env, command, now, config));
+}
+
 function addMinutes(iso, minutes) {
   return new Date(new Date(iso).getTime() + minutes * 60_000).toISOString();
 }
@@ -143,6 +168,12 @@ export async function pollClickUpOnce(env, {
       continue;
     }
     processed += 1;
+    let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+    // 等待补充信息的任务：用户回复并把状态改回「分析中」后，自动恢复分析
+    if (aggregate.state === "waiting_info" && snapshot.status !== "waiting_info") {
+      await resumeAnalysisAfterInfo(env, snapshot, now, commands, config);
+      aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+    }
     if (changes.some((change) => change.field === "updatedAt")) {
       await env.DB
         .prepare(
@@ -152,7 +183,6 @@ export async function pollClickUpOnce(env, {
         .run();
     }
     await handleOperationRequest(env, snapshot, now, commands, config);
-    let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
     if (snapshot.status === "inbox" && aggregate.version === 0) {
       const started = await runCommand(env, parseCommandEnvelope({
         id: `poller-start-analysis-${snapshot.id}`,

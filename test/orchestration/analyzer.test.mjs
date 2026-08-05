@@ -77,7 +77,7 @@ test("analysis blocks when the task has no target version", async (t) => {
   assert.equal(result.status, "failed");
   assert.match(result.error, /target version/i);
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.state, "analyzing");
+  assert.equal(aggregate.state, "waiting_info");
 });
 
 test("analysis completes and advances the task to ready for development", async (t) => {
@@ -119,7 +119,8 @@ test("analysis with open questions blocks without advancing", async (t) => {
   assert.equal(result.status, "failed");
   assert.match(result.error, /needs_human/);
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.state, "analyzing");
+  assert.equal(aggregate.state, "waiting_info");
+  assert.equal(aggregate.version, 2);
 });
 
 test("analysis rejects invalid structured output", async (t) => {

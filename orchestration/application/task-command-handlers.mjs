@@ -11,6 +11,12 @@ export const TASK_COMMAND_HANDLERS = {
   analysis_completed(state) {
     return decideTaskTransition({ from: state, to: "ready_for_development" });
   },
+  analysis_needs_human(state) {
+    return decideTaskTransition({ from: state, to: "waiting_info" });
+  },
+  analysis_restarted(state) {
+    return decideTaskTransition({ from: state, to: "analyzing" });
+  },
   start_development(state) {
     return decideTaskTransition({ from: state, to: "developing" });
   },

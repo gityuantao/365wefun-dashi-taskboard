@@ -10,6 +10,7 @@
   "taskStatusMap": {
     "收件箱": "inbox",
     "分析中": "analyzing",
+    "待补充信息": "waiting_info",
     "待开发": "ready_for_development",
     "开发中": "developing",
     "待测试": "ready_for_test",

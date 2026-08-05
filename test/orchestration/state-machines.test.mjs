@@ -13,6 +13,7 @@ test("task states and version states export stable lists", () => {
   assert.deepEqual(TASK_STATES, [
     "inbox",
     "analyzing",
+    "waiting_info",
     "ready_for_development",
     "developing",
     "ready_for_test",
@@ -32,6 +33,17 @@ test("task states and version states export stable lists", () => {
     "published",
     "canceled",
   ]);
+});
+
+test("analysis needing human input parks the task and can resume", () => {
+  assert.equal(
+    decideTaskTransition({ from: "analyzing", to: "waiting_info" }).eventType,
+    "task.analysis_needs_human",
+  );
+  assert.equal(
+    decideTaskTransition({ from: "waiting_info", to: "analyzing" }).eventType,
+    "task.analysis_restarted",
+  );
 });
 
 test("task happy path is exact", () => {
