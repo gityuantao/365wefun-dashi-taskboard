@@ -33,7 +33,7 @@
   "fields": {
     "task": {
       "执行摘要": { "id": "ee42cba2-e092-45bd-b0d0-7fc22c12db85", "type": "text" },
-      "证据链接": { "id": "f023b922-e209-4f8b-a5cc-6c1f1f21d543", "type": "text" },
+      "证据链接": { "id": "f023b922-e209-4f8b-a5cc-6c1f1f21d543", "type": "text" }
     },
     "version": {
       "Release Commit": { "id": "5ccd4a44-4ddb-41ac-a8b1-d6b23fe39e0c", "type": "short_text" },
