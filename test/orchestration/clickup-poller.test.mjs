@@ -185,10 +185,12 @@ test("poller records invalid commands without throwing", async (t) => {
   ]);
   const result = await pollClickUpOnce(env, { now: NOW });
   assert.equal(result.processed, 1);
-  assert.equal(result.commands.length, 1);
-  assert.match(result.commands[0].error ?? "", /INVALID_TRANSITION/);
+  assert.equal(result.commands.length, 2);
+  assert.equal(result.commands[0].type, "start_analysis");
+  assert.equal(result.commands[0].status, "succeeded");
+  assert.match(result.commands[1].error ?? "", /INVALID_TRANSITION/);
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.version, 0);
+  assert.equal(aggregate.version, 1);
 });
 
 test("poller ignores operation requests that are not yet supported", async (t) => {

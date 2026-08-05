@@ -10,8 +10,20 @@ import {
 } from "../../orchestration/clickup/snapshot.mjs";
 import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
 import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-store.mjs";
+import { enqueueJob } from "../../orchestration/persistence/d1-runner-jobs.mjs";
 
 const SUPPORTED_OPERATION_REQUESTS = new Set(["测试通过", "测试不通过"]);
+
+function jobTypeForState(status) {
+  if (status === "inbox") return "analyze";
+  if (status === "ready_for_development") return "develop";
+  if (status === "ready_for_acceptance") return "accept";
+  return null;
+}
+
+function addMinutes(iso, minutes) {
+  return new Date(new Date(iso).getTime() + minutes * 60_000).toISOString();
+}
 
 export async function pollClickUpOnce(env, {
   now,
@@ -37,6 +49,45 @@ export async function pollClickUpOnce(env, {
       const command = await buildOperationCommand(env, snapshot, now);
       if (command) {
         commands.push(await runCommand(env, command, now));
+      }
+    }
+    if (snapshot.managed) {
+      let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+      if (snapshot.status === "inbox" && aggregate.version === 0) {
+        const started = await runCommand(env, parseCommandEnvelope({
+          id: `poller-start-analysis-${snapshot.id}`,
+          type: "start_analysis",
+          aggregateType: "task",
+          aggregateId: snapshot.id,
+          expectedVersion: 1,
+          actorId: "system-poller",
+          issuedAt: now,
+          reason: "task admitted to automation",
+          parameters: {},
+        }), now);
+        commands.push(started);
+        aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+      }
+      const jobType = jobTypeForState(snapshot.status);
+      if (jobType && aggregate.version > 0) {
+        await enqueueJob(env.DB, {
+          jobId: `${snapshot.id}-${jobType}-${aggregate.version}`,
+          commandId: `auto-${jobType}-${snapshot.id}`,
+          jobType,
+          payload: {
+            taskId: snapshot.id,
+            repoPath: env.CLICKUP_REPO_PATH,
+            worktreesRoot: env.CLICKUP_WORKTREES_ROOT,
+            baseRef: env.CLICKUP_BASE_REF ?? "main",
+            versionBranch: snapshot.targetVersion
+              ? `version/${snapshot.targetVersion}`
+              : undefined,
+            acceptanceCriteria: [],
+          },
+          payloadHash: snapshot.fieldsHash,
+          expiresAt: addMinutes(now, 15),
+          createdAt: now,
+        });
       }
     }
     await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });
