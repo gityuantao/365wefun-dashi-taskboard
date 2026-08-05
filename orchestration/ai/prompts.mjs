@@ -21,3 +21,16 @@ export function buildDevelopmentPrompt(task, acceptanceCriteria = []) {
     "约束：只修改当前 Worktree，不推进状态、不读取凭据、不部署生产。",
   ].join("\n");
 }
+
+export function buildAcceptancePrompt(task, acceptanceCriteria = [], commitSha) {
+  return [
+    "你是验收器。按验收标准独立核验交付结果，输出严格 JSON，不要输出其他文字。只读核验，不得修改代码或自行修复。",
+    `任务名称：${task.name ?? ""}`,
+    `目标 Commit：${commitSha ?? "未指定"}`,
+    "验收标准：",
+    ...acceptanceCriteria.map((criterion) => `- ${criterion.id}: ${criterion.criterion}（验证：${criterion.verification ?? "未指定"}）`),
+    "输出格式：",
+    '{ "acceptance_result": "accepted|rejected", "criteria_results": [ { "id": "ac-1", "result": "passed|failed" } ], "findings": [ { "severity": "high", "description": "问题" } ] }',
+    "约束：证据缺失不能视为通过；不推进状态。",
+  ].join("\n");
+}
