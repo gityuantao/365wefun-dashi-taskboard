@@ -1,0 +1,1 @@
+CREATE TABLE clickup_snapshots (object_type TEXT NOT NULL CHECK (object_type IN ('task', 'version')), object_id TEXT NOT NULL, list_id TEXT, status TEXT NOT NULL, snapshot TEXT NOT NULL CHECK (json_valid(snapshot)), fields_hash TEXT NOT NULL, read_at TEXT NOT NULL, PRIMARY KEY (object_type, object_id));
