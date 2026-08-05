@@ -34,14 +34,10 @@
     "task": {
       "执行摘要": { "id": "ee42cba2-e092-45bd-b0d0-7fc22c12db85", "type": "text" },
       "证据链接": { "id": "f023b922-e209-4f8b-a5cc-6c1f1f21d543", "type": "text" },
-      "来源任务": { "id": "ae941c7e-dfd7-4823-8c2e-7d4ac602e310", "type": "short_text" },
-      "来源版本": { "id": "5c48a62d-d52a-40bd-a768-80ff604de637", "type": "short_text" },
-      "灰度候选": { "id": "47e90233-758f-4c6e-93f1-0c6d9691587d", "type": "checkbox" }
     },
     "version": {
       "Release Commit": { "id": "5ccd4a44-4ddb-41ac-a8b1-d6b23fe39e0c", "type": "short_text" },
       "Manifest摘要": { "id": "f08aa1ba-c752-41fb-9354-2db0692574b7", "type": "text" },
-      "发布尝试ID": { "id": "98aa62be-3fc1-4c3d-9478-f460a3beb9b7", "type": "short_text" },
       "平台状态摘要": { "id": "f6a6a4cc-057f-4d5a-bfc3-287b8d6cf8fc", "type": "text" },
       "发布阻塞": {
         "id": "e8b9befa-0e03-443a-bd57-635b94b81b0a",
@@ -60,7 +56,6 @@
     "versionSandbox": {
       "Release Commit": { "id": "5ccd4a44-4ddb-41ac-a8b1-d6b23fe39e0c", "type": "short_text" },
       "Manifest摘要": { "id": "f08aa1ba-c752-41fb-9354-2db0692574b7", "type": "text" },
-      "发布尝试ID": { "id": "98aa62be-3fc1-4c3d-9478-f460a3beb9b7", "type": "short_text" },
       "发布阻塞": {
         "id": "e8b9befa-0e03-443a-bd57-635b94b81b0a",
         "type": "drop_down",
