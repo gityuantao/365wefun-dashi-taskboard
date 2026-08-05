@@ -10,6 +10,11 @@ function extractJson(stdout) {
   return stdout.slice(start, end + 1);
 }
 
+function concise(text, max = 60) {
+  const clean = String(text ?? "").replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
 async function rollbackDevelopment({ db, taskId, jobId, now }) {
   try {
     const current = await loadAggregate(db, "task", taskId);
@@ -105,7 +110,7 @@ export async function executeDevelopment({
 
     await client.postComment(
       taskId,
-      `开发完成：${parsed.change_summary}\nPR: ${pr.url ?? pr}`,
+      `✅ 开发完成，PR：${pr.url ?? pr}`,
     );
     await client.updateCustomField(taskId, fieldIds.evidence, pr.url ?? String(pr));
 

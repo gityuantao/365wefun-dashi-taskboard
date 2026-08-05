@@ -10,6 +10,11 @@ function extractJson(stdout) {
   return stdout.slice(start, end + 1);
 }
 
+function concise(text, max = 60) {
+  const clean = String(text ?? "").replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
 export async function executeAcceptance({
   job,
   db,
@@ -84,14 +89,12 @@ export async function executeAcceptance({
       };
     }
 
+    const findings = parsed.findings ?? [];
+    const first = findings[0] ? concise(findings[0].description, 80) : "";
+    const summary = findings.length > 1 ? `（共 ${findings.length} 条，详见下方）` : "";
     await client.postComment(
       taskId,
-      [
-        "验收不通过：",
-        ...(parsed.findings ?? []).map(
-          (finding) => `- [${finding.severity}] ${finding.description}`,
-        ),
-      ].join("\n"),
+      `❌ 验收不通过：${first}${summary}，已退回待开发。`,
     );
     const command = parseCommandEnvelope({
       id: `acceptance-${job.id}`,

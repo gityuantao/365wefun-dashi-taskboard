@@ -10,6 +10,11 @@ function extractJson(stdout) {
   return stdout.slice(start, end + 1);
 }
 
+function concise(text, max = 60) {
+  const clean = String(text ?? "").replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
 export async function executeAnalysis({
   job,
   db,
@@ -46,8 +51,8 @@ export async function executeAnalysis({
       await client.postComment(
         task.id,
         [
-          "分析需要人工澄清，请补充以下信息（补充后系统会自动重新分析）：",
-          ...parsed.open_questions.map((question, index) => `${index + 1}. ${question.question}`),
+          "需要补充信息才能继续分析，请回复：",
+          ...parsed.open_questions.map((question, index) => `${index + 1}. ${concise(question.question, 80)}`),
         ].join("\n"),
       );
     } catch {
@@ -71,10 +76,7 @@ export async function executeAnalysis({
 
   await client.postComment(
     task.id,
-    [
-      `分析完成：${parsed.scope}`,
-      ...parsed.acceptance_criteria.map((criterion) => `- ${criterion.id}: ${criterion.criterion}（验证：${criterion.verification ?? "未指定"}）`),
-    ].join("\n"),
+    `✅ 分析完成：${concise(parsed.scope)}（验收标准 ${parsed.acceptance_criteria.length} 条）`,
   );
   await client.updateCustomField(
     task.id,
