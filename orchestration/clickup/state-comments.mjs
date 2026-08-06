@@ -57,6 +57,13 @@ export function stateChangeText(type, from, to, detail = "") {
 export function correctionText(type, to, from = null) {
   const names = type === "version" ? VERSION_NAMES : TASK_NAMES;
   const toName = names[to] ?? to;
+  if (
+    type === "version"
+    && from === "releasing"
+    && (to === "published" || to === "release_failed")
+  ) {
+    return null;
+  }
   if (type === "version" && to === "active") {
     return `版本任务未全部就绪，状态回到「${toName}」。全部任务就绪后请改为「发布中」触发发布。`;
   }

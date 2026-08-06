@@ -426,6 +426,11 @@ async function tick() {
       log(`poller error: ${error.message}`);
     }
     try {
+      await releaseCoordinator(now);
+    } catch (error) {
+      log(`release coordinator error: ${error.message}`);
+    }
+    try {
       await syncStatuses(now);
     } catch (error) {
       log(`status sync error: ${error.message}`);
@@ -446,11 +451,6 @@ async function tick() {
       if (!job) continue;
       log(`claimed ${jobType} job ${job.id}`);
       void runJob(job, now);
-    }
-    try {
-      await releaseCoordinator(now);
-    } catch (error) {
-      log(`release coordinator error: ${error.message}`);
     }
   } catch (error) {
     log(`tick error: ${error.message}`);
