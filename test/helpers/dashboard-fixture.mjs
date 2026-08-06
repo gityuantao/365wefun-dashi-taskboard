@@ -148,7 +148,7 @@ export async function seedDashboardFixture(db) {
     `).bind(DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO orchestration_events (id, sequence, aggregate_type, aggregate_id, aggregate_version, type, command_id, actor_id, occurred_at, data, previous_hash, hash)
-      VALUES ('evt-3', 3, 'version', 'version-1', 2, 'version.release_prepared', 'cmd-seed-3', 'system-aggregator', ?, '{}', 'h-e2', 'h-e3')
+      VALUES ('evt-3', 3, 'version', 'version-1', 2, 'version.release_started', 'cmd-seed-3', 'system-aggregator', ?, '{}', 'h-e2', 'h-e3')
     `).bind(DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO runner_jobs (id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at)

@@ -18,7 +18,6 @@ const ACTIVITY_LABELS = {
   "task.published": "已发布",
   "task.canceled": "已取消",
   "version.activated": "进入进行中",
-  "version.release_prepared": "待发布",
   "version.release_started": "发布中",
   "version.published": "已发布",
   "version.release_failed": "发布失败",

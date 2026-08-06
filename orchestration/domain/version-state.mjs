@@ -3,7 +3,6 @@ import { DomainError } from "./errors.mjs";
 export const VERSION_STATES = [
   "planning",
   "active",
-  "ready_for_release",
   "releasing",
   "release_failed",
   "published",
@@ -14,8 +13,7 @@ const TERMINAL_STATES = new Set(["published", "canceled"]);
 
 const VERSION_TRANSITIONS = new Map([
   ["planning:active", { to: "active", eventType: "version.activated" }],
-  ["active:ready_for_release", { to: "ready_for_release", eventType: "version.release_prepared" }],
-  ["ready_for_release:releasing", { to: "releasing", eventType: "version.release_started" }],
+  ["active:releasing", { to: "releasing", eventType: "version.release_started" }],
   ["releasing:published", { to: "published", eventType: "version.published" }],
   [
     "releasing:release_failed",

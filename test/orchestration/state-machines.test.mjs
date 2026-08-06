@@ -26,7 +26,6 @@ test("task states and version states export stable lists", () => {
   assert.deepEqual(VERSION_STATES, [
     "planning",
     "active",
-    "ready_for_release",
     "releasing",
     "release_failed",
     "published",
@@ -121,7 +120,7 @@ test("any un-terminated task can be canceled", () => {
 });
 
 test("version happy path and failure retry loop are exact", () => {
-  const path = ["planning", "active", "ready_for_release", "releasing", "published"];
+  const path = ["planning", "active", "releasing", "published"];
   for (let index = 0; index < path.length - 1; index += 1) {
     assert.equal(
       decideVersionTransition({ from: path[index], to: path[index + 1] }).to,
@@ -151,9 +150,13 @@ test("version happy path and failure retry loop are exact", () => {
   );
 });
 
-test("version cannot skip release preparation", () => {
+test("version starts release directly from active", () => {
+  assert.equal(
+    decideVersionTransition({ from: "active", to: "releasing" }).eventType,
+    "version.release_started",
+  );
   assert.throws(
-    () => decideVersionTransition({ from: "active", to: "releasing" }),
+    () => decideVersionTransition({ from: "planning", to: "releasing" }),
     /INVALID_TRANSITION/,
   );
 });

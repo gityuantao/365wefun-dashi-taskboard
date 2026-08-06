@@ -114,21 +114,6 @@ test("confirm release rejects missing manifests", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedVersion(harness, "version-2");
-  await dispatchCommand({
-    db: harness.db,
-    command: parseCommandEnvelope({
-      id: "rel-prepare-2",
-      type: "prepare_release",
-      aggregateType: "version",
-      aggregateId: "version-2",
-      expectedVersion: 2,
-      actorId: "system",
-      issuedAt: NOW,
-      reason: "prepare",
-      parameters: {},
-    }),
-    now: NOW,
-  });
   const result = await handleConfirmRelease({
     db: harness.db,
     versionId: "version-2",

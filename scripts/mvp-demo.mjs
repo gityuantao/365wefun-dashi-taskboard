@@ -40,7 +40,6 @@ const CONFIG = {
   versionStatusMap: {
     规划中: "planning",
     进行中: "active",
-    待发布: "ready_for_release",
     发布中: "releasing",
     发布失败: "release_failed",
     已发布: "published",

@@ -101,7 +101,7 @@ test("version gate fails when a task is blocked", async (t) => {
   assert.ok(gate.reasons.some((reason) => reason.includes("blocked")));
 });
 
-test("freezeManifest freezes tasks and advances the version to ready for release", async (t) => {
+test("freezeManifest freezes tasks without advancing the version state", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedActiveVersion(harness);
@@ -112,7 +112,7 @@ test("freezeManifest freezes tasks and advances the version to ready for release
   assert.deepEqual(result.manifest.taskIds.sort(), ["task-a", "task-b"]);
   assert.equal(typeof result.manifest.checksum, "string");
   const aggregate = await loadAggregate(harness.db, "version", "version-1");
-  assert.equal(aggregate.state, "ready_for_release");
+  assert.equal(aggregate.state, "active");
   const stored = await loadManifest({ db: harness.db, versionId: "version-1" });
   assert.equal(stored.versionId, "version-1");
 });

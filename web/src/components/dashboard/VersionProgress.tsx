@@ -3,7 +3,6 @@ import type { VersionProgress } from "../../types";
 const VERSION_STATUS_LABELS: Record<string, string> = {
   planning: "规划中",
   active: "进行中",
-  ready_for_release: "待发布",
   releasing: "发布中",
   release_failed: "发布失败",
   published: "已发布",

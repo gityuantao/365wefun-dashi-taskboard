@@ -142,22 +142,14 @@ test("task commands reject unsupported types and impossible jumps", async (t) =>
   );
 });
 
-test("version commands prepare, start, and succeed a release", async (t) => {
+test("version commands start and succeed a release", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedVersion(harness, "version-1", "active", 1);
 
-  const prepared = await dispatchCommand({
-    db: harness.db,
-    command: command("ver-cmd-1", "prepare_release", "version", "version-1", 2),
-    now: NOW,
-  });
-  assert.equal(prepared.events[0].type, "version.release_prepared");
-  assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "ready_for_release");
-
   const started = await dispatchCommand({
     db: harness.db,
-    command: command("ver-cmd-2", "start_release", "version", "version-1", 3),
+    command: command("ver-cmd-1", "start_release", "version", "version-1", 2),
     now: NOW,
   });
   assert.equal(started.events[0].type, "version.release_started");
@@ -165,7 +157,7 @@ test("version commands prepare, start, and succeed a release", async (t) => {
 
   const succeeded = await dispatchCommand({
     db: harness.db,
-    command: command("ver-cmd-3", "release_succeeded", "version", "version-1", 4),
+    command: command("ver-cmd-2", "release_succeeded", "version", "version-1", 3),
     now: NOW,
   });
   assert.equal(succeeded.events[0].type, "version.published");
@@ -178,25 +170,20 @@ test("version release failure requires evidence and leaves the version release_f
   await seedVersion(harness, "version-2", "active", 1);
   await dispatchCommand({
     db: harness.db,
-    command: command("ver-cmd-1", "prepare_release", "version", "version-2", 2),
-    now: NOW,
-  });
-  await dispatchCommand({
-    db: harness.db,
-    command: command("ver-cmd-2", "start_release", "version", "version-2", 3),
+    command: command("ver-cmd-1", "start_release", "version", "version-2", 2),
     now: NOW,
   });
   await assert.rejects(
     dispatchCommand({
       db: harness.db,
-      command: command("ver-cmd-3", "release_failed", "version", "version-2", 4),
+      command: command("ver-cmd-2", "release_failed", "version", "version-2", 3),
       now: NOW,
     }),
     /EVIDENCE_REQUIRED/,
   );
   const failed = await dispatchCommand({
     db: harness.db,
-    command: command("ver-cmd-4", "release_failed", "version", "version-2", 4, {
+    command: command("ver-cmd-3", "release_failed", "version", "version-2", 3, {
       evidenceId: "ev-release-1",
     }),
     now: NOW,
@@ -204,13 +191,13 @@ test("version release failure requires evidence and leaves the version release_f
   assert.equal(failed.events[0].type, "version.release_failed");
   const aggregate = await loadAggregate(harness.db, "version", "version-2");
   assert.equal(aggregate.state, "release_failed");
-  assert.equal(aggregate.version, 4);
+  assert.equal(aggregate.version, 3);
 });
 
 test("version commands reject impossible jumps", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  await seedVersion(harness, "version-3", "active", 1);
+  await seedVersion(harness, "version-3", "planning", 1);
   await assert.rejects(
     dispatchCommand({
       db: harness.db,

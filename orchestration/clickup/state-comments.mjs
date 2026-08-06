@@ -14,7 +14,6 @@ const TASK_NAMES = {
 const VERSION_NAMES = {
   planning: "规划中",
   active: "进行中",
-  ready_for_release: "待发布",
   releasing: "发布中",
   release_failed: "发布失败",
   published: "已发布",
@@ -39,8 +38,7 @@ const TASK_COMMENTS = {
 };
 
 const VERSION_COMMENTS = {
-  "active:ready_for_release": "版本任务就绪，进入待发布",
-  "ready_for_release:releasing": "开始发布",
+  "active:releasing": "开始发布",
   "releasing:published": "发布成功",
   "releasing:release_failed": "发布失败",
   "release_failed:releasing": "重新发布",

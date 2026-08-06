@@ -1,5 +1,3 @@
-import { dispatchCommand } from "../application/dispatch-command.mjs";
-import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { loadLastConfirmed } from "../clickup/snapshot.mjs";
 
@@ -77,22 +75,6 @@ export async function freezeManifest({ db, versionId, now }) {
     .bind(versionId, JSON.stringify(manifest), now)
     .run();
 
-  const aggregate = await loadAggregate(db, "version", versionId);
-  await dispatchCommand({
-    db,
-    command: parseCommandEnvelope({
-      id: `prepare-release-${versionId}`,
-      type: "prepare_release",
-      aggregateType: "version",
-      aggregateId: versionId,
-      expectedVersion: aggregate.version + 1,
-      actorId: "system-aggregator",
-      issuedAt: now,
-      reason: "version gate passed",
-      parameters: {},
-    }),
-    now,
-  });
   return { status: "frozen", manifest };
 }
 
