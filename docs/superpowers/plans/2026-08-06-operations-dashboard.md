@@ -908,6 +908,43 @@ test("task detail route returns 404 for unknown tasks and 405 for POST", async (
     actorName: "owner",
   });
   assert.equal(post.response.status, 405);
+  assert.deepEqual(post.body.error.details.allowed, ["GET"]);
+});
+
+test("task detail and version detail routes return payloads and reject bad ids", async (t) => {
+  const harness = await createCloudWorkerHarness({
+    bindings: { ORCHESTRATION_DIAGNOSTIC_ENABLED: "true" },
+  });
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+
+  const task = await harness.request("/api/orchestration/dashboard/tasks/task-1", {
+    method: "GET",
+    actorName: "owner",
+  });
+  assert.equal(task.response.status, 200);
+  assert.equal(task.body.prUrl, "https://github.com/example/pr/1");
+
+  const version = await harness.request("/api/orchestration/dashboard/versions/version-1", {
+    method: "GET",
+    actorName: "owner",
+  });
+  assert.equal(version.response.status, 200);
+  assert.equal(version.body.tasks.length, 1);
+
+  const missingVersion = await harness.request("/api/orchestration/dashboard/versions/missing", {
+    method: "GET",
+    actorName: "owner",
+  });
+  assert.equal(missingVersion.response.status, 404);
+  assert.equal(missingVersion.body.error.code, "NOT_FOUND");
+
+  const malformed = await harness.request("/api/orchestration/dashboard/tasks/%", {
+    method: "GET",
+    actorName: "owner",
+  });
+  assert.equal(malformed.response.status, 400);
+  assert.equal(malformed.body.error.code, "INVALID_PATH");
 });
 ```
 
@@ -952,7 +989,8 @@ function versionListUrlFromConfig(configJson) {
   try {
     const config = JSON.parse(configJson);
     const listId = config.lists?.version?.id ?? config.lists?.versionSandbox?.id ?? "";
-    return `https://app.clickup.com/${config.spaceId}/v/l/${listId}`;
+    if (!config.spaceId || !listId) return null;
+    return `https://app.clickup.com/${encodeURIComponent(config.spaceId)}/v/l/${encodeURIComponent(listId)}`;
   } catch {
     return null;
   }
@@ -980,7 +1018,15 @@ export async function routeDashboardRequest(request, env) {
   const taskMatch = pathname.match(/^\/api\/orchestration\/dashboard\/tasks\/([^/]+)$/);
   if (taskMatch) {
     if (request.method !== "GET") return methodNotAllowed(["GET"]);
-    const detail = await buildTaskDetail(env.DB, decodeURIComponent(taskMatch[1]));
+    let taskId;
+    try {
+      taskId = decodeURIComponent(taskMatch[1]);
+    } catch {
+      return json(400, {
+        error: { code: "INVALID_PATH", message: "Task id contains invalid encoding" },
+      });
+    }
+    const detail = await buildTaskDetail(env.DB, taskId);
     if (!detail) {
       return json(404, { error: { code: "NOT_FOUND", message: "Task not found" } });
     }
@@ -990,7 +1036,15 @@ export async function routeDashboardRequest(request, env) {
   const versionMatch = pathname.match(/^\/api\/orchestration\/dashboard\/versions\/([^/]+)$/);
   if (versionMatch) {
     if (request.method !== "GET") return methodNotAllowed(["GET"]);
-    const detail = await buildVersionDetail(env.DB, decodeURIComponent(versionMatch[1]));
+    let versionId;
+    try {
+      versionId = decodeURIComponent(versionMatch[1]);
+    } catch {
+      return json(400, {
+        error: { code: "INVALID_PATH", message: "Version id contains invalid encoding" },
+      });
+    }
+    const detail = await buildVersionDetail(env.DB, versionId);
     if (!detail) {
       return json(404, { error: { code: "NOT_FOUND", message: "Version not found" } });
     }
@@ -1025,7 +1079,7 @@ import { routeDashboardRequest } from "./dashboard-routes.mjs";
 - [ ] **Step 5: 运行测试，验证通过**
 
 Run: `node --test test/orchestration/dashboard-routes.test.mjs`
-Expected: PASS（3 个测试全部通过）。
+Expected: PASS（4 个测试全部通过）。
 
 - [ ] **Step 6: 提交**
 

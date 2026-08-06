@@ -29,7 +29,8 @@ function versionListUrlFromConfig(configJson) {
   try {
     const config = JSON.parse(configJson);
     const listId = config.lists?.version?.id ?? config.lists?.versionSandbox?.id ?? "";
-    return `https://app.clickup.com/${config.spaceId}/v/l/${listId}`;
+    if (!config.spaceId || !listId) return null;
+    return `https://app.clickup.com/${encodeURIComponent(config.spaceId)}/v/l/${encodeURIComponent(listId)}`;
   } catch {
     return null;
   }
@@ -57,7 +58,15 @@ export async function routeDashboardRequest(request, env) {
   const taskMatch = pathname.match(/^\/api\/orchestration\/dashboard\/tasks\/([^/]+)$/);
   if (taskMatch) {
     if (request.method !== "GET") return methodNotAllowed(["GET"]);
-    const detail = await buildTaskDetail(env.DB, decodeURIComponent(taskMatch[1]));
+    let taskId;
+    try {
+      taskId = decodeURIComponent(taskMatch[1]);
+    } catch {
+      return json(400, {
+        error: { code: "INVALID_PATH", message: "Task id contains invalid encoding" },
+      });
+    }
+    const detail = await buildTaskDetail(env.DB, taskId);
     if (!detail) {
       return json(404, { error: { code: "NOT_FOUND", message: "Task not found" } });
     }
@@ -67,7 +76,15 @@ export async function routeDashboardRequest(request, env) {
   const versionMatch = pathname.match(/^\/api\/orchestration\/dashboard\/versions\/([^/]+)$/);
   if (versionMatch) {
     if (request.method !== "GET") return methodNotAllowed(["GET"]);
-    const detail = await buildVersionDetail(env.DB, decodeURIComponent(versionMatch[1]));
+    let versionId;
+    try {
+      versionId = decodeURIComponent(versionMatch[1]);
+    } catch {
+      return json(400, {
+        error: { code: "INVALID_PATH", message: "Version id contains invalid encoding" },
+      });
+    }
+    const detail = await buildVersionDetail(env.DB, versionId);
     if (!detail) {
       return json(404, { error: { code: "NOT_FOUND", message: "Version not found" } });
     }
