@@ -105,6 +105,10 @@ test("dashboard renders the orchestration master switch", () => {
   assert.match(dashboardSource, /编排总开关/);
   assert.match(dashboardSource, /board-setting-switch/);
   assert.match(dashboardSource, /运行中|已暂停/);
+  assert.match(dashboardSource, /project-automation-trigger/);
+  assert.match(dashboardSource, /编排运行中|编排已暂停/);
+  assert.match(dashboardSource, /createPortal/);
+  assert.match(dashboardSource, /project-automation-menu/);
 });
 
 test("polish states and interactions are present", () => {

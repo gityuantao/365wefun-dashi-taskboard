@@ -1,12 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import { LinearIcon } from "../LinearIcon";
 import {
   ApiError,
   getOrchestrationControl,
   getOrchestrationDashboard,
-  setOrchestrationControl,
   getOrchestrationTaskDetail,
   getOrchestrationVersionDetail,
+  setOrchestrationControl,
 } from "../../api";
 import type {
   ActivityItem,
@@ -40,6 +47,14 @@ export function Dashboard() {
   const [controlPending, setControlPending] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [controlMenuOpen, setControlMenuOpen] = useState(false);
+  const [controlMenuPosition, setControlMenuPosition] = useState({
+    left: 0,
+    top: 0,
+    ready: false,
+  });
+  const controlTriggerRef = useRef<HTMLButtonElement>(null);
+  const controlMenuRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setRefreshing(true);
@@ -89,6 +104,51 @@ export function Dashboard() {
     return () => controller.abort();
   }, [drawer]);
 
+  useLayoutEffect(() => {
+    if (!controlMenuOpen || !controlTriggerRef.current || !controlMenuRef.current) return;
+    const trigger = controlTriggerRef.current.getBoundingClientRect();
+    const menu = controlMenuRef.current.getBoundingClientRect();
+    const left = Math.max(
+      8,
+      Math.min(trigger.right - menu.width, window.innerWidth - menu.width - 8),
+    );
+    const top = trigger.bottom + 8 + menu.height <= window.innerHeight
+      ? trigger.bottom + 8
+      : Math.max(8, trigger.top - menu.height - 8);
+    setControlMenuPosition({ left, top, ready: true });
+  }, [controlMenuOpen]);
+
+  useEffect(() => {
+    if (!controlMenuOpen) return;
+    function closeFromOutside(event: PointerEvent) {
+      if (
+        !controlMenuRef.current?.contains(event.target as Node)
+        && !controlTriggerRef.current?.contains(event.target as Node)
+      ) {
+        setControlMenuOpen(false);
+      }
+    }
+    function closeFromEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setControlMenuOpen(false);
+        controlTriggerRef.current?.focus();
+      }
+    }
+    document.addEventListener("pointerdown", closeFromOutside);
+    document.addEventListener("keydown", closeFromEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeFromOutside);
+      document.removeEventListener("keydown", closeFromEscape);
+    };
+  }, [controlMenuOpen]);
+
+  function toggleControlMenu() {
+    if (!controlMenuOpen) {
+      setControlMenuPosition({ left: 0, top: 0, ready: false });
+    }
+    setControlMenuOpen((open) => !open);
+  }
+
   async function toggleControl() {
     if (!control || controlPending) return;
     setControlPending(true);
@@ -114,47 +174,48 @@ export function Dashboard() {
   return (
     <div className="dashboard" aria-label="运营驾驶舱">
       <header className="dashboard-header">
-        <div>
-          <h1>运营驾驶舱</h1>
-          <p className="dashboard-subtitle">
+        <div className="dashboard-title">
+          <span className="dashboard-title-mark" aria-hidden="true">
+            <LinearIcon name="project" />
+          </span>
+          <strong>运营驾驶舱</strong>
+          <span className="dashboard-title-time">
             {lastUpdated
               ? `最近更新 ${new Date(lastUpdated).toLocaleTimeString("zh-CN", {
                   hour: "2-digit",
                   minute: "2-digit",
                 })}`
               : "等待首次同步…"}
-          </p>
+          </span>
         </div>
-        <div className="dashboard-control">
-          <span className={`dashboard-control-dot${control?.enabled ? " is-active" : " is-paused"}`} />
-          <span>{control?.enabled ? "运行中" : "已暂停"}</span>
-          <button
-            type="button"
-            className={`board-setting-switch${control?.enabled ? " is-on" : ""}`}
-            role="switch"
-            aria-checked={control?.enabled ?? false}
-            disabled={controlPending || !control}
-            onClick={() => void toggleControl()}
-          >
-            <span aria-hidden="true" />
-          </button>
-          <span className="dashboard-control-label">编排总开关</span>
-        </div>
-        <button
-          className="icon-button"
-          type="button"
-          aria-label={refreshing ? "更新中" : "刷新"}
-          title={refreshing ? "更新中" : "刷新"}
-          disabled={refreshing}
-          onClick={() => void load()}
-        >
-          <LinearIcon name="recurrence" />
-        </button>
-      </header>
 
-      {controlError && (
-        <div className="dashboard-control-error" role="alert">{controlError}</div>
-      )}
+        <div className="dashboard-header-actions">
+          <button
+            ref={controlTriggerRef}
+            type="button"
+            className={`project-automation-trigger no-drag${control?.enabled ? " is-active" : " is-paused"}`}
+            aria-label={control?.enabled ? "编排运行中" : "编排已暂停"}
+            aria-haspopup="dialog"
+            aria-expanded={controlMenuOpen}
+            title={control?.enabled ? "编排运行中" : "编排已暂停"}
+            disabled={!control}
+            onClick={toggleControlMenu}
+          >
+            <LinearIcon name={control?.enabled ? "play" : "pause"} />
+            <span>{control?.enabled ? "编排运行中" : "编排已暂停"}</span>
+          </button>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={refreshing ? "更新中" : "刷新"}
+            title={refreshing ? "更新中" : "刷新"}
+            disabled={refreshing}
+            onClick={() => void load()}
+          >
+            <LinearIcon name="recurrence" />
+          </button>
+        </div>
+      </header>
 
       {error && (
         <div className="dashboard-error" role="alert">
@@ -189,6 +250,47 @@ export function Dashboard() {
             onClose={() => setDrawer(null)}
           />
         </>
+      )}
+
+      {controlMenuOpen && createPortal(
+        <div
+          ref={controlMenuRef}
+          className="project-automation-menu dashboard-control-menu"
+          role="dialog"
+          aria-label="编排总开关"
+          style={{
+            left: controlMenuPosition.left,
+            top: controlMenuPosition.top,
+            visibility: controlMenuPosition.ready ? "visible" : "hidden",
+          }}
+        >
+          <div className="project-automation-menu-heading">
+            <strong>编排总开关</strong>
+            <span className={control?.enabled ? "is-active" : "is-paused"}>
+              {control?.enabled ? "运行中" : "已暂停"}
+            </span>
+          </div>
+          <div className="project-automation-switch">
+            <span>编排处理</span>
+            <button
+              type="button"
+              className={`board-setting-switch${control?.enabled ? " is-on" : ""}`}
+              role="switch"
+              aria-checked={control?.enabled ?? false}
+              disabled={controlPending || !control}
+              onClick={() => void toggleControl()}
+            >
+              <span aria-hidden="true" />
+            </button>
+          </div>
+          <p className="project-automation-note">
+            关闭后停止轮询与处理，驾驶舱仍可查看最后一次数据。
+          </p>
+          {controlError && (
+            <p className="project-automation-error" role="alert">{controlError}</p>
+          )}
+        </div>,
+        document.body,
       )}
     </div>
   );
