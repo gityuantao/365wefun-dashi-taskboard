@@ -21,6 +21,8 @@
 - 前端不依赖现有 `/api/revisions` 轮询（本地模式已确认关闭），Dashboard 自己每 15 秒轮询。
 - 任务详情数据源是 `runner_jobs.result`（执行摘要／验收标准／PR／验收结论）与 `orchestration_events`（时间线），不是 ClickUp 自定义字段。
 - 实时活动主数据源是 `orchestration_events`，`runner_jobs` 只补充 PR／验收结论。
+- 「可发布」判定与 `checkVersionGate` 对齐：版本内全部任务 `ready_for_release`、无 open task blocker（`blockers` 表）、版本未被 `发布阻塞` 字段阻塞、版本状态不是 `published/canceled/releasing`；`release_failed` 视为可重试，进入待办区并标记。
+- server 代理 `/api/orchestration/dashboard*` 仅限本机 loopback 访问（与 `/api/local/*` 一致），避免局域网读取驾驶舱数据。
 - 旧看板代码文件保留，但不渲染、不提供入口。
 
 ## 文件结构
@@ -99,12 +101,38 @@ export async function seedDashboardFixture(db) {
     }), DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
-      VALUES ('version', 'version-1', 'list-version', 'ready_for_release', ?, 'h3', ?)
+      VALUES ('task', 'task-3', 'list-task', 'ready_for_release', ?, 'h5', ?)
+    `).bind(JSON.stringify({
+      id: "task-3",
+      listId: "list-task",
+      name: "任务三",
+      status: "ready_for_release",
+      targetVersion: "1.0.3",
+      assignee: null,
+      updatedAt: DASHBOARD_NOW,
+      fieldsHash: "h5",
+    }), DASHBOARD_NOW),
+    db.prepare(`
+      INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
+      VALUES ('task', 'task-4', 'list-task', 'ready_for_release', ?, 'h6', ?)
+    `).bind(JSON.stringify({
+      id: "task-4",
+      listId: "list-task",
+      name: "任务四",
+      status: "ready_for_release",
+      targetVersion: "1.0.4",
+      assignee: null,
+      updatedAt: DASHBOARD_NOW,
+      fieldsHash: "h6",
+    }), DASHBOARD_NOW),
+    db.prepare(`
+      INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
+      VALUES ('version', 'version-1', 'list-version', 'active', ?, 'h3', ?)
     `).bind(JSON.stringify({
       id: "version-1",
       listId: "list-version",
       name: "1.0.1",
-      status: "ready_for_release",
+      status: "active",
       blocked: false,
       updatedAt: DASHBOARD_NOW,
       fieldsHash: "h3",
@@ -122,6 +150,30 @@ export async function seedDashboardFixture(db) {
       fieldsHash: "h4",
     }), DASHBOARD_NOW),
     db.prepare(`
+      INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
+      VALUES ('version', 'version-3', 'list-version', 'active', ?, 'h7', ?)
+    `).bind(JSON.stringify({
+      id: "version-3",
+      listId: "list-version",
+      name: "1.0.3",
+      status: "active",
+      blocked: false,
+      updatedAt: DASHBOARD_NOW,
+      fieldsHash: "h7",
+    }), DASHBOARD_NOW),
+    db.prepare(`
+      INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
+      VALUES ('version', 'version-4', 'list-version', 'release_failed', ?, 'h8', ?)
+    `).bind(JSON.stringify({
+      id: "version-4",
+      listId: "list-version",
+      name: "1.0.4",
+      status: "release_failed",
+      blocked: false,
+      updatedAt: DASHBOARD_NOW,
+      fieldsHash: "h8",
+    }), DASHBOARD_NOW),
+    db.prepare(`
       INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)
       VALUES ('task', 'task-1', 4, 'ready_for_release', NULL, ?)
     `).bind(DASHBOARD_NOW),
@@ -131,11 +183,31 @@ export async function seedDashboardFixture(db) {
     `).bind(DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)
-      VALUES ('version', 'version-1', 2, 'ready_for_release', NULL, ?)
+      VALUES ('task', 'task-3', 4, 'ready_for_release', NULL, ?)
+    `).bind(DASHBOARD_NOW),
+    db.prepare(`
+      INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)
+      VALUES ('task', 'task-4', 4, 'ready_for_release', NULL, ?)
+    `).bind(DASHBOARD_NOW),
+    db.prepare(`
+      INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)
+      VALUES ('version', 'version-1', 1, 'active', NULL, ?)
     `).bind(DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)
       VALUES ('version', 'version-2', 1, 'active', NULL, ?)
+    `).bind(DASHBOARD_NOW),
+    db.prepare(`
+      INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)
+      VALUES ('version', 'version-3', 1, 'active', NULL, ?)
+    `).bind(DASHBOARD_NOW),
+    db.prepare(`
+      INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)
+      VALUES ('version', 'version-4', 2, 'release_failed', NULL, ?)
+    `).bind(DASHBOARD_NOW),
+    db.prepare(`
+      INSERT INTO blockers (id, object_type, object_id, type, reason, status, created_at, resolved_at)
+      VALUES ('blocker-1', 'task', 'task-3', 'blocked', '等待外部依赖', 'open', ?, NULL)
     `).bind(DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO orchestration_events (id, sequence, aggregate_type, aggregate_id, aggregate_version, type, command_id, actor_id, occurred_at, data, previous_hash, hash)
@@ -224,20 +296,41 @@ test("buildDashboard aggregates releasable versions, pipeline, versions and acti
     versionListUrl: "https://app.clickup.com/space-1/v/l/version-list",
   });
 
-  assert.equal(payload.releasableVersions.length, 1);
+  assert.equal(payload.releasableVersions.length, 2);
   assert.equal(payload.releasableVersions[0].name, "1.0.1");
   assert.equal(payload.releasableVersions[0].taskCount, 1);
   assert.equal(payload.releasableVersions[0].readyCount, 1);
+  assert.equal(payload.releasableVersions[0].releaseFailed, false);
   assert.equal(
     payload.releasableVersions[0].url,
     "https://app.clickup.com/space-1/v/l/version-list",
   );
+  const failedVersion = payload.releasableVersions.find(
+    (version) => version.name === "1.0.4",
+  );
+  assert.equal(failedVersion.releaseFailed, true);
 
-  assert.equal(payload.pipeline.ready_for_release, 1);
+  for (const state of [
+    "inbox",
+    "analyzing",
+    "waiting_info",
+    "ready_for_development",
+    "developing",
+    "ready_for_test",
+    "testing",
+    "ready_for_acceptance",
+    "accepting",
+    "ready_for_release",
+    "published",
+    "canceled",
+  ]) {
+    assert.equal(typeof payload.pipeline[state], "number");
+  }
+  assert.equal(payload.pipeline.ready_for_release, 3);
   assert.equal(payload.pipeline.waiting_info, 1);
   assert.equal(payload.pipeline.inbox, 0);
 
-  assert.equal(payload.versions.length, 2);
+  assert.equal(payload.versions.length, 4);
   const released = payload.versions.find((version) => version.name === "1.0.1");
   assert.equal(released.releasable, true);
   assert.equal(released.releaseFailed, false);
@@ -245,6 +338,11 @@ test("buildDashboard aggregates releasable versions, pipeline, versions and acti
   assert.equal(released.readyCount, 1);
   const active = payload.versions.find((version) => version.name === "1.0.2");
   assert.equal(active.releasable, false);
+  const blocked = payload.versions.find((version) => version.name === "1.0.3");
+  assert.equal(blocked.releasable, false);
+  const failed = payload.versions.find((version) => version.name === "1.0.4");
+  assert.equal(failed.releasable, true);
+  assert.equal(failed.releaseFailed, true);
 
   assert.equal(payload.activity.length, 3);
   assert.equal(payload.activity[0].eventType, "version.release_prepared");
@@ -285,7 +383,7 @@ test("buildVersionDetail returns the task list and manifest", async (t) => {
 
   const detail = await buildVersionDetail(harness.db, "version-1");
   assert.equal(detail.name, "1.0.1");
-  assert.equal(detail.status, "ready_for_release");
+  assert.equal(detail.status, "active");
   assert.equal(detail.blocked, false);
   assert.equal(detail.tasks.length, 1);
   assert.equal(detail.tasks[0].id, "task-1");
@@ -371,14 +469,32 @@ async function loadVersions(db) {
     .filter((version) => version?.id);
 }
 
+async function loadOpenTaskBlockers(db) {
+  const rows = (await db
+    .prepare(`
+      SELECT object_id FROM blockers
+      WHERE status = 'open' AND object_type = 'task'
+    `)
+    .all()).results;
+  return new Set(rows.map((row) => row.object_id));
+}
+
 async function latestJob(db, taskId, jobType) {
+  return latestJobBefore(db, taskId, jobType, null);
+}
+
+async function latestJobBefore(db, taskId, jobType, before) {
+  const timeFilter = before === null ? "" : "AND completed_at <= ?";
+  const params = before === null
+    ? [`${taskId}-${jobType}-%`, jobType]
+    : [`${taskId}-${jobType}-%`, jobType, before];
   const row = await db
     .prepare(`
       SELECT result FROM runner_jobs
-      WHERE id LIKE ? AND job_type = ? AND status = 'completed'
+      WHERE id LIKE ? AND job_type = ? AND status = 'completed' ${timeFilter}
       ORDER BY completed_at DESC, created_at DESC LIMIT 1
     `)
-    .bind(`${taskId}-${jobType}-%`, jobType)
+    .bind(...params)
     .first();
   return row ? { result: JSON.parse(row.result) } : null;
 }
@@ -406,29 +522,25 @@ async function loadActivity(db, limit, tasks, versions) {
     ...versions.map((version) => [`version:${version.id}`, version.name ?? version.id]),
   ]);
 
-  const taskIds = [...new Set(
-    events
-      .filter((event) => event.aggregate_type === "task")
-      .map((event) => event.aggregate_id),
-  )];
-  const jobResults = new Map();
-  for (const taskId of taskIds) {
-    const [develop, accept] = await Promise.all([
-      latestJob(db, taskId, "develop"),
-      latestJob(db, taskId, "accept"),
-    ]);
-    if (develop) jobResults.set(`develop:${taskId}`, develop.result);
-    if (accept) jobResults.set(`accept:${taskId}`, accept.result);
-  }
-
-  return events.map((event) => {
+  return Promise.all(events.map(async (event) => {
     const key = `${event.aggregate_type}:${event.aggregate_id}`;
     const name = names.get(key) ?? event.aggregate_id;
     const subject = event.aggregate_type === "version" ? `版本 ${name}` : `任务 ${name}`;
     const label = ACTIVITY_LABELS[event.type] ?? event.type;
     let summary = `${subject} ${label}`;
-    const developResult = jobResults.get(`develop:${event.aggregate_id}`);
-    const acceptResult = jobResults.get(`accept:${event.aggregate_id}`);
+    let developResult = null;
+    let acceptResult = null;
+    if (event.type === "task.development_completed") {
+      const job = await latestJobBefore(db, event.aggregate_id, "develop", event.occurred_at);
+      developResult = job?.result ?? null;
+    }
+    if (
+      event.type === "task.acceptance_passed"
+      || event.type === "task.acceptance_failed"
+    ) {
+      const job = await latestJobBefore(db, event.aggregate_id, "accept", event.occurred_at);
+      acceptResult = job?.result ?? null;
+    }
     if (event.type === "task.development_completed" && prUrlOf(developResult)) {
       summary = `${subject} 开发完成，PR：${prUrlOf(developResult)}`;
     }
@@ -445,11 +557,15 @@ async function loadActivity(db, limit, tasks, versions) {
       eventType: event.type,
       summary,
     };
-  });
+  }));
 }
 
 export async function buildDashboard(db, { versionListUrl } = {}) {
-  const [tasks, versions] = await Promise.all([loadTasks(db), loadVersions(db)]);
+  const [tasks, versions, openTaskBlockers] = await Promise.all([
+    loadTasks(db),
+    loadVersions(db),
+    loadOpenTaskBlockers(db),
+  ]);
   const pipeline = Object.fromEntries(TASK_STATES.map((state) => [state, 0]));
   for (const task of tasks) {
     if (pipeline[task.status] !== undefined) pipeline[task.status] += 1;
@@ -463,13 +579,23 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
       const readyCount = tasksInVersion.filter(
         (task) => task.status === "ready_for_release",
       ).length;
+      const allReady = tasksInVersion.length > 0
+        && tasksInVersion.every((task) => task.status === "ready_for_release");
+      const noOpenBlockers = tasksInVersion.every(
+        (task) => !openTaskBlockers.has(task.id),
+      );
       return {
         id: version.id,
         name: version.name ?? version.id,
         status: version.status ?? null,
         taskCount: tasksInVersion.length,
         readyCount,
-        releasable: version.status === "ready_for_release" && version.blocked !== true,
+        releasable: version.status !== "published"
+          && version.status !== "canceled"
+          && version.status !== "releasing"
+          && version.blocked !== true
+          && allReady
+          && noOpenBlockers,
         releaseFailed: version.status === "release_failed",
       };
     })
@@ -846,7 +972,7 @@ test("orchestrator dashboard server exposes read-only JSON endpoints", async (t)
   const response = await fetch(`http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard`);
   assert.equal(response.status, 200);
   const payload = await response.json();
-  assert.equal(payload.releasableVersions.length, 1);
+  assert.equal(payload.releasableVersions.length, 2);
   assert.equal(
     payload.releasableVersions[0].url,
     "https://app.clickup.com/space-1/v/l/version-list",
@@ -875,6 +1001,11 @@ test("orchestrator dashboard server exposes read-only JSON endpoints", async (t)
     `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/tasks/missing`,
   );
   assert.equal(missing.status, 404);
+
+  const missingVersion = await fetch(
+    `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/missing`,
+  );
+  assert.equal(missingVersion.status, 404);
 });
 ```
 
@@ -1059,6 +1190,11 @@ test("server proxies orchestration dashboard to the local orchestrator", async (
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.releasableVersions[0].name, "1.0.1");
+
+  const post = await fetch(`http://127.0.0.1:${address.port}/api/orchestration/dashboard`, {
+    method: "POST",
+  });
+  assert.equal(post.status, 405);
 });
 
 test("server returns 503 when the orchestrator dashboard is not running", async (t) => {
@@ -1113,6 +1249,7 @@ export function resolveOrchestrationPort(value = process.env.CODEX_TASKBOARD_ORC
         pathname === "/api/orchestration/dashboard"
         || pathname.startsWith("/api/orchestration/dashboard/")
       ) {
+        assertLoopbackRequest(request);
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
         const target = `http://127.0.0.1:${resolved.orchestrationPort}${pathname}${url.search}`;
         let upstream;
@@ -1223,6 +1360,7 @@ export interface ReleasableVersion {
   name: string;
   taskCount: number;
   readyCount: number;
+  releaseFailed: boolean;
   url: string;
 }
 
@@ -1435,6 +1573,7 @@ test("release actions show ready versions and an empty state", () => {
   assert.match(releaseActionsSource, /暂无待发布版本/);
   assert.match(releaseActionsSource, /在 ClickUp 操作/);
   assert.match(releaseActionsSource, /target="_blank"/);
+  assert.match(releaseActionsSource, /可重试/);
 });
 
 test("pipeline overview maps canonical states to Chinese labels", () => {
@@ -1514,7 +1653,11 @@ export function ReleaseActions({ versions }: { versions: ReleasableVersion[] }) 
                 <strong>{version.name}</strong>
                 <span>{version.readyCount}/{version.taskCount} 个任务已就绪</span>
               </div>
-              <span className="badge badge-releasable">可发布</span>
+              {version.releaseFailed ? (
+                <span className="badge badge-failed">发布失败 · 可重试</span>
+              ) : (
+                <span className="badge badge-releasable">可发布</span>
+              )}
               <a
                 className="button release-action-link"
                 href={version.url}
@@ -2465,6 +2608,8 @@ test("dashboard is the default view with no old board entry", () => {
   assert.match(appSource, /useState<"dashboard" \| "issues">\("dashboard"\)/);
   assert.match(appSource, /运营驾驶舱/);
   assert.match(appSource, /viewMode === "dashboard" \? <Dashboard \/>/);
+  assert.match(appSource, /viewMode === "issues" && <div className="project-nav">/);
+  assert.match(appSource, /viewMode === "issues" && selectedProjectId && boardView === "issues"/);
   assert.doesNotMatch(appSource, />\s*议题看板\s*<\/button>/);
 });
 
@@ -2554,7 +2699,55 @@ import { Dashboard } from "./components/dashboard/Dashboard";
 
 6. 删除 board-toolbar 里的整个 `view-tabs` div（含“议题看板”和“节点模式”按钮），保留 toolbar-tools 部分。
 
-7. 在主内容条件 `{!selectedProjectId ? (` 之前插入：
+7. 隐藏非 embedded 侧边栏里的项目导航（驾驶舱模式不显示项目列表，AI 聊天保留）：
+
+```tsx
+          <div className="project-nav">
+```
+
+改为：
+
+```tsx
+          {viewMode === "issues" && <div className="project-nav">
+```
+
+并在该项目导航块的 `</div>` 结束标签后补一个 `)}`。
+
+8. 给旧看板快捷键加 `viewMode === "issues"` 守卫：
+
+`c` 快捷键条件改为：
+
+```tsx
+      if (
+        event.key.toLowerCase() === "c"
+        && !event.metaKey
+        && !event.ctrlKey
+        && viewMode === "issues"
+        && selectedProjectId
+        && boardView === "issues"
+      ) {
+```
+
+`/` 快捷键条件改为：
+
+```tsx
+      if (event.key === "/" && viewMode === "issues" && !detailTaskId && selectedProjectId && boardView === "issues") {
+```
+
+`cmd+z` 撤销条件补上 `viewMode === "issues"`：
+
+```tsx
+        && !editor
+        && viewMode === "issues"
+```
+
+`handleShortcut` 的 effect 依赖数组改为：
+
+```tsx
+  }, [boardView, contextMenu, detailTaskId, editor, projectMenuOpen, selectedProjectId, viewMode]);
+```
+
+9. 在主内容条件 `{!selectedProjectId ? (` 之前插入：
 
 ```tsx
         {viewMode === "dashboard" ? (
@@ -2658,6 +2851,11 @@ git commit -m "fix: polish operations dashboard after integration verification"
 - 版本进度：Task 1（`versions`）＋ Task 6（`VersionProgressList`）。
 - 实时活动：Task 1（`activity`）＋ Task 6（`ActivityFeed`）。
 - 详情抽屉：Task 1（`buildTaskDetail`／`buildVersionDetail`）＋ Task 6（`DetailDrawer`）。
+- 可发布判定与 `checkVersionGate` 对齐（全部任务就绪、无 open task blocker、版本未阻塞、非 released/canceled/releasing）：Task 1。
+- 发布失败版本进入待办区并标记「可重试」：Task 1（`releaseFailed` 字段）＋ Task 6（`ReleaseActions`）。
+- 代理端点仅本机 loopback：Task 4。
+- 旧看板快捷键与项目导航在驾驶舱模式隐藏（AI 聊天保留）：Task 7。
+- 活动流 PR／验收结论按 `completed_at <= occurred_at` 关联对应事件：Task 1（`latestJobBefore`）。
 - 独立轮询：Task 6（`REFRESH_INTERVAL_MS = 15_000`）。
 - orchestrator 只读端点：Task 3。
 - server 代理：Task 4。
@@ -2666,4 +2864,4 @@ git commit -m "fix: polish operations dashboard after integration verification"
 
 **Placeholder scan：** 每个代码步骤都有完整文件内容或精确 diff；无 TBD／“适当处理错误”／“类似 Task N”等占位。
 
-**Type consistency：** `buildDashboard` 返回 `{ releasableVersions, pipeline, versions, activity }`，与 `DashboardPayload` 一致；`buildTaskDetail` 返回字段与 `TaskDetail` 一致；`buildVersionDetail` 返回字段与 `VersionDetail` 一致；组件 props（`versions`、`items`、`detail`、`onOpen`、`onClose`）在 Task 6 内部保持一致。
+**Type consistency：** `buildDashboard` 返回 `{ releasableVersions, pipeline, versions, activity }`，与 `DashboardPayload` 一致；`ReleasableVersion` 含 `releaseFailed`，与 `ReleaseActions` 的「可重试」徽标一致；`buildTaskDetail` 返回字段与 `TaskDetail` 一致；`buildVersionDetail` 返回字段与 `VersionDetail` 一致；组件 props（`versions`、`items`、`detail`、`onOpen`、`onClose`）在 Task 6 内部保持一致。
