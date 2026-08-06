@@ -47,11 +47,14 @@ import {
 import { claimJob, completeJob } from "../orchestration/persistence/d1-runner-jobs.mjs";
 import { loadAggregate } from "../orchestration/persistence/d1-aggregate-store.mjs";
 import { startDashboardServer } from "../orchestration/dashboard/http-server.mjs";
+import { readControl, shouldProcess } from "../orchestration/control.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = process.env.ORCHESTRATION_CONFIG
   ?? path.join(PROJECT_ROOT, ".data", "orchestration.json");
 const MIGRATIONS_DIR = path.join(PROJECT_ROOT, "cloud", "migrations");
+const CONTROL_PATH = process.env.ORCHESTRATION_CONTROL_PATH
+  ?? path.join(PROJECT_ROOT, ".data", "orchestration-control.json");
 
 function log(message) {
   console.log(`[${new Date().toISOString()}] ${message}`);
@@ -177,6 +180,7 @@ const dashboardServer = await startDashboardServer({
   db,
   port: Number(runtime.dashboardPort ?? process.env.ORCHESTRATION_DASHBOARD_PORT ?? 47824),
   versionListUrl: `https://app.clickup.com/${encodeURIComponent(config.spaceId)}/v/l/${encodeURIComponent(config.lists[versionListKey].id)}`,
+  controlPath: CONTROL_PATH,
 });
 log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
 
@@ -408,6 +412,11 @@ async function syncStatuses(now) {
 
 async function tick() {
   const now = new Date().toISOString();
+  const control = await readControl(CONTROL_PATH);
+  if (!shouldProcess(control)) {
+    log("orchestration paused");
+    return;
+  }
   try {
     try {
       const poll = await pollClickUpOnce(pollEnv(), { now, clientFactory });
