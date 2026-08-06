@@ -237,7 +237,7 @@ export async function pollClickUpOnce(env, {
  */
 async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
   let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
-  if (aggregate.state === "ready_for_test") {
+  if (aggregate.state === "ready_for_test" && snapshot.status === "testing") {
     const startTestId = `poller-start-test-${snapshot.id}-${aggregate.version + 1}`;
     if (!(await loadCommandResult(env.DB, startTestId))) {
       const startTest = parseCommandEnvelope({
@@ -248,7 +248,7 @@ async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
         expectedVersion: aggregate.version + 1,
         actorId: "system-poller",
         issuedAt: now,
-        reason: "test started by status change",
+        reason: "user moved task to 测试中",
         parameters: {},
       });
       commands.push(await runCommand(env, startTest, now, config));

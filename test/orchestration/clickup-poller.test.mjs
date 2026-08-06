@@ -284,3 +284,36 @@ test("poller resumes analysis when the user changes status back", async (t) => {
     .first();
   assert.ok(job, "expected a queued analyze job after resume");
 });
+
+test("poller does not auto-start testing while the task stays in 待测试", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 4; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development",
+      "development_completed"][index];
+    await dispatchTask(harness, `poller-no-auto-start-${index}`, type, index + 1);
+  }
+  const env = await makeEnv(harness, [sandboxTask({ status: "待测试" })]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(result.commands.length, 0);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "ready_for_test");
+});
+
+test("poller starts testing when the user moves to 测试中", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 4; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development",
+      "development_completed"][index];
+    await dispatchTask(harness, `poller-manual-test-${index}`, type, index + 1);
+  }
+  const env = await makeEnv(harness, [sandboxTask({ status: "测试中" })]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(result.commands.length, 1);
+  assert.equal(result.commands[0].type, "start_test");
+  assert.equal(result.commands[0].status, "succeeded");
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "testing");
+  assert.equal(aggregate.version, 5);
+});
