@@ -81,12 +81,6 @@ function sendEmpty(response, status, headers = {}) {
   response.end();
 }
 
-async function readRequestBody(request) {
-  const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
-  return Buffer.concat(chunks).toString("utf8");
-}
-
 function toFetchRequest(request) {
   const headers = new Headers();
   for (const [name, value] of Object.entries(request.headers)) {
@@ -1634,7 +1628,8 @@ export function createTaskboardServer(options = {}) {
         };
         if (request.method === "PUT") {
           init.headers["content-type"] = "application/json";
-          init.body = await readRequestBody(request);
+          init.body = Readable.toWeb(request);
+          init.duplex = "half";
         }
         let upstream;
         try {
