@@ -423,7 +423,7 @@ const source = await readFile(new URL("../../scripts/orchestrator.mjs", import.m
 test("orchestrator gates tick processing on the control switch", () => {
   assert.match(source, /import \{[^}]*readControl[^}]*\} from "\.\.\/orchestration\/control\.mjs"/);
   assert.match(source, /async function tick\(\)[\s\S]*?readControl\(controlPath\)/);
-  assert.match(source, /shouldProcess\(control\)[\s\S]*?log\(`orchestration paused`\)/);
+  assert.match(source, /shouldProcess\(control\)[\s\S]*?log("orchestration paused")/);
   assert.match(source, /startDashboardServer\(\{[\s\S]*?controlPath/);
 });
 ```
