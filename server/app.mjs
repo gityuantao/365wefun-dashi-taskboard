@@ -1589,13 +1589,16 @@ export function createTaskboardServer(options = {}) {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
         const target = `http://127.0.0.1:${resolved.orchestrationPort}${pathname}${url.search}`;
         let upstream;
+        let text;
         try {
           upstream = await fetch(target, {
             method: "GET",
             headers: { accept: "application/json" },
             signal: AbortSignal.timeout(5000),
           });
+          text = await upstream.text();
         } catch (error) {
+          console.error("orchestration dashboard proxy error:", error);
           throw new ApiError(
             503,
             "ORCHESTRATOR_UNAVAILABLE",
@@ -1603,7 +1606,6 @@ export function createTaskboardServer(options = {}) {
             { port: resolved.orchestrationPort },
           );
         }
-        const text = await upstream.text();
         const contentType = upstream.headers.get("content-type") ?? "application/json; charset=utf-8";
         response.writeHead(upstream.status, {
           "cache-control": "no-store",
