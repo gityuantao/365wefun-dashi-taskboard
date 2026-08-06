@@ -132,10 +132,17 @@ test("detail dialogs reuse the new-issue dialog shell", () => {
   assert.match(drawerSource, /<dialog/);
   assert.match(drawerSource, /task-dialog/);
   assert.match(drawerSource, /dialog-header/);
-  assert.match(drawerSource, /dialog-footer/);
   assert.match(drawerSource, /showModal/);
   assert.match(drawerSource, /onCancel/);
   assert.match(drawerSource, /detail-dialog-body/);
   assert.match(drawerSource, /detail-info-grid/);
   assert.match(drawerSource, /detail-section/);
+});
+
+test("detail dialog header links and no footer", () => {
+  assert.match(drawerSource, /在 ClickUp 查看/);
+  assert.match(drawerSource, /clickup\.com\/t\//);
+  assert.match(drawerSource, /detail-external-link/);
+  assert.doesNotMatch(drawerSource, /dialog-footer/);
+  assert.doesNotMatch(drawerSource, /Esc 关闭/);
 });

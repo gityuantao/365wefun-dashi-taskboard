@@ -541,9 +541,17 @@
 
 .detail-dialog-hero {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
+  padding: 14px 20px;
+  border-bottom: var(--border-hairline) solid var(--border);
+  background: var(--surface-raised);
+}
+
+.detail-dialog > .detail-dialog-hero + .form-body {
+  border-radius: 0;
 }
 
 .detail-dialog-title {

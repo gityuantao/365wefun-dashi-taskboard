@@ -66,6 +66,28 @@ export function DetailDrawer({ kind, detail, onClose }: DetailDrawerProps) {
           <strong>{kind === "task" ? "任务详情" : "版本详情"}</strong>
         </div>
         <div className="dialog-header-actions">
+          {detail && (
+            <>
+              <a
+                className="detail-external-link"
+                href={`https://app.clickup.com/t/${detail.id}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                在 ClickUp 查看
+              </a>
+              {kind === "task" && (detail as TaskDetail).prUrl && (
+                <a
+                  className="detail-external-link"
+                  href={(detail as TaskDetail).prUrl!}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  查看 PR
+                </a>
+              )}
+            </>
+          )}
           <button
             className="icon-button dialog-close"
             type="button"
@@ -78,6 +100,10 @@ export function DetailDrawer({ kind, detail, onClose }: DetailDrawerProps) {
         </div>
       </header>
 
+      {detail && (kind === "task"
+        ? <TaskHero detail={detail as TaskDetail} />
+        : <VersionHero detail={detail as VersionDetail} />)}
+
       {!detail ? (
         <div className="form-body detail-dialog-body detail-dialog-loading">
           <p>正在加载…</p>
@@ -88,28 +114,41 @@ export function DetailDrawer({ kind, detail, onClose }: DetailDrawerProps) {
         <VersionDetailBody detail={detail as VersionDetail} />
       )}
 
-      <footer className="dialog-footer">
-        <span className="keyboard-note">Esc 关闭</span>
-        <div className="dialog-actions">
-          <button className="button primary" type="button" onClick={onClose}>关闭</button>
-        </div>
-      </footer>
     </dialog>
   );
 }
 
-function TaskDetailBody({ detail }: { detail: TaskDetail }) {
+function TaskHero({ detail }: { detail: TaskDetail }) {
   const statusLabel = TASK_STATUS_LABELS[detail.status ?? ""] ?? detail.status ?? "未知";
   return (
-    <div className="form-body detail-dialog-body">
-      <header className="detail-dialog-hero">
-        <div className="detail-dialog-title">
-          <h3>{detail.name}</h3>
-          <span className="detail-id">{detail.id}</span>
-        </div>
-        <span className="badge badge-status">{statusLabel}</span>
-      </header>
+    <header className="detail-dialog-hero">
+      <div className="detail-dialog-title">
+        <h3>{detail.name}</h3>
+        <span className="detail-id">{detail.id}</span>
+      </div>
+      <span className="badge badge-status">{statusLabel}</span>
+    </header>
+  );
+}
 
+function VersionHero({ detail }: { detail: VersionDetail }) {
+  const statusLabel = VERSION_STATUS_LABELS[detail.status ?? ""] ?? detail.status ?? "未知";
+  return (
+    <header className="detail-dialog-hero">
+      <div className="detail-dialog-title">
+        <h3>{detail.name}</h3>
+        <span className="detail-id">{detail.id}</span>
+      </div>
+      <span className={`badge badge-status${detail.status === "release_failed" ? " badge-failed" : ""}`}>
+        {statusLabel}
+      </span>
+    </header>
+  );
+}
+
+function TaskDetailBody({ detail }: { detail: TaskDetail }) {
+  return (
+    <div className="form-body detail-dialog-body">
       <div className="detail-info-grid">
         <div className="detail-info-cell">
           <dt>目标版本</dt>
@@ -130,12 +169,6 @@ function TaskDetailBody({ detail }: { detail: TaskDetail }) {
           </dd>
         </div>
       </div>
-
-      {detail.prUrl && (
-        <a className="detail-external-link" href={detail.prUrl} target="_blank" rel="noreferrer">
-          查看 PR
-        </a>
-      )}
 
       {detail.summary && (
         <section className="detail-section">
@@ -181,16 +214,6 @@ function VersionDetailBody({ detail }: { detail: VersionDetail }) {
   const statusLabel = VERSION_STATUS_LABELS[detail.status ?? ""] ?? detail.status ?? "未知";
   return (
     <div className="form-body detail-dialog-body">
-      <header className="detail-dialog-hero">
-        <div className="detail-dialog-title">
-          <h3>{detail.name}</h3>
-          <span className="detail-id">{detail.id}</span>
-        </div>
-        <span className={`badge badge-status${detail.status === "release_failed" ? " badge-failed" : ""}`}>
-          {statusLabel}
-        </span>
-      </header>
-
       <div className="detail-info-grid">
         <div className="detail-info-cell">
           <dt>状态</dt>
