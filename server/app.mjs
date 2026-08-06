@@ -1286,6 +1286,7 @@ export function resolveServerOptions(options = {}) {
       ?? path.join(codexHome, ".codex-global-state.json"),
     codexProcessesPath: options.codexProcessesPath
       ?? path.join(codexHome, "process_manager", "chat_processes.json"),
+    orchestrationPort: options.orchestrationPort ?? resolveOrchestrationPort(),
   };
 }
 
@@ -1293,6 +1294,14 @@ export function resolvePort(value = process.env.CODEX_TASKBOARD_PORT ?? "47823")
   const port = typeof value === "number" ? value : Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("CODEX_TASKBOARD_PORT must be an integer between 1 and 65535");
+  }
+  return port;
+}
+
+export function resolveOrchestrationPort(value = process.env.CODEX_TASKBOARD_ORCHESTRATION_PORT ?? "47824") {
+  const port = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("CODEX_TASKBOARD_ORCHESTRATION_PORT must be an integer between 1 and 65535");
   }
   return port;
 }
@@ -1570,6 +1579,38 @@ export function createTaskboardServer(options = {}) {
           200,
           await discoverWorkflowCapabilities(resolved, workspacePath ?? PROJECT_ROOT),
         );
+      }
+
+      if (
+        pathname === "/api/orchestration/dashboard"
+        || pathname.startsWith("/api/orchestration/dashboard/")
+      ) {
+        assertLoopbackRequest(request);
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        const target = `http://127.0.0.1:${resolved.orchestrationPort}${pathname}${url.search}`;
+        let upstream;
+        try {
+          upstream = await fetch(target, {
+            method: "GET",
+            headers: { accept: "application/json" },
+            signal: AbortSignal.timeout(5000),
+          });
+        } catch (error) {
+          throw new ApiError(
+            503,
+            "ORCHESTRATOR_UNAVAILABLE",
+            "Orchestrator dashboard is not running",
+            { port: resolved.orchestrationPort },
+          );
+        }
+        const text = await upstream.text();
+        const contentType = upstream.headers.get("content-type") ?? "application/json; charset=utf-8";
+        response.writeHead(upstream.status, {
+          "cache-control": "no-store",
+          "content-type": contentType,
+        });
+        response.end(text);
+        return;
       }
 
       let currentCloudConfig = null;
