@@ -2,13 +2,16 @@ import { useCallback, useEffect, useState } from "react";
 import { LinearIcon } from "../LinearIcon";
 import {
   ApiError,
+  getOrchestrationControl,
   getOrchestrationDashboard,
+  setOrchestrationControl,
   getOrchestrationTaskDetail,
   getOrchestrationVersionDetail,
 } from "../../api";
 import type {
   ActivityItem,
   DashboardPayload,
+  OrchestrationControl,
   TaskDetail,
   VersionDetail,
   VersionProgress,
@@ -33,11 +36,18 @@ export function Dashboard() {
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [drawer, setDrawer] = useState<DrawerState>(null);
   const [detail, setDetail] = useState<TaskDetail | VersionDetail | null>(null);
+  const [control, setControl] = useState<OrchestrationControl | null>(null);
+  const [controlPending, setControlPending] = useState(false);
+  const [controlError, setControlError] = useState<string | null>(null);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
-      const next = await getOrchestrationDashboard(signal);
+      const [next, controlValue] = await Promise.all([
+        getOrchestrationDashboard(signal),
+        getOrchestrationControl(signal),
+      ]);
       setPayload(next);
+      setControl(controlValue);
       setError(null);
       setLastUpdated(Date.now());
     } catch (caught) {
@@ -75,6 +85,20 @@ export function Dashboard() {
     return () => controller.abort();
   }, [drawer]);
 
+  async function toggleControl() {
+    if (!control || controlPending) return;
+    setControlPending(true);
+    try {
+      const next = await setOrchestrationControl(!control.enabled);
+      setControl(next);
+      setControlError(null);
+    } catch (caught) {
+      setControlError(caught instanceof ApiError ? caught.message : "无法更新编排总开关");
+    } finally {
+      setControlPending(false);
+    }
+  }
+
   function openActivity(item: ActivityItem) {
     setDrawer({ kind: item.objectType, id: item.objectId });
   }
@@ -97,6 +121,21 @@ export function Dashboard() {
               : "等待首次同步…"}
           </p>
         </div>
+        <div className="dashboard-control">
+          <span className={`dashboard-control-dot${control?.enabled ? " is-active" : " is-paused"}`} />
+          <span>{control?.enabled ? "运行中" : "已暂停"}</span>
+          <button
+            type="button"
+            className={`board-setting-switch${control?.enabled ? " is-on" : ""}`}
+            role="switch"
+            aria-checked={control?.enabled ?? false}
+            disabled={controlPending || !control}
+            onClick={() => void toggleControl()}
+          >
+            <span aria-hidden="true" />
+          </button>
+          <span className="dashboard-control-label">编排总开关</span>
+        </div>
         <button
           className="icon-button"
           type="button"
@@ -107,6 +146,10 @@ export function Dashboard() {
           <LinearIcon name="recurrence" />
         </button>
       </header>
+
+      {controlError && (
+        <div className="dashboard-control-error" role="alert">{controlError}</div>
+      )}
 
       {error && (
         <div className="dashboard-error" role="alert">

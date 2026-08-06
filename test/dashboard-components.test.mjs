@@ -98,3 +98,11 @@ test("dashboard styles define layout, badges and drawer classes", () => {
     assert.match(styles, new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
 });
+
+test("dashboard renders the orchestration master switch", () => {
+  assert.match(dashboardSource, /getOrchestrationControl/);
+  assert.match(dashboardSource, /setOrchestrationControl/);
+  assert.match(dashboardSource, /编排总开关/);
+  assert.match(dashboardSource, /board-setting-switch/);
+  assert.match(dashboardSource, /运行中|已暂停/);
+});
