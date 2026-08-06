@@ -423,14 +423,14 @@ const ACTIVITY_LABELS = {
   "task.acceptance_failed": "验收失败，退回待开发",
   "task.published": "已发布",
   "task.canceled": "已取消",
-  "version.activated": "版本进入进行中",
-  "version.release_prepared": "版本待发布",
-  "version.release_started": "版本发布中",
-  "version.published": "版本已发布",
-  "version.release_failed": "版本发布失败",
-  "version.release_retried": "版本重试发布",
-  "version.returned_to_active": "版本退回进行中",
-  "version.canceled": "版本已取消",
+  "version.activated": "进入进行中",
+  "version.release_prepared": "待发布",
+  "version.release_started": "发布中",
+  "version.published": "已发布",
+  "version.release_failed": "发布失败",
+  "version.release_retried": "重试发布",
+  "version.returned_to_active": "退回进行中",
+  "version.canceled": "已取消",
 };
 
 function parseSnapshot(row) {

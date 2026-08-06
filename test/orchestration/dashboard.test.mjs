@@ -68,6 +68,10 @@ test("buildDashboard aggregates releasable versions, pipeline, versions and acti
   assert.equal(payload.activity.length, 3);
   assert.equal(payload.activity[0].eventType, "version.release_prepared");
   assert.equal(payload.activity[0].summary, "版本 1.0.1 待发布");
+  const activated = payload.activity.find(
+    (item) => item.eventType === "version.activated",
+  );
+  assert.equal(activated.summary, "版本 1.0.1 进入进行中");
   const develop = payload.activity.find(
     (item) => item.eventType === "task.development_completed",
   );
