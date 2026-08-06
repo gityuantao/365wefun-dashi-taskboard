@@ -278,3 +278,95 @@ export interface TaskEvent {
   project?: Project;
   at: string;
 }
+
+export type OrchestrationObjectType = "task" | "version";
+
+export interface ReleasableVersion {
+  id: string;
+  name: string;
+  taskCount: number;
+  readyCount: number;
+  releaseFailed: boolean;
+  url: string;
+}
+
+export interface PipelineCounts {
+  inbox: number;
+  analyzing: number;
+  waiting_info: number;
+  ready_for_development: number;
+  developing: number;
+  ready_for_test: number;
+  testing: number;
+  ready_for_acceptance: number;
+  accepting: number;
+  ready_for_release: number;
+  published: number;
+  canceled: number;
+}
+
+export interface VersionProgress {
+  id: string;
+  name: string;
+  status: string | null;
+  taskCount: number;
+  readyCount: number;
+  releasable: boolean;
+  releaseFailed: boolean;
+}
+
+export interface ActivityItem {
+  time: string;
+  objectType: OrchestrationObjectType;
+  objectId: string;
+  eventType: string;
+  summary: string;
+}
+
+export interface DashboardPayload {
+  releasableVersions: ReleasableVersion[];
+  pipeline: PipelineCounts;
+  versions: VersionProgress[];
+  activity: ActivityItem[];
+}
+
+export interface TimelineEntry {
+  time: string;
+  eventType: string;
+  summary: string;
+  data: Record<string, unknown> | null;
+}
+
+export interface TaskDetail {
+  id: string;
+  name: string;
+  targetVersion: string | null;
+  status: string | null;
+  assignee: string | null;
+  updatedAt: string | null;
+  summary: string | null;
+  acceptanceCriteria: string[];
+  changeSummary: string | null;
+  prUrl: string | null;
+  acceptanceResult: "accepted" | "rejected" | null;
+  timeline: TimelineEntry[];
+}
+
+export interface VersionDetail {
+  id: string;
+  name: string;
+  status: string | null;
+  blocked: boolean;
+  tasks: Array<{
+    id: string;
+    name: string;
+    status: string | null;
+    ready: boolean;
+  }>;
+  manifest: {
+    versionId: string;
+    taskIds: string[];
+    createdAt: string;
+    checksum: string;
+  } | null;
+}

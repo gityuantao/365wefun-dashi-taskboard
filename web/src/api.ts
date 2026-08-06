@@ -8,6 +8,7 @@ import type {
   AiChatThreadSnapshot,
   Attachment,
   Comment,
+  DashboardPayload,
   DevelopmentScan,
   IssueRelationType,
   Project,
@@ -15,6 +16,8 @@ import type {
   TaskboardMetadata,
   TaskDraft,
   TaskStatus,
+  TaskDetail,
+  VersionDetail,
   WorkflowCapabilities,
   WorkflowWorkspaceRecord,
 } from "./types";
@@ -99,6 +102,30 @@ export async function getTaskboardRevision(
 ): Promise<{ changed: boolean; revision: number }> {
   const query = new URLSearchParams({ since: String(since) });
   return request<{ changed: boolean; revision: number }>(`/api/revisions?${query}`, { signal });
+}
+
+export async function getOrchestrationDashboard(signal?: AbortSignal): Promise<DashboardPayload> {
+  return request<DashboardPayload>("/api/orchestration/dashboard", { signal });
+}
+
+export async function getOrchestrationTaskDetail(
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<TaskDetail> {
+  return request<TaskDetail>(
+    `/api/orchestration/dashboard/tasks/${encodeURIComponent(taskId)}`,
+    { signal },
+  );
+}
+
+export async function getOrchestrationVersionDetail(
+  versionId: string,
+  signal?: AbortSignal,
+): Promise<VersionDetail> {
+  return request<VersionDetail>(
+    `/api/orchestration/dashboard/versions/${encodeURIComponent(versionId)}`,
+    { signal },
+  );
 }
 
 export async function getAiChatCatalog(
