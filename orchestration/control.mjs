@@ -4,8 +4,9 @@ import path from "node:path";
 const DEFAULT_CONTROL = { enabled: true, updatedAt: null };
 
 function normalize(raw) {
-  if (raw && typeof raw === "object" && raw.enabled === false) {
-    return { enabled: false, updatedAt: null };
+  if (raw && typeof raw === "object" && typeof raw.enabled === "boolean") {
+    const updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : null;
+    return { enabled: raw.enabled, updatedAt };
   }
   return { ...DEFAULT_CONTROL };
 }

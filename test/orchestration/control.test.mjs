@@ -35,6 +35,7 @@ test("writeControl persists enabled state and updates the timestamp", async (t) 
 
   const read = await readControl(file);
   assert.equal(read.enabled, false);
+  assert.equal(read.updatedAt, written.updatedAt);
   assert.equal(shouldProcess(read), false);
 });
 
