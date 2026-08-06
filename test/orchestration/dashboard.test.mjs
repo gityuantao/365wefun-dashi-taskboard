@@ -81,6 +81,84 @@ test("buildDashboard aggregates releasable versions, pipeline, versions and acti
   );
 });
 
+test("activity correlates the development PR by command id even when the job completes later", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db
+    .prepare("UPDATE runner_jobs SET completed_at = ? WHERE id = 'task-1-develop-1'")
+    .bind("2026-08-06T09:00:00.000Z")
+    .run();
+
+  const payload = await buildDashboard(harness.db);
+  const develop = payload.activity.find(
+    (item) => item.eventType === "task.development_completed",
+  );
+  assert.equal(
+    develop.summary,
+    "任务 任务一 开发完成，PR：https://github.com/example/pr/1",
+  );
+});
+
+test("terminal, blocked and empty versions are never releasable", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+
+  await harness.db
+    .prepare("UPDATE orchestration_aggregates SET state = 'published' WHERE aggregate_type = 'version' AND aggregate_id = 'version-1'")
+    .run();
+  let payload = await buildDashboard(harness.db);
+  assert.equal(payload.versions.find((v) => v.name === "1.0.1").releasable, false);
+  assert.deepEqual(payload.releasableVersions.map((v) => v.name), ["1.0.4"]);
+
+  await harness.db
+    .prepare("UPDATE orchestration_aggregates SET state = 'active' WHERE aggregate_type = 'version' AND aggregate_id = 'version-1'")
+    .run();
+  const blockedSnapshot = JSON.stringify({
+    id: "version-1",
+    listId: "list-version",
+    name: "1.0.1",
+    status: "active",
+    blocked: true,
+    updatedAt: "2026-08-06T08:00:00.000Z",
+    fieldsHash: "h3",
+  });
+  await harness.db
+    .prepare("UPDATE clickup_snapshots SET snapshot = ? WHERE object_type = 'version' AND object_id = 'version-1'")
+    .bind(blockedSnapshot)
+    .run();
+  payload = await buildDashboard(harness.db);
+  assert.equal(payload.versions.find((v) => v.name === "1.0.1").releasable, false);
+
+  await harness.db
+    .prepare(`
+      INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
+      VALUES ('version', 'version-empty', 'list-version', 'active', ?, 'h9', ?)
+    `)
+    .bind(JSON.stringify({
+      id: "version-empty",
+      listId: "list-version",
+      name: "9.9.9",
+      status: "active",
+      blocked: false,
+      updatedAt: "2026-08-06T08:00:00.000Z",
+      fieldsHash: "h9",
+    }), "2026-08-06T08:00:00.000Z")
+    .run();
+  await harness.db
+    .prepare(`
+      INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)
+      VALUES ('version', 'version-empty', 1, 'active', NULL, ?)
+    `)
+    .bind("2026-08-06T08:00:00.000Z")
+    .run();
+  payload = await buildDashboard(harness.db);
+  const empty = payload.versions.find((v) => v.name === "9.9.9");
+  assert.equal(empty.taskCount, 0);
+  assert.equal(empty.releasable, false);
+});
+
 test("buildTaskDetail aggregates analysis, development and acceptance results", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

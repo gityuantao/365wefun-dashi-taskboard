@@ -215,7 +215,7 @@ export async function seedDashboardFixture(db) {
     `).bind(DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO orchestration_events (id, sequence, aggregate_type, aggregate_id, aggregate_version, type, command_id, actor_id, occurred_at, data, previous_hash, hash)
-      VALUES ('evt-2', 2, 'task', 'task-1', 3, 'task.development_completed', 'cmd-seed-2', 'runner-developer', ?, '{}', 'h-e1', 'h-e2')
+      VALUES ('evt-2', 2, 'task', 'task-1', 3, 'task.development_completed', 'development-task-1-develop-1', 'runner-developer', ?, '{}', 'h-e1', 'h-e2')
     `).bind(DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO orchestration_events (id, sequence, aggregate_type, aggregate_id, aggregate_version, type, command_id, actor_id, occurred_at, data, previous_hash, hash)
@@ -356,6 +356,84 @@ test("buildDashboard aggregates releasable versions, pipeline, versions and acti
   );
 });
 
+test("activity correlates the development PR by command id even when the job completes later", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db
+    .prepare("UPDATE runner_jobs SET completed_at = ? WHERE id = 'task-1-develop-1'")
+    .bind("2026-08-06T09:00:00.000Z")
+    .run();
+
+  const payload = await buildDashboard(harness.db);
+  const develop = payload.activity.find(
+    (item) => item.eventType === "task.development_completed",
+  );
+  assert.equal(
+    develop.summary,
+    "任务 任务一 开发完成，PR：https://github.com/example/pr/1",
+  );
+});
+
+test("terminal, blocked and empty versions are never releasable", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+
+  await harness.db
+    .prepare("UPDATE orchestration_aggregates SET state = 'published' WHERE aggregate_type = 'version' AND aggregate_id = 'version-1'")
+    .run();
+  let payload = await buildDashboard(harness.db);
+  assert.equal(payload.versions.find((v) => v.name === "1.0.1").releasable, false);
+  assert.deepEqual(payload.releasableVersions.map((v) => v.name), ["1.0.4"]);
+
+  await harness.db
+    .prepare("UPDATE orchestration_aggregates SET state = 'active' WHERE aggregate_type = 'version' AND aggregate_id = 'version-1'")
+    .run();
+  const blockedSnapshot = JSON.stringify({
+    id: "version-1",
+    listId: "list-version",
+    name: "1.0.1",
+    status: "active",
+    blocked: true,
+    updatedAt: "2026-08-06T08:00:00.000Z",
+    fieldsHash: "h3",
+  });
+  await harness.db
+    .prepare("UPDATE clickup_snapshots SET snapshot = ? WHERE object_type = 'version' AND object_id = 'version-1'")
+    .bind(blockedSnapshot)
+    .run();
+  payload = await buildDashboard(harness.db);
+  assert.equal(payload.versions.find((v) => v.name === "1.0.1").releasable, false);
+
+  await harness.db
+    .prepare(`
+      INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
+      VALUES ('version', 'version-empty', 'list-version', 'active', ?, 'h9', ?)
+    `)
+    .bind(JSON.stringify({
+      id: "version-empty",
+      listId: "list-version",
+      name: "9.9.9",
+      status: "active",
+      blocked: false,
+      updatedAt: "2026-08-06T08:00:00.000Z",
+      fieldsHash: "h9",
+    }), "2026-08-06T08:00:00.000Z")
+    .run();
+  await harness.db
+    .prepare(`
+      INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)
+      VALUES ('version', 'version-empty', 1, 'active', NULL, ?)
+    `)
+    .bind("2026-08-06T08:00:00.000Z")
+    .run();
+  payload = await buildDashboard(harness.db);
+  const empty = payload.versions.find((v) => v.name === "9.9.9");
+  assert.equal(empty.taskCount, 0);
+  assert.equal(empty.releasable, false);
+});
+
 test("buildTaskDetail aggregates analysis, development and acceptance results", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -406,6 +484,7 @@ Create `orchestration/dashboard/queries.mjs`:
 
 ```js
 import { TASK_STATES } from "../domain/task-state.mjs";
+import { compareVersions } from "../release/version-utils.mjs";
 
 const ACTIVITY_LABELS = {
   "task.analysis_started": "开始分析",
@@ -508,7 +587,7 @@ function prUrlOf(result) {
 async function loadActivity(db, limit, tasks, versions) {
   const events = (await db
     .prepare(`
-      SELECT aggregate_type, aggregate_id, type, occurred_at
+      SELECT aggregate_type, aggregate_id, type, occurred_at, command_id
       FROM orchestration_events
       ORDER BY occurred_at DESC, sequence DESC
       LIMIT ?
@@ -528,27 +607,20 @@ async function loadActivity(db, limit, tasks, versions) {
     const subject = event.aggregate_type === "version" ? `版本 ${name}` : `任务 ${name}`;
     const label = ACTIVITY_LABELS[event.type] ?? event.type;
     let summary = `${subject} ${label}`;
-    let developResult = null;
-    let acceptResult = null;
-    if (event.type === "task.development_completed") {
-      const job = await latestJobBefore(db, event.aggregate_id, "develop", event.occurred_at);
-      developResult = job?.result ?? null;
-    }
     if (
-      event.type === "task.acceptance_passed"
-      || event.type === "task.acceptance_failed"
+      event.type === "task.development_completed"
+      && typeof event.command_id === "string"
+      && event.command_id.startsWith("development-")
     ) {
-      const job = await latestJobBefore(db, event.aggregate_id, "accept", event.occurred_at);
-      acceptResult = job?.result ?? null;
-    }
-    if (event.type === "task.development_completed" && prUrlOf(developResult)) {
-      summary = `${subject} 开发完成，PR：${prUrlOf(developResult)}`;
-    }
-    if (event.type === "task.acceptance_passed" && acceptResult?.result === "accepted") {
-      summary = `${subject} 验收通过`;
-    }
-    if (event.type === "task.acceptance_failed" && acceptResult?.result === "rejected") {
-      summary = `${subject} 验收失败，退回待开发`;
+      const jobId = event.command_id.slice("development-".length);
+      const row = await db
+        .prepare("SELECT result FROM runner_jobs WHERE id = ? AND status = 'completed'")
+        .bind(jobId)
+        .first();
+      const result = row ? JSON.parse(row.result) : null;
+      if (prUrlOf(result)) {
+        summary = `${subject} 开发完成，PR：${prUrlOf(result)}`;
+      }
     }
     return {
       time: event.occurred_at,
@@ -599,7 +671,7 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
         releaseFailed: version.status === "release_failed",
       };
     })
-    .sort((left, right) => left.name.localeCompare(right.name));
+    .sort((left, right) => compareVersions(left.name, right.name) || left.name.localeCompare(right.name));
 
   const releasableVersions = versionProgress
     .filter((version) => version.releasable)
@@ -703,8 +775,17 @@ export async function buildVersionDetail(db, versionId) {
   if (!snapshotRow) return null;
   const snapshot = JSON.parse(snapshotRow.snapshot);
   const status = aggregateRow?.state ?? snapshotRow.status;
-  const versionTasks = tasks
-    .filter((task) => task.targetVersion === (snapshot.name ?? versionId))
+  const matchingTasks = tasks.filter(
+    (task) => task.targetVersion === (snapshot.name ?? versionId),
+  );
+  const byTaskId = new Map(matchingTasks.map((task) => [task.id, task]));
+  const manifest = manifestRow ? JSON.parse(manifestRow.manifest) : null;
+  const orderedTaskIds = manifest
+    ? [...new Set([...manifest.taskIds, ...matchingTasks.map((task) => task.id)])]
+    : matchingTasks.map((task) => task.id);
+  const versionTasks = orderedTaskIds
+    .map((taskId) => byTaskId.get(taskId))
+    .filter(Boolean)
     .map((task) => ({
       id: task.id,
       name: task.name ?? task.id,
@@ -719,7 +800,7 @@ export async function buildVersionDetail(db, versionId) {
     status,
     blocked: snapshot.blocked === true,
     tasks: versionTasks,
-    manifest: manifestRow ? JSON.parse(manifestRow.manifest) : null,
+    manifest,
   };
 }
 ```
@@ -727,7 +808,7 @@ export async function buildVersionDetail(db, versionId) {
 - [ ] **Step 4: 运行测试，验证通过**
 
 Run: `node --test test/orchestration/dashboard.test.mjs`
-Expected: PASS（3 个测试全部通过）。
+Expected: PASS（5 个测试全部通过）。
 
 - [ ] **Step 5: 提交**
 

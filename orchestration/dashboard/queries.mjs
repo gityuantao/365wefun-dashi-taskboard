@@ -1,4 +1,5 @@
 import { TASK_STATES } from "../domain/task-state.mjs";
+import { compareVersions } from "../release/version-utils.mjs";
 
 const ACTIVITY_LABELS = {
   "task.analysis_started": "开始分析",
@@ -101,7 +102,7 @@ function prUrlOf(result) {
 async function loadActivity(db, limit, tasks, versions) {
   const events = (await db
     .prepare(`
-      SELECT aggregate_type, aggregate_id, type, occurred_at
+      SELECT aggregate_type, aggregate_id, type, occurred_at, command_id
       FROM orchestration_events
       ORDER BY occurred_at DESC, sequence DESC
       LIMIT ?
@@ -121,27 +122,20 @@ async function loadActivity(db, limit, tasks, versions) {
     const subject = event.aggregate_type === "version" ? `版本 ${name}` : `任务 ${name}`;
     const label = ACTIVITY_LABELS[event.type] ?? event.type;
     let summary = `${subject} ${label}`;
-    let developResult = null;
-    let acceptResult = null;
-    if (event.type === "task.development_completed") {
-      const job = await latestJobBefore(db, event.aggregate_id, "develop", event.occurred_at);
-      developResult = job?.result ?? null;
-    }
     if (
-      event.type === "task.acceptance_passed"
-      || event.type === "task.acceptance_failed"
+      event.type === "task.development_completed"
+      && typeof event.command_id === "string"
+      && event.command_id.startsWith("development-")
     ) {
-      const job = await latestJobBefore(db, event.aggregate_id, "accept", event.occurred_at);
-      acceptResult = job?.result ?? null;
-    }
-    if (event.type === "task.development_completed" && prUrlOf(developResult)) {
-      summary = `${subject} 开发完成，PR：${prUrlOf(developResult)}`;
-    }
-    if (event.type === "task.acceptance_passed" && acceptResult?.result === "accepted") {
-      summary = `${subject} 验收通过`;
-    }
-    if (event.type === "task.acceptance_failed" && acceptResult?.result === "rejected") {
-      summary = `${subject} 验收失败，退回待开发`;
+      const jobId = event.command_id.slice("development-".length);
+      const row = await db
+        .prepare("SELECT result FROM runner_jobs WHERE id = ? AND status = 'completed'")
+        .bind(jobId)
+        .first();
+      const result = row ? JSON.parse(row.result) : null;
+      if (prUrlOf(result)) {
+        summary = `${subject} 开发完成，PR：${prUrlOf(result)}`;
+      }
     }
     return {
       time: event.occurred_at,
@@ -192,7 +186,7 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
         releaseFailed: version.status === "release_failed",
       };
     })
-    .sort((left, right) => left.name.localeCompare(right.name));
+    .sort((left, right) => compareVersions(left.name, right.name) || left.name.localeCompare(right.name));
 
   const releasableVersions = versionProgress
     .filter((version) => version.releasable)
@@ -296,8 +290,17 @@ export async function buildVersionDetail(db, versionId) {
   if (!snapshotRow) return null;
   const snapshot = JSON.parse(snapshotRow.snapshot);
   const status = aggregateRow?.state ?? snapshotRow.status;
-  const versionTasks = tasks
-    .filter((task) => task.targetVersion === (snapshot.name ?? versionId))
+  const matchingTasks = tasks.filter(
+    (task) => task.targetVersion === (snapshot.name ?? versionId),
+  );
+  const byTaskId = new Map(matchingTasks.map((task) => [task.id, task]));
+  const manifest = manifestRow ? JSON.parse(manifestRow.manifest) : null;
+  const orderedTaskIds = manifest
+    ? [...new Set([...manifest.taskIds, ...matchingTasks.map((task) => task.id)])]
+    : matchingTasks.map((task) => task.id);
+  const versionTasks = orderedTaskIds
+    .map((taskId) => byTaskId.get(taskId))
+    .filter(Boolean)
     .map((task) => ({
       id: task.id,
       name: task.name ?? task.id,
@@ -312,6 +315,6 @@ export async function buildVersionDetail(db, versionId) {
     status,
     blocked: snapshot.blocked === true,
     tasks: versionTasks,
-    manifest: manifestRow ? JSON.parse(manifestRow.manifest) : null,
+    manifest,
   };
 }
