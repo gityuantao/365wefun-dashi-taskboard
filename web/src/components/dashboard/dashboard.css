@@ -507,8 +507,23 @@
 }
 
 .detail-dialog {
+  display: flex;
+  flex-direction: column;
   width: min(680px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 32px));
+  overflow: hidden;
+}
+
+.detail-dialog > .dialog-header,
+.detail-dialog > .dialog-footer {
+  flex: 0 0 auto;
+}
+
+.detail-dialog > .form-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .detail-dialog-loading {
