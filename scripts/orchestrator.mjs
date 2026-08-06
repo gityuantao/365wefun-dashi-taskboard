@@ -176,7 +176,7 @@ const versionListKey = (runtime.listSet ?? "sandbox") === "production" ? "versio
 const dashboardServer = await startDashboardServer({
   db,
   port: Number(runtime.dashboardPort ?? process.env.ORCHESTRATION_DASHBOARD_PORT ?? 47824),
-  versionListUrl: `https://app.clickup.com/${config.spaceId}/v/l/${config.lists[versionListKey].id}`,
+  versionListUrl: `https://app.clickup.com/${encodeURIComponent(config.spaceId)}/v/l/${encodeURIComponent(config.lists[versionListKey].id)}`,
 });
 log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
 

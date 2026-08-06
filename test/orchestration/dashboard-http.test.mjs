@@ -61,6 +61,8 @@ test("orchestrator dashboard server exposes read-only JSON endpoints", async (t)
     method: "POST",
   });
   assert.equal(post.status, 405);
+  const postBody = await post.json();
+  assert.deepEqual(postBody.error.details.allowed, ["GET"]);
 
   const missing = await fetch(
     `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/tasks/missing`,

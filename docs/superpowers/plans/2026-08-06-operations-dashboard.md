@@ -1164,6 +1164,8 @@ test("orchestrator dashboard server exposes read-only JSON endpoints", async (t)
     method: "POST",
   });
   assert.equal(post.status, 405);
+  const postBody = await post.json();
+  assert.deepEqual(postBody.error.details.allowed, ["GET"]);
 
   const missing = await fetch(
     `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/tasks/missing`,
@@ -1323,7 +1325,7 @@ import { startDashboardServer } from "../orchestration/dashboard/http-server.mjs
 const dashboardServer = await startDashboardServer({
   db,
   port: Number(runtime.dashboardPort ?? process.env.ORCHESTRATION_DASHBOARD_PORT ?? 47824),
-  versionListUrl: `https://app.clickup.com/${config.spaceId}/v/l/${config.lists[versionListKey].id}`,
+  versionListUrl: `https://app.clickup.com/${encodeURIComponent(config.spaceId)}/v/l/${encodeURIComponent(config.lists[versionListKey].id)}`,
 });
 log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
 ```
