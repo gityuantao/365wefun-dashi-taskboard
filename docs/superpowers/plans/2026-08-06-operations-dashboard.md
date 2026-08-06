@@ -1156,6 +1156,13 @@ test("orchestrator dashboard server exposes read-only JSON endpoints", async (t)
     `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/missing`,
   );
   assert.equal(missingVersion.status, 404);
+
+  const malformed = await fetch(
+    `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/tasks/%`,
+  );
+  assert.equal(malformed.status, 400);
+  const malformedBody = await malformed.json();
+  assert.equal(malformedBody.error.code, "INVALID_PATH");
 });
 ```
 
@@ -1206,7 +1213,15 @@ export async function startDashboardServer({ db, port = 47824, versionListUrl = 
       const taskMatch = pathname.match(/^\/api\/orchestration\/dashboard\/tasks\/([^/]+)$/);
       if (taskMatch) {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
-        const detail = await buildTaskDetail(db, decodeURIComponent(taskMatch[1]));
+        let taskId;
+        try {
+          taskId = decodeURIComponent(taskMatch[1]);
+        } catch {
+          return sendJson(response, 400, {
+            error: { code: "INVALID_PATH", message: "Task id contains invalid encoding" },
+          });
+        }
+        const detail = await buildTaskDetail(db, taskId);
         if (!detail) {
           return sendJson(response, 404, {
             error: { code: "NOT_FOUND", message: "Task not found" },
@@ -1218,7 +1233,15 @@ export async function startDashboardServer({ db, port = 47824, versionListUrl = 
       const versionMatch = pathname.match(/^\/api\/orchestration\/dashboard\/versions\/([^/]+)$/);
       if (versionMatch) {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
-        const detail = await buildVersionDetail(db, decodeURIComponent(versionMatch[1]));
+        let versionId;
+        try {
+          versionId = decodeURIComponent(versionMatch[1]);
+        } catch {
+          return sendJson(response, 400, {
+            error: { code: "INVALID_PATH", message: "Version id contains invalid encoding" },
+          });
+        }
+        const detail = await buildVersionDetail(db, versionId);
         if (!detail) {
           return sendJson(response, 404, {
             error: { code: "NOT_FOUND", message: "Version not found" },

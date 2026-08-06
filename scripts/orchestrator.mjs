@@ -46,6 +46,7 @@ import {
 } from "../orchestration/runner/worktree.mjs";
 import { claimJob, completeJob } from "../orchestration/persistence/d1-runner-jobs.mjs";
 import { loadAggregate } from "../orchestration/persistence/d1-aggregate-store.mjs";
+import { startDashboardServer } from "../orchestration/dashboard/http-server.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = process.env.ORCHESTRATION_CONFIG
@@ -171,6 +172,13 @@ const codex = {
 
 const taskListKey = (runtime.listSet ?? "sandbox") === "production" ? "task" : "taskSandbox";
 const versionListKey = (runtime.listSet ?? "sandbox") === "production" ? "version" : "versionSandbox";
+
+const dashboardServer = await startDashboardServer({
+  db,
+  port: Number(runtime.dashboardPort ?? process.env.ORCHESTRATION_DASHBOARD_PORT ?? 47824),
+  versionListUrl: `https://app.clickup.com/${config.spaceId}/v/l/${config.lists[versionListKey].id}`,
+});
+log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
 
 const handlers = {
   analyze: async (job) => {
