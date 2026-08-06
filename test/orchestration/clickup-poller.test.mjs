@@ -26,7 +26,6 @@ const CONFIG = {
     开发中: "developing",
     待测试: "ready_for_test",
     测试中: "testing",
-    验收中: "accepting",
     待发布: "ready_for_release",
     已发布: "published",
     已取消: "canceled",

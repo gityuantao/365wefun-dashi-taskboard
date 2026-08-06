@@ -19,7 +19,7 @@ const CONFIG = loadClickUpConfig({
     taskSandbox: { id: "901616314492", name: "任务-Sandbox" },
     versionSandbox: { id: "901616314494", name: "版本-Sandbox" },
   },
-  taskStatusMap: { 收件箱: "inbox", 验收中: "accepting", 待发布: "ready_for_release" },
+  taskStatusMap: { 收件箱: "inbox", 测试中: "testing", 待发布: "ready_for_release" },
   versionStatusMap: { 规划中: "planning", 发布中: "releasing" },
   fields: {
     task: {
@@ -84,7 +84,7 @@ test("fields hash is deterministic and changes with content", () => {
   const second = normalizeTask(taskPayload(), CONFIG);
   assert.equal(first.fieldsHash, second.fieldsHash);
   const changed = normalizeTask(
-    taskPayload({ status: { status: "验收中" } }),
+    taskPayload({ status: { status: "测试中" } }),
     CONFIG,
   );
   assert.notEqual(changed.fieldsHash, first.fieldsHash);
@@ -101,12 +101,12 @@ test("saveSnapshot and loadLastConfirmed round-trip through D1", async (t) => {
   assert.equal(loaded.fieldsHash, snapshot.fieldsHash);
 
   const updated = normalizeTask(
-    taskPayload({ status: { status: "验收中" }, updated_at: "2026-08-04T00:00:01.000Z" }),
+    taskPayload({ status: { status: "测试中" }, updated_at: "2026-08-04T00:00:01.000Z" }),
     CONFIG,
   );
   await saveSnapshot(harness.db, { type: "task", snapshot: updated });
   const reloaded = await loadLastConfirmed(harness.db, "task", "task-1");
-  assert.equal(reloaded.status, "accepting");
+  assert.equal(reloaded.status, "testing");
 });
 
 test("compareSnapshots reports field-level changes", () => {
@@ -116,9 +116,9 @@ test("compareSnapshots reports field-level changes", () => {
     { field: "targetVersion", from: null, to: "version-9" },
     { field: "updatedAt", from: null, to: "2026-08-04T00:00:00.000Z" },
   ]);
-  const moved = normalizeTask(taskPayload({ status: { status: "验收中" } }), CONFIG);
+  const moved = normalizeTask(taskPayload({ status: { status: "测试中" } }), CONFIG);
   assert.deepEqual(compareSnapshots(confirmed, moved), [
-    { field: "status", from: "inbox", to: "accepting" },
+    { field: "status", from: "inbox", to: "testing" },
   ]);
   assert.deepEqual(compareSnapshots(confirmed, confirmed), []);
 });

@@ -40,10 +40,13 @@ async function loadTasks(db) {
     WHERE s.object_type = 'task'
   `).all()).results;
   return rows
-    .map((row) => ({
-      ...parseSnapshot(row),
-      status: row.aggregate_state ?? row.snapshot_status,
-    }))
+    .map((row) => {
+      const state = row.aggregate_state ?? row.snapshot_status;
+      return {
+        ...parseSnapshot(row),
+        status: state === "accepting" ? "developing" : state,
+      };
+    })
     .filter((task) => task?.id);
 }
 
@@ -145,7 +148,9 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
     loadVersions(db),
     loadOpenTaskBlockers(db),
   ]);
-  const pipeline = Object.fromEntries(TASK_STATES.map((state) => [state, 0]));
+  const pipeline = Object.fromEntries(
+    TASK_STATES.filter((state) => state !== "accepting").map((state) => [state, 0]),
+  );
   for (const task of tasks) {
     if (pipeline[task.status] !== undefined) pipeline[task.status] += 1;
   }
@@ -241,7 +246,8 @@ export async function buildTaskDetail(db, taskId) {
   ]);
   if (!snapshotRow) return null;
   const snapshot = JSON.parse(snapshotRow.snapshot);
-  const status = aggregateRow?.state ?? snapshotRow.status;
+  const rawStatus = aggregateRow?.state ?? snapshotRow.status;
+  const status = rawStatus === "accepting" ? "developing" : rawStatus;
 
   const [analyzeJob, developJob, acceptJob, timeline] = await Promise.all([
     latestJob(db, taskId, "analyze"),

@@ -39,7 +39,6 @@ test("buildDashboard aggregates releasable versions, pipeline, versions and acti
     "developing",
     "ready_for_test",
     "testing",
-    "accepting",
     "ready_for_release",
     "published",
     "canceled",

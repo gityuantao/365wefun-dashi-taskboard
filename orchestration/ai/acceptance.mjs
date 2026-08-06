@@ -42,7 +42,7 @@ export async function executeAcceptance({
     try {
       commentContext = buildCommentContext(await client.getComments(taskId));
     } catch {}
-    // 验收开始：立即推进到「验收中」，下一轮状态同步会写回 ClickUp
+    // 验收开始：任务保持「开发中」，通过后直接进入「待测试」
     let aggregate = await loadAggregate(db, "task", taskId);
     const run = await codex.run({
       prompt: buildAcceptancePrompt(task, acceptanceCriteria, commitSha, commentContext),

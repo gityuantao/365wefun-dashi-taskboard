@@ -23,7 +23,6 @@ const VALID_CONFIG = {
     开发中: "developing",
     待测试: "ready_for_test",
     测试中: "testing",
-    验收中: "accepting",
     待发布: "ready_for_release",
     已发布: "published",
     已取消: "canceled",
@@ -71,7 +70,7 @@ test("config registry rejects missing required sections", () => {
 test("task status mapping resolves every ClickUp status to the canonical state", () => {
   const config = loadClickUpConfig(VALID_CONFIG);
   assert.equal(resolveTaskStatus(config, "收件箱"), "inbox");
-  assert.equal(resolveTaskStatus(config, "验收中"), "accepting");
+  assert.equal(resolveTaskStatus(config, "测试中"), "testing");
   assert.equal(resolveTaskStatus(config, "待发布"), "ready_for_release");
   assert.equal(resolveTaskStatus(config, "已发布"), "published");
   assert.throws(() => resolveTaskStatus(config, "不存在状态"), /UNKNOWN_STATUS/);
