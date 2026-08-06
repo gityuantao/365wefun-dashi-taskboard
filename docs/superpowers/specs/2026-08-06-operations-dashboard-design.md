@@ -81,27 +81,46 @@ MVP 第一阶段完成了 ClickUp 驱动的自动化编排（分析→开发→�
 - 点击任务/版本条目 → 右侧抽屉显示详情：
   - 任务：名称、目标版本、当前状态、执行摘要、验收标准、PR 链接、证据链接、状态时间线。
   - 版本：版本名、状态、任务清单（含各自状态）、Manifest（如有）。
-- 数据自动刷新：沿用现有 revision 轮询机制，每次编排状态变化后重新拉取。
+- 数据自动刷新：前端独立定时轮询 dashboard 端点（10~30 秒一次），
+  不依赖现有 revision 机制。
 
 ## 6. 技术方案
 
 ### 6.1 后端
 
-- 在 `server/app.mjs` 新增聚合端点 `GET /api/orchestration/dashboard`：
-  - 读取编排 D1（与 orchestrator 同一数据库）中的
-    `orchestration_aggregates`、`clickup_snapshots`、`runner_jobs`、
-    `release_manifests`。
+- 在 **orchestrator 进程内**新增只读聚合端点 `GET /api/orchestration/dashboard`
+  （orchestrator 已持有编排 D1 连接，避免 server 直接打开同一 sqlite 造成并发读写问题）。
+- server 作为反向代理转发该请求给前端（新增 `GET /api/orchestration/dashboard` 代理路由）。
+- 数据源：`orchestration_aggregates`、`clickup_snapshots`、`runner_jobs`、
+  `orchestration_events`、`release_manifests`。
   - 返回：
     ```json
     {
       "releasableVersions": [{ "id", "name", "taskCount", "readyCount", "url" }],
       "pipeline": { "inbox": 0, "analyzing": 2, "waiting_info": 0, ... },
       "versions": [{ "id", "name", "status", "taskCount", "readyCount", "releasable" }],
-      "activity": [{ "time", "objectType", "objectId", "summary" }],
-      "revision": 123
+      "activity": [{ "time", "objectType", "objectId", "eventType", "summary" }]
     }
     ```
-- 现有 `GET /api/revisions` 沿用，dashboard 端点返回同一 revision 供前端轮询。
+- **不使用现有 `/api/revisions` 轮询**：该机制仅在 cloud 模式启用，本地 orchestrator
+  是 local 模式，轮询关闭。dashboard 使用**独立的前端定时轮询**（10~30 秒一次）
+  直接拉取 dashboard 端点。
+
+### 6.1.1 任务/版本详情数据源
+
+- `clickup_snapshots` 仅含 `id/name/status/targetVersion/assignee/updatedAt`，
+  不含执行摘要、验收标准、PR、证据。这些详情从 **`runner_jobs.result`** 聚合：
+  - 分析作业结果：`summary.scope`（执行摘要）、`summary.acceptance_criteria`（验收标准）
+  - 开发作业结果：`pr.url`（PR 链接）、`changeSummary`
+  - 验收作业结果：`result`（accepted/rejected）
+- 状态时间线从 `orchestration_events` 读取（`occurred_at`、`type`、`data.from/to`）。
+- 抽屉按 taskId 查询该任务最近一次各类型作业结果 + 事件时间线。
+
+### 6.1.2 实时活动数据源
+
+- 以 `orchestration_events` 为主：它记录全部任务/版本状态变化
+  （含 actor、occurred_at、event type、from/to），可按时间倒序取最近 20 条。
+- `runner_jobs` 仅补充作业摘要（开发 PR、验收结论），按 commandId 关联事件。
 
 ### 6.2 前端
 
