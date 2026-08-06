@@ -44,10 +44,10 @@ async function seedVersion(harness, versionId) {
 }
 
 async function seedTaskToRelease(harness, taskId) {
-  for (let index = 0; index < 8; index += 1) {
+  for (let index = 0; index < 7; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed", "start_test", "test_passed", "start_acceptance",
-      "acceptance_passed"][index];
+      "development_completed", "acceptance_passed", "start_test",
+      "test_passed"][index];
     await dispatchCommand({
       db: harness.db,
       command: parseCommandEnvelope({

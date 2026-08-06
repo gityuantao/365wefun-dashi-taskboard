@@ -9,9 +9,9 @@ import { executeAcceptance } from "../../orchestration/ai/acceptance.mjs";
 const NOW = "2026-08-04T00:04:00.000Z";
 
 async function seedToAccepting(harness) {
-  for (let index = 0; index < 7; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed", "start_test", "test_passed", "start_acceptance"][index];
+      "development_completed"][index];
     await dispatchCommand({
       db: harness.db,
       command: parseCommandEnvelope({
@@ -89,7 +89,7 @@ test("acceptance passes and advances to ready for release with a target version"
   });
   assert.equal(result.status, "completed");
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.state, "ready_for_release");
+  assert.equal(aggregate.state, "ready_for_test");
 });
 
 test("acceptance refuses to advance without a target version", async (t) => {

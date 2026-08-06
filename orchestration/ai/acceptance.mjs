@@ -108,7 +108,7 @@ export async function executeAcceptance({
         parameters: { targetVersion },
       });
       const result = await dispatchCommand({ db, command, now });
-      const comment = stateChangeText("task", "accepting", "ready_for_release");
+      const comment = stateChangeText("task", "accepting", "ready_for_test");
       if (comment) {
         try {
           await client.postComment(taskId, comment);
@@ -124,7 +124,9 @@ export async function executeAcceptance({
     }
 
     const findings = parsed.findings ?? [];
-    const feedbackText = formatAcceptanceFeedback(findings);
+    const feedbackText = `${formatAcceptanceFeedback(findings)}
+
+已退回待开发。确认修复后请在 ClickUp 把状态改为「开发中」以重新开发。`;
     await client.postComment(taskId, feedbackText);
     if (fieldIds.feedback) {
       try {
@@ -145,6 +147,21 @@ export async function executeAcceptance({
       parameters: { evidenceId: `acceptance-${job.id}` },
     });
     const result = await dispatchCommand({ db, command, now });
+    await db
+      .prepare(`
+        INSERT OR IGNORE INTO runner_jobs (
+          id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+        ) VALUES (?, ?, 'accept', ?, 'paused', 'failed', ?, ?, ?)
+      `)
+      .bind(
+        "acceptance-paused-" + taskId,
+        "auto-accept-" + taskId,
+        JSON.stringify({ taskId }),
+        JSON.stringify({ error: "acceptance_paused" }),
+        now,
+        now,
+      )
+      .run();
     return {
       status: "completed",
       commandId: result.commandId,

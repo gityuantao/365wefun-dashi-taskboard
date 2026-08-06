@@ -122,28 +122,28 @@ test("poller processes tasks without requiring a managed flag", async (t) => {
 test("poller treats a move to 待验收 as test passed", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 6; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed", "start_test"][index];
+      "development_completed", "acceptance_passed", "start_test"][index];
     await dispatchTask(harness, `poll-task-cmd-${index}`, type, index + 1);
   }
-  const env = await makeEnv(harness, [sandboxTask({ status: "待验收" })]);
+  const env = await makeEnv(harness, [sandboxTask({ status: "待发布" })]);
   const result = await pollClickUpOnce(env, { now: NOW });
   assert.equal(result.processed, 1);
   assert.equal(result.commands.length, 1);
   assert.equal(result.commands[0].type, "test_passed");
   assert.equal(result.commands[0].status, "succeeded");
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.state, "ready_for_acceptance");
-  assert.equal(aggregate.version, 6);
+  assert.equal(aggregate.state, "ready_for_release");
+  assert.equal(aggregate.version, 7);
 });
 
 test("poller treats a move back to 待开发 as test failed", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 6; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed", "start_test"][index];
+      "development_completed", "acceptance_passed", "start_test"][index];
     await dispatchTask(harness, `poll-task-cmd-${index}`, type, index + 1);
   }
   const env = await makeEnv(harness, [
@@ -159,12 +159,12 @@ test("poller treats a move back to 待开发 as test failed", async (t) => {
 test("poller is idempotent for unchanged snapshots", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 6; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed", "start_test"][index];
+      "development_completed", "acceptance_passed", "start_test"][index];
     await dispatchTask(harness, `poll-task-cmd-${index}`, type, index + 1);
   }
-  const env = await makeEnv(harness, [sandboxTask({ status: "待验收" })]);
+  const env = await makeEnv(harness, [sandboxTask({ status: "待发布" })]);
   const first = await pollClickUpOnce(env, { now: NOW });
   assert.equal(first.commands.length, 1);
   const second = await pollClickUpOnce(env, { now: NOW });
@@ -193,9 +193,9 @@ test("poller records invalid commands without throwing", async (t) => {
 test("poller ignores unsupported status moves", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 6; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed", "start_test"][index];
+      "development_completed", "acceptance_passed", "start_test"][index];
     await dispatchTask(harness, `poll-task-cmd-${index}`, type, index + 1);
   }
   const env = await makeEnv(harness, [
@@ -289,9 +289,9 @@ test("poller resumes analysis when the user changes status back", async (t) => {
 test("poller does not auto-start testing while the task stays in 待测试", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed"][index];
+      "development_completed", "acceptance_passed"][index];
     await dispatchTask(harness, `poller-no-auto-start-${index}`, type, index + 1);
   }
   const env = await makeEnv(harness, [sandboxTask({ status: "待测试" })]);
@@ -304,9 +304,9 @@ test("poller does not auto-start testing while the task stays in 待测试", asy
 test("poller starts testing when the user moves to 测试中", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed"][index];
+      "development_completed", "acceptance_passed"][index];
     await dispatchTask(harness, `poller-manual-test-${index}`, type, index + 1);
   }
   const env = await makeEnv(harness, [sandboxTask({ status: "测试中" })]);
@@ -316,53 +316,36 @@ test("poller starts testing when the user moves to 测试中", async (t) => {
   assert.equal(result.commands[0].status, "succeeded");
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "testing");
-  assert.equal(aggregate.version, 5);
+  assert.equal(aggregate.version, 6);
 });
 
-test("poller pauses acceptance after repeated failures and resumes after manual rework", async (t) => {
+test("acceptance failure pauses development until the user starts it manually", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  for (let index = 0; index < 6; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed", "start_test", "test_passed"][index];
-    await dispatchTask(harness, `poll-pause-${index}`, type, index + 1);
-  }
-  for (let index = 0; index < 2; index += 1) {
-    await harness.db
-      .prepare(`
-        INSERT INTO orchestration_events (
-          id, sequence, aggregate_type, aggregate_id, aggregate_version, type,
-          command_id, actor_id, occurred_at, data, previous_hash, hash
-        ) VALUES (?, ?, 'task', 'task-1', ?, 'task.acceptance_failed', ?, 'system', ?, '{}', NULL, ?)
-      `)
-      .bind(`pause-fail-${index}`, 20 + index, 7 + index, `pause-cmd-${index}`, NOW, `${index === 0 ? "a" : "b"}`.repeat(64))
-      .run();
+      "development_failed"][index];
+    const parameters = type === "development_failed" ? { evidenceId: "dev-fail-1" } : {};
+    await dispatchTask(harness, `poll-pause-${index}`, type, index + 1, parameters);
   }
   await harness.db
-    .prepare("UPDATE orchestration_aggregates SET aggregate_version = 8 WHERE aggregate_type = 'task' AND aggregate_id = 'task-1'")
+    .prepare(`
+      INSERT OR IGNORE INTO runner_jobs (
+        id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+      ) VALUES ('acceptance-paused-task-1', 'auto-develop-task-1', 'develop', '{}', 'paused', 'failed', '{}', ?, ?)
+    `)
+    .bind(NOW, NOW)
     .run();
 
-  const comments = [];
-  const env = await makeEnv(harness, [sandboxTask({ status: "待验收" })], [], comments);
+  const env = await makeEnv(harness, [sandboxTask({ status: "待开发" })]);
   const first = await pollClickUpOnce(env, { now: NOW });
   assert.equal(first.commands.length, 0);
-  const paused = await harness.db
-    .prepare("SELECT id FROM runner_jobs WHERE id = ?")
-    .bind("acceptance-paused-task-1")
-    .first();
-  assert.ok(paused);
-  assert.equal(comments.length, 1);
-  assert.match(comments[0], /自动重试已暂停/);
 
-  const second = await pollClickUpOnce(env, { now: NOW });
-  assert.equal(second.commands.length, 0);
-  assert.equal(comments.length, 1);
-
-  const env2 = await makeEnv(harness, [sandboxTask({ status: "待开发" })], [], comments);
-  const third = await pollClickUpOnce(env2, { now: NOW });
-  const rework = third.commands.find((command) => command.type === "acceptance_needs_rework");
-  assert.ok(rework);
-  assert.equal(rework.status, "succeeded");
+  const env2 = await makeEnv(harness, [sandboxTask({ status: "开发中" })]);
+  const second = await pollClickUpOnce(env2, { now: NOW });
+  const startDev = second.commands.find((command) => command.type === "start_development");
+  assert.ok(startDev);
+  assert.equal(startDev.status, "succeeded");
   const pausedAfter = await harness.db
     .prepare("SELECT id FROM runner_jobs WHERE id = ?")
     .bind("acceptance-paused-task-1")
@@ -373,26 +356,26 @@ test("poller pauses acceptance after repeated failures and resumes after manual 
 test("moving directly to 待验收 is treated as test passed", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed"][index];
+      "development_completed", "acceptance_passed"][index];
     await dispatchTask(harness, `poll-direct-pass-${index}`, type, index + 1);
   }
-  const env = await makeEnv(harness, [sandboxTask({ status: "待验收" })]);
+  const env = await makeEnv(harness, [sandboxTask({ status: "待发布" })]);
   const result = await pollClickUpOnce(env, { now: NOW });
   const types = result.commands.map((command) => command.type);
   assert.ok(types.includes("test_passed"));
   assert.ok(!types.includes("start_test"));
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.state, "ready_for_acceptance");
+  assert.equal(aggregate.state, "ready_for_release");
 });
 
 test("moving directly to 待开发 is treated as test failed", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed"][index];
+      "development_completed", "acceptance_passed"][index];
     await dispatchTask(harness, `poll-direct-fail-${index}`, type, index + 1);
   }
   const env = await makeEnv(harness, [sandboxTask({ status: "待开发" })]);

@@ -230,21 +230,9 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
     now: NOW,
   });
   assert.equal(devResult.status, "completed");
-  assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "ready_for_test");
+  assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "accepting");
 
-  // 4) 人工测试通过 -> 待验收
-  const gate = await handleTestDecision({
-    db: harness.db,
-    taskId: "task-e2e-1",
-    decision: "pass",
-    actorId: "tester-e2e",
-    actorRoles: ["tester"],
-    now: NOW,
-  });
-  assert.equal(gate.status, "succeeded");
-
-  // 5) ClickUp 状态到待验收后轮询 -> 验收作业
-  clickUpTask = makeClickUpTask({ status: { status: "待验收" }, updated_at: "2026-08-04T00:11:00.000Z" });
+  // 4) 系统自动验收通过 -> 待测试
   await pollClickUpOnce(env, { now: NOW });
   const acceptClaim = await claimFromQueue(harness, "accept");
   const acceptResult = await executeAcceptance({
@@ -255,7 +243,23 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
     now: NOW,
   });
   assert.equal(acceptResult.status, "completed");
+  assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "ready_for_test");
+
+  // 5) 人工测试通过 -> 待发布
+  const gate = await handleTestDecision({
+    db: harness.db,
+    taskId: "task-e2e-1",
+    decision: "pass",
+    actorId: "tester-e2e",
+    actorRoles: ["tester"],
+    now: NOW,
+  });
+  assert.equal(gate.status, "succeeded");
   assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "ready_for_release");
+
+  // 6) ClickUp 状态到待发布后轮询 -> 版本聚合与发布
+  clickUpTask = makeClickUpTask({ status: { status: "待发布" }, updated_at: "2026-08-04T00:11:00.000Z" });
+  await pollClickUpOnce(env, { now: NOW });
 
   // 6) 版本聚合与发布
   await seedActiveVersion(harness, "version-e2e-1");

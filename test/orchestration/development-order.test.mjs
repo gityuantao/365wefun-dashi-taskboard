@@ -20,8 +20,8 @@ function task(id, { priority = 3, version = "version-1", created = "2026-08-04T0
 async function seedTask(harness, taskId, steps) {
   for (let index = 0; index < steps; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed", "start_test", "test_passed", "start_acceptance",
-      "acceptance_passed"][index];
+      "development_completed", "acceptance_passed", "start_test",
+      "test_passed"][index];
     await dispatchCommand({
       db: harness.db,
       command: parseCommandEnvelope({

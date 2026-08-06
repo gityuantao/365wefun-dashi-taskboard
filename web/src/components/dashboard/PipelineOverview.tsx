@@ -6,10 +6,9 @@ const PIPELINE_LABELS: Array<{ key: keyof PipelineCounts; label: string }> = [
   { key: "waiting_info", label: "待补充信息" },
   { key: "ready_for_development", label: "待开发" },
   { key: "developing", label: "开发中" },
+  { key: "accepting", label: "验收中" },
   { key: "ready_for_test", label: "待测试" },
   { key: "testing", label: "测试中" },
-  { key: "ready_for_acceptance", label: "待验收" },
-  { key: "accepting", label: "验收中" },
   { key: "ready_for_release", label: "待发布" },
   { key: "published", label: "已发布" },
 ];

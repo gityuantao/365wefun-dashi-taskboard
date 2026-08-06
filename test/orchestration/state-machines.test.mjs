@@ -52,10 +52,9 @@ test("task happy path is exact", () => {
     "analyzing",
     "ready_for_development",
     "developing",
+    "accepting",
     "ready_for_test",
     "testing",
-    "ready_for_acceptance",
-    "accepting",
     "ready_for_release",
     "published",
   ];
@@ -182,20 +181,9 @@ test("any un-terminated version can be canceled", () => {
   }
 });
 
-test("manual rework from ready for acceptance returns to ready for development", () => {
-  assert.equal(
-    decideTaskTransition({
-      from: "ready_for_acceptance",
-      to: "ready_for_development",
-      evidenceId: "manual-1",
-    }).eventType,
-    "task.acceptance_needs_rework",
-  );
-});
-
 test("direct test results move from ready for test without a testing state", () => {
   assert.equal(
-    decideTaskTransition({ from: "ready_for_test", to: "ready_for_acceptance" }).eventType,
+    decideTaskTransition({ from: "ready_for_test", to: "ready_for_release" }).eventType,
     "task.test_passed",
   );
   assert.equal(

@@ -21,7 +21,7 @@ export const TASK_COMMAND_HANDLERS = {
     return decideTaskTransition({ from: state, to: "developing" });
   },
   development_completed(state) {
-    return decideTaskTransition({ from: state, to: "ready_for_test" });
+    return decideTaskTransition({ from: state, to: "accepting" });
   },
   development_failed(state, parameters) {
     return decideTaskTransition({
@@ -34,7 +34,7 @@ export const TASK_COMMAND_HANDLERS = {
     return decideTaskTransition({ from: state, to: "testing" });
   },
   test_passed(state) {
-    return decideTaskTransition({ from: state, to: "ready_for_acceptance" });
+    return decideTaskTransition({ from: state, to: "ready_for_release" });
   },
   test_failed(state, parameters) {
     return decideTaskTransition({
@@ -47,7 +47,7 @@ export const TASK_COMMAND_HANDLERS = {
     return decideTaskTransition({ from: state, to: "accepting" });
   },
   acceptance_passed(state) {
-    return decideTaskTransition({ from: state, to: "ready_for_release" });
+    return decideTaskTransition({ from: state, to: "ready_for_test" });
   },
   acceptance_needs_rework(state, parameters) {
     return decideTaskTransition({

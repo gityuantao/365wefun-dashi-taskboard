@@ -9,9 +9,9 @@ import { handleTestDecision } from "../../orchestration/application/test-gate.mj
 const NOW = "2026-08-04T00:03:00.000Z";
 
 async function seedToTesting(harness) {
-  for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 6; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed", "start_test"][index];
+      "development_completed", "acceptance_passed", "start_test"][index];
     await dispatchCommand({
       db: harness.db,
       command: parseCommandEnvelope({
@@ -46,7 +46,7 @@ test("test decision rejects users without tester role", async (t) => {
   assert.match(result.error, /UNAUTHORIZED/);
 });
 
-test("test pass advances the task to ready for acceptance", async (t) => {
+test("test pass advances the task to ready for release", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedToTesting(harness);
@@ -60,7 +60,7 @@ test("test pass advances the task to ready for acceptance", async (t) => {
   });
   assert.equal(result.status, "succeeded");
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.state, "ready_for_acceptance");
+  assert.equal(aggregate.state, "ready_for_release");
 });
 
 test("test failure requires evidence and returns to ready for development", async (t) => {
@@ -112,5 +112,5 @@ test("test decision is idempotent for the same command id", async (t) => {
   const count = await harness.db
     .prepare("SELECT COUNT(*) AS count FROM orchestration_commands")
     .first();
-  assert.equal(count.count, 6);
+  assert.equal(count.count, 7);
 });

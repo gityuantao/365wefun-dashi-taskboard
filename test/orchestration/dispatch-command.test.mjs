@@ -70,11 +70,10 @@ test("task happy path dispatches every command with exact transitions", async (t
     ["start_analysis", "analyzing", "task.analysis_started"],
     ["analysis_completed", "ready_for_development", "task.analysis_completed"],
     ["start_development", "developing", "task.development_started"],
-    ["development_completed", "ready_for_test", "task.development_completed"],
+    ["development_completed", "accepting", "task.development_completed"],
+    ["acceptance_passed", "ready_for_test", "task.acceptance_passed"],
     ["start_test", "testing", "task.test_started"],
-    ["test_passed", "ready_for_acceptance", "task.test_passed"],
-    ["start_acceptance", "accepting", "task.acceptance_started"],
-    ["acceptance_passed", "ready_for_release", "task.acceptance_passed"],
+    ["test_passed", "ready_for_release", "task.test_passed"],
   ];
   for (let index = 0; index < steps.length; index += 1) {
     const [type, expectedState, expectedEventType] = steps[index];
@@ -97,13 +96,14 @@ test("test failure requires evidence and returns to ready for development", asyn
   await dispatchTask(harness, "task-cmd-1", "analysis_completed", 2);
   await dispatchTask(harness, "task-cmd-2", "start_development", 3);
   await dispatchTask(harness, "task-cmd-3", "development_completed", 4);
-  await dispatchTask(harness, "task-cmd-4", "start_test", 5);
+  await dispatchTask(harness, "task-cmd-4", "acceptance_passed", 5);
+  await dispatchTask(harness, "task-cmd-5", "start_test", 6);
 
   await assert.rejects(
-    dispatchTask(harness, "task-cmd-5", "test_failed", 6),
+    dispatchTask(harness, "task-cmd-6", "test_failed", 7),
     /EVIDENCE_REQUIRED/,
   );
-  const failed = await dispatchTask(harness, "task-cmd-6", "test_failed", 6, {
+  const failed = await dispatchTask(harness, "task-cmd-7", "test_failed", 7, {
     evidenceId: "ev-test-1",
   });
   assert.equal(failed.events[0].type, "task.test_failed");
@@ -111,18 +111,18 @@ test("test failure requires evidence and returns to ready for development", asyn
   assert.equal(failed.events[0].data.to, "ready_for_development");
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "ready_for_development");
-  assert.equal(aggregate.version, 6);
+  assert.equal(aggregate.version, 7);
 });
 
 test("acceptance failure requires evidence and returns to ready for development", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  for (let index = 0; index < 7; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
-      "development_completed", "start_test", "test_passed", "start_acceptance"][index];
+      "development_completed"][index];
     await dispatchTask(harness, `task-cmd-${index}`, type, index + 1);
   }
-  const failed = await dispatchTask(harness, "task-cmd-7", "acceptance_failed", 8, {
+  const failed = await dispatchTask(harness, "task-cmd-4", "acceptance_failed", 5, {
     evidenceId: "ev-accept-1",
   });
   assert.equal(failed.events[0].type, "task.acceptance_failed");

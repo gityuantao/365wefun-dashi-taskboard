@@ -23,31 +23,23 @@ const TASK_TRANSITIONS = new Map([
   ["analyzing:waiting_info", { to: "waiting_info", eventType: "task.analysis_needs_human" }],
   ["waiting_info:analyzing", { to: "analyzing", eventType: "task.analysis_restarted" }],
   ["ready_for_development:developing", { to: "developing", eventType: "task.development_started" }],
-  ["developing:ready_for_test", { to: "ready_for_test", eventType: "task.development_completed" }],
+  ["developing:accepting", { to: "accepting", eventType: "task.development_completed" }],
   [
     "developing:ready_for_development",
     { to: "ready_for_development", eventType: "task.development_failed", evidenceRequired: true },
   ],
   ["ready_for_test:testing", { to: "testing", eventType: "task.test_started" }],
   [
-    "ready_for_test:ready_for_acceptance",
-    { to: "ready_for_acceptance", eventType: "task.test_passed" },
-  ],
-  [
     "ready_for_test:ready_for_development",
     { to: "ready_for_development", eventType: "task.test_failed", evidenceRequired: true },
   ],
-  ["testing:ready_for_acceptance", { to: "ready_for_acceptance", eventType: "task.test_passed" }],
+  ["testing:ready_for_release", { to: "ready_for_release", eventType: "task.test_passed" }],
+  ["ready_for_test:ready_for_release", { to: "ready_for_release", eventType: "task.test_passed" }],
   [
     "testing:ready_for_development",
     { to: "ready_for_development", eventType: "task.test_failed", evidenceRequired: true },
   ],
-  ["ready_for_acceptance:accepting", { to: "accepting", eventType: "task.acceptance_started" }],
-  [
-    "ready_for_acceptance:ready_for_development",
-    { to: "ready_for_development", eventType: "task.acceptance_needs_rework", evidenceRequired: true },
-  ],
-  ["accepting:ready_for_release", { to: "ready_for_release", eventType: "task.acceptance_passed" }],
+  ["accepting:ready_for_test", { to: "ready_for_test", eventType: "task.acceptance_passed" }],
   [
     "accepting:ready_for_development",
     { to: "ready_for_development", eventType: "task.acceptance_failed", evidenceRequired: true },

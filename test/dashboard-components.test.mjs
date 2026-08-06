@@ -54,7 +54,7 @@ test("release actions show ready versions and an empty state", () => {
 
 test("pipeline overview maps canonical states to Chinese labels", () => {
   assert.match(pipelineSource, /export function PipelineOverview\(/);
-  for (const label of ["收件箱", "分析中", "待补充信息", "待开发", "开发中", "待测试", "测试中", "待验收", "验收中", "待发布", "已发布"]) {
+  for (const label of ["收件箱", "分析中", "待补充信息", "待开发", "开发中", "验收中", "待测试", "测试中", "待发布", "已发布"]) {
     assert.match(pipelineSource, new RegExp(label));
   }
 });

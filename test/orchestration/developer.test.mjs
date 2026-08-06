@@ -93,7 +93,7 @@ test("development completes, creates a PR, and advances to ready for test", asyn
   assert.equal(result.status, "completed");
   assert.equal(result.pr.url, "https://github.com/x/pull/1");
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.state, "ready_for_test");
+  assert.equal(aggregate.state, "accepting");
   assert.equal(aggregate.version, 4);
 });
 
