@@ -158,6 +158,12 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
       const readyCount = tasksInVersion.filter(
         (task) => task.status === "ready_for_release",
       ).length;
+      const notReadyCount = tasksInVersion.filter(
+        (task) => task.status !== "ready_for_release",
+      ).length;
+      const hasOpenBlockers = tasksInVersion.some(
+        (task) => openTaskBlockers.has(task.id),
+      );
       const allReady = tasksInVersion.length > 0
         && tasksInVersion.every((task) => task.status === "ready_for_release");
       const noOpenBlockers = tasksInVersion.every(
@@ -169,6 +175,8 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
         status: version.status ?? null,
         taskCount: tasksInVersion.length,
         readyCount,
+        notReadyCount,
+        hasOpenBlockers,
         releasable: version.status !== "published"
           && version.status !== "canceled"
           && version.status !== "releasing"
