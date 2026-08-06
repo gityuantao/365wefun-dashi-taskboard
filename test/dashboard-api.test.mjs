@@ -35,3 +35,12 @@ test("dashboard types carry contract-critical fields", () => {
   assert.match(typesSource, /export interface TaskDetail[\s\S]*?acceptanceResult: "accepted" \| "rejected" \| null;/);
   assert.match(typesSource, /export interface VersionDetail[\s\S]*?manifest: \{[\s\S]*?checksum: string;/);
 });
+
+test("control api and version fields are typed", () => {
+  assert.match(typesSource, /export interface OrchestrationControl[\s\S]*?enabled: boolean;/);
+  assert.match(typesSource, /export interface VersionProgress[\s\S]*?hasOpenBlockers: boolean;/);
+  assert.match(typesSource, /export interface VersionProgress[\s\S]*?notReadyCount: number;/);
+  assert.match(apiSource, /export async function getOrchestrationControl/);
+  assert.match(apiSource, /export async function setOrchestrationControl/);
+  assert.match(apiSource, /\/api\/orchestration\/control"/);
+});

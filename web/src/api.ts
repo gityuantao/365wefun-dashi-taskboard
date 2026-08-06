@@ -9,6 +9,7 @@ import type {
   Attachment,
   Comment,
   DashboardPayload,
+  OrchestrationControl,
   DevelopmentScan,
   IssueRelationType,
   Project,
@@ -102,6 +103,18 @@ export async function getTaskboardRevision(
 ): Promise<{ changed: boolean; revision: number }> {
   const query = new URLSearchParams({ since: String(since) });
   return request<{ changed: boolean; revision: number }>(`/api/revisions?${query}`, { signal });
+}
+
+
+export async function getOrchestrationControl(signal?: AbortSignal): Promise<OrchestrationControl> {
+  return request<OrchestrationControl>("/api/orchestration/control", { signal });
+}
+
+export async function setOrchestrationControl(enabled: boolean): Promise<OrchestrationControl> {
+  return request<OrchestrationControl>("/api/orchestration/control", {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
 }
 
 export async function getOrchestrationDashboard(signal?: AbortSignal): Promise<DashboardPayload> {

@@ -311,6 +311,8 @@ export interface VersionProgress {
   status: string | null;
   taskCount: number;
   readyCount: number;
+  notReadyCount: number;
+  hasOpenBlockers: boolean;
   releasable: boolean;
   releaseFailed: boolean;
 }
@@ -369,4 +371,9 @@ export interface VersionDetail {
     createdAt: string;
     checksum: string;
   } | null;
+}
+
+export interface OrchestrationControl {
+  enabled: boolean;
+  updatedAt: string | null;
 }
