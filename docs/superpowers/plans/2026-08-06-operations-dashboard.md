@@ -691,7 +691,11 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
   const releasableVersions = versionProgress
     .filter((version) => version.releasable)
     .map((version) => ({
-      ...version,
+      id: version.id,
+      name: version.name,
+      taskCount: version.taskCount,
+      readyCount: version.readyCount,
+      releaseFailed: version.releaseFailed,
       url: versionListUrl ?? `https://app.clickup.com/v/l/${version.id}`,
     }));
 
@@ -1597,6 +1601,13 @@ test("types include dashboard payload and detail shapes", () => {
     assert.match(typesSource, new RegExp(`export interface ${name}`));
   }
 });
+
+test("dashboard types carry contract-critical fields", () => {
+  assert.match(typesSource, /export interface ReleasableVersion[\s\S]*?releaseFailed: boolean;/);
+  assert.match(typesSource, /export interface DashboardPayload[\s\S]*?activity: ActivityItem\[\];/);
+  assert.match(typesSource, /export interface TaskDetail[\s\S]*?acceptanceResult: "accepted" \| "rejected" \| null;/);
+  assert.match(typesSource, /export interface VersionDetail[\s\S]*?manifest: \{[\s\S]*?checksum: string;/);
+});
 ```
 
 - [ ] **Step 2: 运行测试，验证失败**
@@ -1747,7 +1758,7 @@ export async function getOrchestrationVersionDetail(
 - [ ] **Step 5: 运行测试与类型检查**
 
 Run: `node --test test/dashboard-api.test.mjs`
-Expected: PASS（2 个测试全部通过）。
+Expected: PASS（3 个测试全部通过）。
 
 Run: `npm run typecheck`
 Expected: PASS，无 TypeScript 错误。

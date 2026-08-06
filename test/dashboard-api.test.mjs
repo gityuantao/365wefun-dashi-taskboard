@@ -28,3 +28,10 @@ test("types include dashboard payload and detail shapes", () => {
     assert.match(typesSource, new RegExp(`export interface ${name}`));
   }
 });
+
+test("dashboard types carry contract-critical fields", () => {
+  assert.match(typesSource, /export interface ReleasableVersion[\s\S]*?releaseFailed: boolean;/);
+  assert.match(typesSource, /export interface DashboardPayload[\s\S]*?activity: ActivityItem\[\];/);
+  assert.match(typesSource, /export interface TaskDetail[\s\S]*?acceptanceResult: "accepted" \| "rejected" \| null;/);
+  assert.match(typesSource, /export interface VersionDetail[\s\S]*?manifest: \{[\s\S]*?checksum: string;/);
+});

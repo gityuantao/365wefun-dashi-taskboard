@@ -183,7 +183,11 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
   const releasableVersions = versionProgress
     .filter((version) => version.releasable)
     .map((version) => ({
-      ...version,
+      id: version.id,
+      name: version.name,
+      taskCount: version.taskCount,
+      readyCount: version.readyCount,
+      releaseFailed: version.releaseFailed,
       url: versionListUrl ?? `https://app.clickup.com/v/l/${version.id}`,
     }));
 
