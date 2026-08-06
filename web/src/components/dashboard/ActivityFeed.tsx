@@ -36,9 +36,11 @@ export function ActivityFeed({
                   {formatActivityTime(item.time)}
                 </time>
                 <span className={`activity-object activity-${item.objectType}`}>
-                  {item.objectType === "version" ? "版本" : "任务"}
+                  {item.objectType === "version" ? "版本" : "任务"} {item.objectId}
                 </span>
-                <span className="activity-summary">{item.summary}</span>
+                <span className="activity-summary">
+                  {item.summary.replace(/^(任务|版本)\s+/, "")}
+                </span>
               </button>
             </li>
           ))}

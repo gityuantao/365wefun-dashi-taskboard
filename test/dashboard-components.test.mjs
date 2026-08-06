@@ -121,3 +121,9 @@ test("polish states and interactions are present", () => {
   assert.match(styles, /\.version-progress-fill\.is-complete/);
   assert.match(styles, /\.detail-drawer-overlay/);
 });
+
+test("activity feed shows object ids", () => {
+  assert.match(activitySource, /item\.objectId/);
+  assert.match(activitySource, /任务|版本/);
+  assert.match(activitySource, /replace\(\/\^\(任务\|版本\)/);
+});
