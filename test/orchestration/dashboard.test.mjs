@@ -196,3 +196,26 @@ test("buildVersionDetail returns the task list and manifest", async (t) => {
   const missing = await buildVersionDetail(harness.db, "version-missing");
   assert.equal(missing, null);
 });
+
+test("buildVersionDetail keeps manifest tasks even when the target version diverges", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db
+    .prepare("UPDATE clickup_snapshots SET snapshot = ? WHERE object_type = 'task' AND object_id = 'task-1'")
+    .bind(JSON.stringify({
+      id: "task-1",
+      listId: "list-task",
+      name: "任务一",
+      status: "ready_for_release",
+      targetVersion: "1.0.9",
+      assignee: "狗哥",
+      updatedAt: "2026-08-06T08:00:00.000Z",
+      fieldsHash: "h1",
+    }))
+    .run();
+
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.equal(detail.tasks.length, 1);
+  assert.equal(detail.tasks[0].id, "task-1");
+});

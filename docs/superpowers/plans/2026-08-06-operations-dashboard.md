@@ -471,6 +471,29 @@ test("buildVersionDetail returns the task list and manifest", async (t) => {
   const missing = await buildVersionDetail(harness.db, "version-missing");
   assert.equal(missing, null);
 });
+
+test("buildVersionDetail keeps manifest tasks even when the target version diverges", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db
+    .prepare("UPDATE clickup_snapshots SET snapshot = ? WHERE object_type = 'task' AND object_id = 'task-1'")
+    .bind(JSON.stringify({
+      id: "task-1",
+      listId: "list-task",
+      name: "任务一",
+      status: "ready_for_release",
+      targetVersion: "1.0.9",
+      assignee: "狗哥",
+      updatedAt: "2026-08-06T08:00:00.000Z",
+      fieldsHash: "h1",
+    }))
+    .run();
+
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.equal(detail.tasks.length, 1);
+  assert.equal(detail.tasks[0].id, "task-1");
+});
 ```
 
 - [ ] **Step 2: 运行测试，验证失败**
@@ -559,21 +582,13 @@ async function loadOpenTaskBlockers(db) {
 }
 
 async function latestJob(db, taskId, jobType) {
-  return latestJobBefore(db, taskId, jobType, null);
-}
-
-async function latestJobBefore(db, taskId, jobType, before) {
-  const timeFilter = before === null ? "" : "AND completed_at <= ?";
-  const params = before === null
-    ? [`${taskId}-${jobType}-%`, jobType]
-    : [`${taskId}-${jobType}-%`, jobType, before];
   const row = await db
     .prepare(`
       SELECT result FROM runner_jobs
-      WHERE id LIKE ? AND job_type = ? AND status = 'completed' ${timeFilter}
+      WHERE id LIKE ? AND job_type = ? AND status = 'completed'
       ORDER BY completed_at DESC, created_at DESC LIMIT 1
     `)
-    .bind(...params)
+    .bind(`${taskId}-${jobType}-%`, jobType)
     .first();
   return row ? { result: JSON.parse(row.result) } : null;
 }
@@ -778,7 +793,7 @@ export async function buildVersionDetail(db, versionId) {
   const matchingTasks = tasks.filter(
     (task) => task.targetVersion === (snapshot.name ?? versionId),
   );
-  const byTaskId = new Map(matchingTasks.map((task) => [task.id, task]));
+  const byTaskId = new Map(tasks.map((task) => [task.id, task]));
   const manifest = manifestRow ? JSON.parse(manifestRow.manifest) : null;
   const orderedTaskIds = manifest
     ? [...new Set([...manifest.taskIds, ...matchingTasks.map((task) => task.id)])]
@@ -2936,7 +2951,7 @@ git commit -m "fix: polish operations dashboard after integration verification"
 - 发布失败版本进入待办区并标记「可重试」：Task 1（`releaseFailed` 字段）＋ Task 6（`ReleaseActions`）。
 - 代理端点仅本机 loopback：Task 4。
 - 旧看板快捷键与项目导航在驾驶舱模式隐藏（AI 聊天保留）：Task 7。
-- 活动流 PR／验收结论按 `completed_at <= occurred_at` 关联对应事件：Task 1（`latestJobBefore`）。
+- 活动流开发 PR 按事件 `command_id` 精确关联对应 runner 作业：Task 1。
 - 独立轮询：Task 6（`REFRESH_INTERVAL_MS = 15_000`）。
 - orchestrator 只读端点：Task 3。
 - server 代理：Task 4。

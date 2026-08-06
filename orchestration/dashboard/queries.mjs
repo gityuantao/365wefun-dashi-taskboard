@@ -74,21 +74,13 @@ async function loadOpenTaskBlockers(db) {
 }
 
 async function latestJob(db, taskId, jobType) {
-  return latestJobBefore(db, taskId, jobType, null);
-}
-
-async function latestJobBefore(db, taskId, jobType, before) {
-  const timeFilter = before === null ? "" : "AND completed_at <= ?";
-  const params = before === null
-    ? [`${taskId}-${jobType}-%`, jobType]
-    : [`${taskId}-${jobType}-%`, jobType, before];
   const row = await db
     .prepare(`
       SELECT result FROM runner_jobs
-      WHERE id LIKE ? AND job_type = ? AND status = 'completed' ${timeFilter}
+      WHERE id LIKE ? AND job_type = ? AND status = 'completed'
       ORDER BY completed_at DESC, created_at DESC LIMIT 1
     `)
-    .bind(...params)
+    .bind(`${taskId}-${jobType}-%`, jobType)
     .first();
   return row ? { result: JSON.parse(row.result) } : null;
 }
@@ -293,7 +285,7 @@ export async function buildVersionDetail(db, versionId) {
   const matchingTasks = tasks.filter(
     (task) => task.targetVersion === (snapshot.name ?? versionId),
   );
-  const byTaskId = new Map(matchingTasks.map((task) => [task.id, task]));
+  const byTaskId = new Map(tasks.map((task) => [task.id, task]));
   const manifest = manifestRow ? JSON.parse(manifestRow.manifest) : null;
   const orderedTaskIds = manifest
     ? [...new Set([...manifest.taskIds, ...matchingTasks.map((task) => task.id)])]
