@@ -42,6 +42,7 @@ function makeClient(targetVersion, overrides = {}) {
     }),
     postComment: async () => ({}),
     updateCustomField: async () => ({}),
+    getComments: async () => [],
     ...overrides,
   };
 }
@@ -136,4 +137,24 @@ test("acceptance rejects invalid structured output", async (t) => {
     now: NOW,
   });
   assert.equal(result.status, "failed");
+});
+
+test("acceptance reads comments and includes previous feedback in the prompt", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedToAccepting(harness);
+  let prompt = "";
+  const result = await executeAcceptance({
+    job: JOB,
+    db: harness.db,
+    client: makeClient("version-9", {
+      getComments: async () => [
+        { id: "c1", comment_text: "❌ 验收不通过：按钮无法点击，已退回待开发。" },
+      ],
+    }),
+    codex: { run: async ({ prompt: p }) => { prompt = p; return { exitCode: 0, stdout: acceptedOutput(), stderr: "" }; } },
+    now: NOW,
+  });
+  assert.equal(result.status, "completed");
+  assert.match(prompt, /验收不通过：按钮无法点击/);
 });

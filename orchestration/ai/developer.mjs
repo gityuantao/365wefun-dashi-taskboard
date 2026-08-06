@@ -1,7 +1,7 @@
 import { dispatchCommand } from "../application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
-import { buildDevelopmentPrompt } from "./prompts.mjs";
+import { buildDevelopmentPrompt, buildCommentContext } from "./prompts.mjs";
 import { stateChangeText } from "../clickup/state-comments.mjs";
 
 function extractJson(stdout) {
@@ -60,6 +60,10 @@ export async function executeDevelopment({
   const { taskId, repoPath, worktreesRoot, baseRef, versionBranch, acceptanceCriteria } = job.payload;
   try {
     const task = await client.getTask(taskId);
+    let commentContext = null;
+    try {
+      commentContext = buildCommentContext(await client.getComments(taskId));
+    } catch {}
     const worktree = await gitOps.createWorktree({
       repoPath,
       taskId,
@@ -93,7 +97,7 @@ export async function executeDevelopment({
       }
     }
     const run = await codex.run({
-      prompt: buildDevelopmentPrompt(task, acceptanceCriteria),
+      prompt: buildDevelopmentPrompt(task, acceptanceCriteria, commentContext),
       workdir: worktree.worktreePath,
       taskId,
     });

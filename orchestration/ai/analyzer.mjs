@@ -1,7 +1,7 @@
 import { dispatchCommand } from "../application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
-import { buildAnalysisPrompt } from "./prompts.mjs";
+import { buildAnalysisPrompt, buildCommentContext } from "./prompts.mjs";
 
 function extractJson(stdout) {
   const start = stdout.indexOf("{");
@@ -45,8 +45,12 @@ export async function executeAnalysis({
   fieldIds = { summary: "field-summary", acceptance: null },
 }) {
   const task = await client.getTask(job.payload.taskId);
+  let commentContext = null;
+  try {
+    commentContext = buildCommentContext(await client.getComments(job.payload.taskId));
+  } catch {}
   const run = await codex.run({
-    prompt: buildAnalysisPrompt(task),
+    prompt: buildAnalysisPrompt(task, commentContext),
     workdir: job.payload.workdir,
     taskId: job.payload.taskId,
   });

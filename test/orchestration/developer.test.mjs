@@ -65,6 +65,7 @@ function makeClient(overrides = {}) {
     }),
     postComment: async () => ({}),
     updateCustomField: async () => ({}),
+    getComments: async () => [],
     ...overrides,
   };
 }
@@ -151,4 +152,27 @@ test("development posts the PR as evidence", async (t) => {
   });
   assert.ok(calls.some(([kind, , body]) => kind === "comment" && String(body).includes("pull/1")));
   assert.ok(calls.some(([kind, , field]) => kind === "field" && field === "field-evidence"));
+});
+
+test("development reads comments and includes acceptance feedback in the prompt", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  let prompt = "";
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      getComments: async () => [
+        { id: "c1", comment_text: "❌ 验收不通过：按钮无法点击，已退回待开发。" },
+        { id: "c2", comment_text: "需求补充：点击后需要跳转" },
+      ],
+    }),
+    codex: { run: async ({ prompt: p }) => { prompt = p; return { exitCode: 0, stdout: validOutput(), stderr: "" }; } },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+  assert.equal(result.status, "completed");
+  assert.match(prompt, /验收不通过：按钮无法点击/);
+  assert.match(prompt, /需求补充：点击后需要跳转/);
 });

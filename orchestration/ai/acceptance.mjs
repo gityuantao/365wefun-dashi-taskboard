@@ -1,7 +1,7 @@
 import { dispatchCommand } from "../application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
-import { buildAcceptancePrompt } from "./prompts.mjs";
+import { buildAcceptancePrompt, buildCommentContext } from "./prompts.mjs";
 import { stateChangeText } from "../clickup/state-comments.mjs";
 
 function extractJson(stdout) {
@@ -26,6 +26,10 @@ export async function executeAcceptance({
   const { taskId, acceptanceCriteria, commitSha } = job.payload;
   try {
     const task = await client.getTask(taskId);
+    let commentContext = null;
+    try {
+      commentContext = buildCommentContext(await client.getComments(taskId));
+    } catch {}
     // 验收开始：立即推进到「验收中」，下一轮状态同步会写回 ClickUp
     let aggregate = await loadAggregate(db, "task", taskId);
     if (aggregate.state === "ready_for_acceptance") {
@@ -55,7 +59,7 @@ export async function executeAcceptance({
       aggregate = await loadAggregate(db, "task", taskId);
     }
     const run = await codex.run({
-      prompt: buildAcceptancePrompt(task, acceptanceCriteria, commitSha),
+      prompt: buildAcceptancePrompt(task, acceptanceCriteria, commitSha, commentContext),
       workdir: job.payload.workdir,
       taskId,
     });

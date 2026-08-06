@@ -51,6 +51,7 @@ function makeClient(overrides = {}) {
     }),
     postComment: async () => ({}),
     updateCustomField: async () => ({}),
+    getComments: async () => [],
     ...overrides,
   };
 }
@@ -159,4 +160,24 @@ test("analysis writes the execution summary and a comment", async (t) => {
   });
   assert.ok(calls.some(([kind]) => kind === "comment"));
   assert.ok(calls.some(([kind, , field]) => kind === "field" && field === "field-summary"));
+});
+
+test("analysis reads comments and includes them in the prompt", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  let prompt = "";
+  const result = await executeAnalysis({
+    job: { id: "job-a9", commandId: "cmd-a9", jobType: "analyze", payload: { taskId: "task-1" } },
+    db: harness.db,
+    client: makeClient({
+      getComments: async () => [
+        { id: "c1", comment_text: "需求补充：移动端也要支持" },
+      ],
+    }),
+    codex: { run: async ({ prompt: p }) => { prompt = p; return { exitCode: 0, stdout: validOutput(), stderr: "" }; } },
+    now: NOW,
+  });
+  assert.equal(result.status, "completed");
+  assert.match(prompt, /需求补充：移动端也要支持/);
 });
