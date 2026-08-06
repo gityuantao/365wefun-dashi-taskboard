@@ -302,7 +302,10 @@ async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
     await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind(pausedJobId(snapshot.id)).run();
     aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   }
-  if (aggregate.state === "ready_for_test" && snapshot.status === "testing") {
+  if (
+    aggregate.state === "ready_for_test"
+    && ["testing", "ready_for_acceptance", "ready_for_development"].includes(snapshot.status)
+  ) {
     const startTestId = `poller-start-test-${snapshot.id}-${aggregate.version + 1}`;
     if (!(await loadCommandResult(env.DB, startTestId))) {
       const startTest = parseCommandEnvelope({

@@ -369,3 +369,37 @@ test("poller pauses acceptance after repeated failures and resumes after manual 
     .first();
   assert.equal(pausedAfter, null);
 });
+
+test("moving directly to 待验收 is treated as test passed", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 4; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development",
+      "development_completed"][index];
+    await dispatchTask(harness, `poll-direct-pass-${index}`, type, index + 1);
+  }
+  const env = await makeEnv(harness, [sandboxTask({ status: "待验收" })]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  const types = result.commands.map((command) => command.type);
+  assert.ok(types.includes("start_test"));
+  assert.ok(types.includes("test_passed"));
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "ready_for_acceptance");
+});
+
+test("moving directly to 待开发 is treated as test failed", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 4; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development",
+      "development_completed"][index];
+    await dispatchTask(harness, `poll-direct-fail-${index}`, type, index + 1);
+  }
+  const env = await makeEnv(harness, [sandboxTask({ status: "待开发" })]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  const types = result.commands.map((command) => command.type);
+  assert.ok(types.includes("start_test"));
+  assert.ok(types.includes("test_failed"));
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "ready_for_development");
+});
