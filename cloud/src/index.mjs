@@ -1,4 +1,5 @@
 import { normalizeWorkflowSnapshot } from "../../shared/workflow-control-flow.mjs";
+import { routeDashboardRequest } from "./dashboard-routes.mjs";
 import { routeOrchestrationRequest } from "./orchestration-routes.mjs";
 import { routeRunnerRequest } from "./runner-routes.mjs";
 
@@ -1855,6 +1856,13 @@ async function attachmentContent(env, id, request) {
 
 async function routeApi(request, env, actor, url) {
   const { pathname } = url;
+
+  if (
+    pathname === "/api/orchestration/dashboard"
+    || pathname.startsWith("/api/orchestration/dashboard/")
+  ) {
+    return routeDashboardRequest(request, env);
+  }
 
   if (
     pathname === "/api/orchestration/commands"
