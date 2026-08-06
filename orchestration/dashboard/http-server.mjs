@@ -24,9 +24,9 @@ function methodNotAllowed(response, allowed) {
 
 export async function startDashboardServer({ db, port = 47824, versionListUrl = null }) {
   const server = createServer(async (request, response) => {
-    const url = new URL(request.url, "http://127.0.0.1");
-    const { pathname } = url;
     try {
+      const url = new URL(request.url, "http://127.0.0.1");
+      const { pathname } = url;
       if (pathname === "/api/orchestration/dashboard") {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
         return sendJson(response, 200, await buildDashboard(db, { versionListUrl }));

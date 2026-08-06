@@ -1102,10 +1102,28 @@ Create `test/orchestration/dashboard-http.test.mjs`:
 
 ```js
 import assert from "node:assert/strict";
+import net from "node:net";
 import { test } from "node:test";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import { seedDashboardFixture } from "../helpers/dashboard-fixture.mjs";
 import { startDashboardServer } from "../../orchestration/dashboard/http-server.mjs";
+
+function rawRequest(port, raw) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(port, "127.0.0.1", () => socket.write(raw));
+    let data = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      data += chunk;
+    });
+    socket.on("end", () => resolve(data));
+    socket.on("error", reject);
+    socket.setTimeout(3000, () => {
+      socket.destroy();
+      reject(new Error("raw request timed out"));
+    });
+  });
+}
 
 test("orchestrator dashboard server exposes read-only JSON endpoints", async (t) => {
   const harness = await createCloudWorkerHarness();
@@ -1164,6 +1182,22 @@ test("orchestrator dashboard server exposes read-only JSON endpoints", async (t)
   const malformedBody = await malformed.json();
   assert.equal(malformedBody.error.code, "INVALID_PATH");
 });
+
+test("invalid absolute-form request targets still receive a 500 response", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+
+  const dashboard = await startDashboardServer({ db: harness.db, port: 0 });
+  t.after(() => dashboard.close());
+
+  const raw = await rawRequest(
+    dashboard.port,
+    "GET http://[bad/ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+  );
+  assert.match(raw, /HTTP\/1\.1 500/);
+  assert.match(raw, /INTERNAL_ERROR/);
+});
 ```
 
 - [ ] **Step 2: 运行测试，验证失败**
@@ -1202,9 +1236,9 @@ function methodNotAllowed(response, allowed) {
 
 export async function startDashboardServer({ db, port = 47824, versionListUrl = null }) {
   const server = createServer(async (request, response) => {
-    const url = new URL(request.url, "http://127.0.0.1");
-    const { pathname } = url;
     try {
+      const url = new URL(request.url, "http://127.0.0.1");
+      const { pathname } = url;
       if (pathname === "/api/orchestration/dashboard") {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
         return sendJson(response, 200, await buildDashboard(db, { versionListUrl }));
@@ -1297,7 +1331,7 @@ log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
 - [ ] **Step 5: 运行测试，验证通过**
 
 Run: `node --test test/orchestration/dashboard-http.test.mjs`
-Expected: PASS（1 个测试通过）。
+Expected: PASS（2 个测试通过）。
 
 - [ ] **Step 6: 提交**
 
