@@ -47,6 +47,7 @@ import {
 import { claimJob, completeJob } from "../orchestration/persistence/d1-runner-jobs.mjs";
 import { loadAggregate } from "../orchestration/persistence/d1-aggregate-store.mjs";
 import { startDashboardServer } from "../orchestration/dashboard/http-server.mjs";
+import { createPullRequest } from "../orchestration/git/pr.mjs";
 import { readControl, shouldProcess } from "../orchestration/control.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -148,19 +149,7 @@ const gitOps = {
     execFileSync("git", ["-C", repoPath, "push", "-u", "origin", branch], {
       stdio: "ignore",
     });
-    const url = execFileSync(
-      "gh",
-      [
-        "pr", "create",
-        "--repo", "gityuantao/365wefun",
-        "--base", base,
-        "--head", branch,
-        "--title", title,
-        "--body", body,
-      ],
-      { encoding: "utf8" },
-    ).trim();
-    return { url };
+    return createPullRequest({ branch, base, title, body });
   },
 };
 
