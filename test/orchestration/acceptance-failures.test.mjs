@@ -40,3 +40,14 @@ test("streak counts consecutive failures without a passed event", async (t) => {
   await insertEvent(harness, { sequence: 2, type: "task.acceptance_failed", version: 5 });
   assert.equal(await acceptanceFailureStreak(harness.db, "task-1"), 2);
 });
+
+test("streak resets after manual rework", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await insertEvent(harness, { sequence: 1, type: "task.acceptance_failed", version: 3 });
+  await insertEvent(harness, { sequence: 2, type: "task.acceptance_failed", version: 5 });
+  await insertEvent(harness, { sequence: 3, type: "task.acceptance_needs_rework", version: 6 });
+  await insertEvent(harness, { sequence: 4, type: "task.acceptance_failed", version: 8 });
+
+  assert.equal(await acceptanceFailureStreak(harness.db, "task-1"), 1);
+});

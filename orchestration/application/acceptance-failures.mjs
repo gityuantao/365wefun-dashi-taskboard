@@ -9,7 +9,11 @@ export async function acceptanceFailureStreak(db, taskId) {
     .prepare(`
       SELECT type FROM orchestration_events
       WHERE aggregate_type = 'task' AND aggregate_id = ?
-        AND type IN ('task.acceptance_failed', 'task.acceptance_passed')
+        AND type IN (
+          'task.acceptance_failed',
+          'task.acceptance_passed',
+          'task.acceptance_needs_rework'
+        )
       ORDER BY sequence DESC LIMIT 100
     `)
     .bind(taskId)
