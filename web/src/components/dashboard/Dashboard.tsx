@@ -238,18 +238,11 @@ export function Dashboard() {
       )}
 
       {drawer && (
-        <>
-          <div
-            className="detail-drawer-overlay"
-            aria-hidden="true"
-            onClick={() => setDrawer(null)}
-          />
-          <DetailDrawer
-            kind={drawer.kind}
-            detail={detail}
-            onClose={() => setDrawer(null)}
-          />
-        </>
+        <DetailDrawer
+          kind={drawer.kind}
+          detail={detail}
+          onClose={() => setDrawer(null)}
+        />
       )}
 
       {controlMenuOpen && createPortal(

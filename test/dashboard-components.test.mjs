@@ -116,14 +116,26 @@ test("polish states and interactions are present", () => {
   assert.match(versionProgressSource, /未就绪/);
   assert.match(versionProgressSource, /存在阻塞任务/);
   assert.match(activitySource, /刚刚|分钟前|toLocaleTimeString/);
-  assert.match(drawerSource, /Escape/);
+  assert.match(drawerSource, /onCancel|Esc/);
   assert.match(dashboardSource, /更新中/);
   assert.match(styles, /\.version-progress-fill\.is-complete/);
-  assert.match(styles, /\.detail-drawer-overlay/);
+  assert.match(styles, /\.detail-dialog/);
 });
 
 test("activity feed shows object ids", () => {
   assert.match(activitySource, /item\.objectId/);
   assert.match(activitySource, /任务|版本/);
   assert.match(activitySource, /replace\(\/\^\(任务\|版本\)/);
+});
+
+test("detail dialogs reuse the new-issue dialog shell", () => {
+  assert.match(drawerSource, /<dialog/);
+  assert.match(drawerSource, /task-dialog/);
+  assert.match(drawerSource, /dialog-header/);
+  assert.match(drawerSource, /dialog-footer/);
+  assert.match(drawerSource, /showModal/);
+  assert.match(drawerSource, /onCancel/);
+  assert.match(drawerSource, /detail-dialog-body/);
+  assert.match(drawerSource, /detail-info-grid/);
+  assert.match(drawerSource, /detail-section/);
 });
