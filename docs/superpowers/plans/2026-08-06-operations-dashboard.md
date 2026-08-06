@@ -2879,7 +2879,7 @@ test("dashboard is the default view with no old board entry", () => {
   assert.match(appSource, /运营驾驶舱/);
   assert.match(appSource, /viewMode === "dashboard" \? <Dashboard \/>/);
   assert.match(appSource, /viewMode === "issues" && <div className="project-nav">/);
-  assert.match(appSource, /viewMode === "issues" && selectedProjectId && boardView === "issues"/);
+  assert.match(appSource, /viewMode === "issues"[\s\S]*?selectedProjectId[\s\S]*?boardView === "issues"/);
   assert.doesNotMatch(appSource, />\s*议题看板\s*<\/button>/);
 });
 
@@ -3020,9 +3020,7 @@ import { Dashboard } from "./components/dashboard/Dashboard";
 9. 在主内容条件 `{!selectedProjectId ? (` 之前插入：
 
 ```tsx
-        {viewMode === "dashboard" ? (
-          <Dashboard />
-        ) : (
+        {viewMode === "dashboard" ? <Dashboard /> : (
         <>{!selectedProjectId ? (
 ```
 

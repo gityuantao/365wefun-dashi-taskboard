@@ -45,6 +45,7 @@ import {
 import { BoardColumn, STATUS_DETAILS } from "./components/BoardColumn";
 import { AiChat } from "./components/AiChat";
 import { BoardSettingsMenu } from "./components/BoardSettingsMenu";
+import { Dashboard } from "./components/dashboard/Dashboard";
 import { HiddenColumns } from "./components/HiddenColumns";
 import {
   resolveInlineMediaMarkdown,
@@ -553,6 +554,7 @@ export function App() {
   const [showEmptyColumns, setShowEmptyColumns] = useState(readShowEmptyColumns);
   const [columnVisibilityByProject, setColumnVisibilityByProject] = useState(readColumnVisibilityByProject);
   const [boardView, setBoardView] = useState<BoardView>("issues");
+  const [viewMode] = useState<"dashboard" | "issues">("dashboard");
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [detailTaskIdentifier, setDetailTaskIdentifier] = useState<string | null>(
     () => readIssueIdentifier(window.location.search),
@@ -1305,6 +1307,7 @@ export function App() {
         && !event.shiftKey
         && !isTyping
         && !editor
+        && viewMode === "issues"
       ) {
         event.preventDefault();
         void performUndo();
@@ -1315,13 +1318,14 @@ export function App() {
         event.key.toLowerCase() === "c"
         && !event.metaKey
         && !event.ctrlKey
+        && viewMode === "issues"
         && selectedProjectId
         && boardView === "issues"
       ) {
         event.preventDefault();
         setEditor({ task: null, status: "backlog" });
       }
-      if (event.key === "/" && !detailTaskId && selectedProjectId && boardView === "issues") {
+      if (event.key === "/" && viewMode === "issues" && !detailTaskId && selectedProjectId && boardView === "issues") {
         event.preventDefault();
         document.getElementById("task-search")?.focus();
       }
@@ -1332,7 +1336,7 @@ export function App() {
 
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [boardView, contextMenu, detailTaskId, editor, projectMenuOpen, selectedProjectId]);
+  }, [boardView, contextMenu, detailTaskId, editor, projectMenuOpen, selectedProjectId, viewMode]);
 
   const filteredTasks = useMemo(() => {
     return tasks.filter(
@@ -1836,14 +1840,13 @@ export function App() {
             <span className="nav-label">工作区</span>
             <button className="nav-item active" type="button" aria-current="page">
               <span className="nav-glyph" aria-hidden="true">
-                <LinearIcon name="myIssues" />
+                <LinearIcon name="dashboard" />
               </span>
-              议题
-              <span className="nav-count">{tasks.length}</span>
+              运营驾驶舱
             </button>
           </nav>
 
-          <div className="project-nav">
+          {viewMode === "issues" && <div className="project-nav">
             <span className="nav-label">项目</span>
             {projects.map((project) => (
               <button
@@ -1857,6 +1860,7 @@ export function App() {
               </button>
             ))}
           </div>
+          }
 
           <div className="nav-spacer" />
           <div className="nav-footer">
@@ -1878,7 +1882,7 @@ export function App() {
       )}
 
       <main className="workspace">
-        {selectedProjectId ? (
+        {viewMode === "issues" && selectedProjectId ? (
           <header className="workspace-header">
           <div className="workspace-title">
             <div className="workspace-kicker">
@@ -2013,31 +2017,15 @@ export function App() {
             )}
           </div>
           </header>
+        ) : viewMode === "dashboard" ? (
+          <header className="workspace-header">
+            <div ref={dragRegionRef} className="workspace-drag-region" aria-hidden="true" />
+          </header>
         ) : (
           <div ref={dragRegionRef} className="home-window-drag-region" aria-hidden="true" />
         )}
 
-        {selectedProjectId && !detailTask && <div className="board-toolbar">
-          <div className="view-tabs" aria-label="看板视图">
-            <button
-              className={`view-tab${boardView === "issues" ? " active" : ""}`}
-              type="button"
-              aria-pressed={boardView === "issues"}
-              onClick={() => selectBoardView("issues")}
-            >
-              议题看板
-            </button>
-            {SHOW_WORKFLOW_BOARD_ENTRY && (
-              <button
-                className={`view-tab${boardView === "workflow" ? " active" : ""}`}
-                type="button"
-                aria-pressed={boardView === "workflow"}
-                onClick={() => selectBoardView("workflow")}
-              >
-                节点模式
-              </button>
-            )}
-          </div>
+        {viewMode === "issues" && selectedProjectId && !detailTask && <div className="board-toolbar">
           {boardView === "issues" && <div className="toolbar-tools">
             <label className={`search-field${search ? " has-value" : ""}`} title="搜索议题 (/)" >
               <LinearIcon className="search-icon" name="search" />
@@ -2093,7 +2081,8 @@ export function App() {
           </div>
         )}
 
-        {!selectedProjectId ? (
+        {viewMode === "dashboard" ? <Dashboard /> : (
+        <>{!selectedProjectId ? (
           <section className="project-home">
             <div className="project-home-heading">
               <span>任务面板</span>
@@ -2284,6 +2273,7 @@ export function App() {
             </div>
           </div>
         )}
+        </>)}
       </main>
 
       {editor && (
