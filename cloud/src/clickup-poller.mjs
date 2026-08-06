@@ -18,6 +18,11 @@ import {
   resolveCurrentDevVersionName,
 } from "../../orchestration/application/version-gate.mjs";
 import { stateChangeText } from "../../orchestration/clickup/state-comments.mjs";
+import {
+  MAX_ACCEPTANCE_FAILURES,
+  acceptanceFailureStreak,
+  pausedJobId,
+} from "../../orchestration/application/acceptance-failures.mjs";
 
 function jobTypeForState(status) {
   if (status === "inbox") return "analyze";
@@ -106,6 +111,46 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
       await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind(jobId).run();
     }
   }
+
+  // 连续验收失败达到上限后暂停自动重试，等待人工介入
+  if (jobType === "accept") {
+    const pausedId = pausedJobId(snapshot.id);
+    const paused = await env.DB
+      .prepare("SELECT id FROM runner_jobs WHERE id = ?")
+      .bind(pausedId)
+      .first();
+    const streak = await acceptanceFailureStreak(env.DB, snapshot.id);
+    if (streak >= MAX_ACCEPTANCE_FAILURES) {
+      if (!paused) {
+        await env.DB
+          .prepare(`
+            INSERT OR IGNORE INTO runner_jobs (
+              id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+            ) VALUES (?, ?, 'accept', ?, 'paused', 'failed', ?, ?, ?)
+          `)
+          .bind(
+            pausedId,
+            "auto-accept-" + snapshot.id,
+            JSON.stringify({ taskId: snapshot.id }),
+            JSON.stringify({ error: "acceptance_paused", streak }),
+            now,
+            now,
+          )
+          .run();
+        try {
+          const client = await (env.clientFactory ?? createClickUpClient)({ token: env.CLICKUP_API_TOKEN });
+          await client.postComment(
+            snapshot.id,
+            "⚠️ 连续 " + streak + " 次验收不通过，自动重试已暂停。请人工检查交付与验收标准，在评论区补充完整要求；确认后把任务状态改回「待开发」重新开始。",
+          );
+        } catch {
+          // 评论失败不影响暂停
+        }
+      }
+      return;
+    }
+  }
+
   // 验收作业需要分析阶段的验收标准
   let acceptanceCriteria = [];
   if (jobType === "accept") {
@@ -236,7 +281,27 @@ export async function pollClickUpOnce(env, {
  * 拖回「待开发」= 测试不通过（退回返工）。系统看到状态变化即推进。
  */
 async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
+
   let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  if (aggregate.state === "ready_for_acceptance" && snapshot.status === "ready_for_development") {
+    const reworkId = "poller-acceptance-rework-" + snapshot.id + "-" + (aggregate.version + 1);
+    if (!(await loadCommandResult(env.DB, reworkId))) {
+      const rework = parseCommandEnvelope({
+        id: reworkId,
+        type: "acceptance_needs_rework",
+        aggregateType: "task",
+        aggregateId: snapshot.id,
+        expectedVersion: aggregate.version + 1,
+        actorId: "system-poller",
+        issuedAt: now,
+        reason: "user moved task back to 待开发",
+        parameters: { evidenceId: "manual-" + snapshot.id },
+      });
+      commands.push(await runCommand(env, rework, now, config));
+    }
+    await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind(pausedJobId(snapshot.id)).run();
+    aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  }
   if (aggregate.state === "ready_for_test" && snapshot.status === "testing") {
     const startTestId = `poller-start-test-${snapshot.id}-${aggregate.version + 1}`;
     if (!(await loadCommandResult(env.DB, startTestId))) {

@@ -158,3 +158,39 @@ test("acceptance reads comments and includes previous feedback in the prompt", a
   assert.equal(result.status, "completed");
   assert.match(prompt, /验收不通过：按钮无法点击/);
 });
+
+test("acceptance rejection posts full findings and writes the feedback field", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedToAccepting(harness);
+  const posts = [];
+  const fields = [];
+  const rejectedMany = JSON.stringify({
+    acceptance_result: "rejected",
+    criteria_results: [
+      { id: "ac-1", result: "failed" },
+      { id: "ac-2", result: "failed" },
+    ],
+    findings: [
+      { severity: "high", description: "小程序邮箱错误文案不统一" },
+      { severity: "high", description: "昵称长度上限应为 20" },
+    ],
+  });
+  const result = await executeAcceptance({
+    job: JOB,
+    db: harness.db,
+    client: makeClient("version-9", {
+      postComment: async (id, body) => posts.push(body),
+      updateCustomField: async (id, field, value) => fields.push([field, value]),
+    }),
+    codex: { run: async () => ({ exitCode: 0, stdout: rejectedMany, stderr: "" }) },
+    now: NOW,
+    fieldIds: { feedback: "field-feedback" },
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.result, "rejected");
+  assert.ok(posts.some((body) => body.includes("昵称长度上限应为 20")));
+  assert.ok(
+    fields.some(([field, value]) => field === "field-feedback" && value.includes("小程序邮箱错误文案不统一")),
+  );
+});

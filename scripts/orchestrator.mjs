@@ -252,12 +252,19 @@ const handlers = {
     if (gate.blocked) {
       return { status: "failed", error: `waiting_version: ${gate.reason}` };
     }
+    let acceptanceFeedbackField = null;
+    try {
+      acceptanceFeedbackField = fieldId(config, taskListKey, "验收反馈");
+    } catch {
+      // 未配置「验收反馈」字段时只发完整评论
+    }
     return executeAcceptance({
       job,
       db,
       client,
       codex,
       now: new Date().toISOString(),
+      fieldIds: { feedback: acceptanceFeedbackField },
     });
   },
 };

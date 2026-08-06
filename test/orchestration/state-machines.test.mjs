@@ -181,3 +181,14 @@ test("any un-terminated version can be canceled", () => {
     );
   }
 });
+
+test("manual rework from ready for acceptance returns to ready for development", () => {
+  assert.equal(
+    decideTaskTransition({
+      from: "ready_for_acceptance",
+      to: "ready_for_development",
+      evidenceId: "manual-1",
+    }).eventType,
+    "task.acceptance_needs_rework",
+  );
+});

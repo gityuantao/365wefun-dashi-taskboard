@@ -73,7 +73,7 @@ function sandboxTask({ id = "task-1", status = "测试中", managed = true, vers
   };
 }
 
-async function makeEnv(harness, tasks, versions = []) {
+async function makeEnv(harness, tasks, versions = [], comments = []) {
   return {
     DB: harness.db,
     CLICKUP_API_TOKEN: "pk-test",
@@ -82,6 +82,7 @@ async function makeEnv(harness, tasks, versions = []) {
     clientFactory: async () => ({
       getTasksByList: async () => tasks,
       getVersionsByList: async () => versions,
+      postComment: async (id, body) => comments.push(body),
     }),
   };
 }
@@ -316,4 +317,55 @@ test("poller starts testing when the user moves to 测试中", async (t) => {
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "testing");
   assert.equal(aggregate.version, 5);
+});
+
+test("poller pauses acceptance after repeated failures and resumes after manual rework", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 6; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development",
+      "development_completed", "start_test", "test_passed"][index];
+    await dispatchTask(harness, `poll-pause-${index}`, type, index + 1);
+  }
+  for (let index = 0; index < 2; index += 1) {
+    await harness.db
+      .prepare(`
+        INSERT INTO orchestration_events (
+          id, sequence, aggregate_type, aggregate_id, aggregate_version, type,
+          command_id, actor_id, occurred_at, data, previous_hash, hash
+        ) VALUES (?, ?, 'task', 'task-1', ?, 'task.acceptance_failed', ?, 'system', ?, '{}', NULL, ?)
+      `)
+      .bind(`pause-fail-${index}`, 20 + index, 7 + index, `pause-cmd-${index}`, NOW, `${index === 0 ? "a" : "b"}`.repeat(64))
+      .run();
+  }
+  await harness.db
+    .prepare("UPDATE orchestration_aggregates SET aggregate_version = 8 WHERE aggregate_type = 'task' AND aggregate_id = 'task-1'")
+    .run();
+
+  const comments = [];
+  const env = await makeEnv(harness, [sandboxTask({ status: "待验收" })], [], comments);
+  const first = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(first.commands.length, 0);
+  const paused = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE id = ?")
+    .bind("acceptance-paused-task-1")
+    .first();
+  assert.ok(paused);
+  assert.equal(comments.length, 1);
+  assert.match(comments[0], /自动重试已暂停/);
+
+  const second = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(second.commands.length, 0);
+  assert.equal(comments.length, 1);
+
+  const env2 = await makeEnv(harness, [sandboxTask({ status: "待开发" })], [], comments);
+  const third = await pollClickUpOnce(env2, { now: NOW });
+  const rework = third.commands.find((command) => command.type === "acceptance_needs_rework");
+  assert.ok(rework);
+  assert.equal(rework.status, "succeeded");
+  const pausedAfter = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE id = ?")
+    .bind("acceptance-paused-task-1")
+    .first();
+  assert.equal(pausedAfter, null);
 });

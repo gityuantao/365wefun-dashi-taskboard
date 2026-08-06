@@ -15,6 +15,7 @@ const ACTIVITY_LABELS = {
   "task.acceptance_started": "开始验收",
   "task.acceptance_passed": "验收通过",
   "task.acceptance_failed": "验收失败，退回待开发",
+  "task.acceptance_needs_rework": "人工介入，退回待开发",
   "task.published": "已发布",
   "task.canceled": "已取消",
   "version.activated": "进入进行中",

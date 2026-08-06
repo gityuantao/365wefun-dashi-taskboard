@@ -11,6 +11,17 @@ function extractJson(stdout) {
   return stdout.slice(start, end + 1);
 }
 
+function formatAcceptanceFeedback(findings) {
+  if (!Array.isArray(findings) || findings.length === 0) {
+    return "❌ 验收不通过：未提供具体原因。";
+  }
+  const lines = findings.map((finding, index) => {
+    const severity = finding?.severity ? `[${finding.severity}] ` : "";
+    return `${index + 1}. ${severity}${finding?.description ?? ""}`;
+  });
+  return `❌ 验收不通过：\n${lines.join("\n")}`;
+}
+
 function concise(text, max = 60) {
   const clean = String(text ?? "").replace(/\s+/g, " ").trim();
   return clean.length > max ? clean.slice(0, max) : clean;
@@ -22,6 +33,7 @@ export async function executeAcceptance({
   client,
   codex,
   now,
+  fieldIds = { feedback: null },
 }) {
   const { taskId, acceptanceCriteria, commitSha } = job.payload;
   try {
@@ -112,12 +124,15 @@ export async function executeAcceptance({
     }
 
     const findings = parsed.findings ?? [];
-    const first = findings[0] ? concise(findings[0].description, 80) : "";
-    const summary = findings.length > 1 ? `（共 ${findings.length} 条，详见下方）` : "";
-    await client.postComment(
-      taskId,
-      `❌ 验收不通过：${first}${summary}，已退回待开发。`,
-    );
+    const feedbackText = formatAcceptanceFeedback(findings);
+    await client.postComment(taskId, feedbackText);
+    if (fieldIds.feedback) {
+      try {
+        await client.updateCustomField(taskId, fieldIds.feedback, feedbackText);
+      } catch {
+        // 字段写入失败不影响验收结果
+      }
+    }
     const command = parseCommandEnvelope({
       id: `acceptance-${job.id}`,
       type: "acceptance_failed",
