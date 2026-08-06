@@ -2423,7 +2423,10 @@ Create `web/src/components/dashboard/dashboard.css`:
   color: var(--danger);
 }
 
-.dashboard-section {
+.dashboard-section,
+.release-actions,
+.version-progress,
+.activity-feed {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);

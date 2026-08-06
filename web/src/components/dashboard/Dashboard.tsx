@@ -1,0 +1,140 @@
+import { useCallback, useEffect, useState } from "react";
+import { LinearIcon } from "../LinearIcon";
+import {
+  ApiError,
+  getOrchestrationDashboard,
+  getOrchestrationTaskDetail,
+  getOrchestrationVersionDetail,
+} from "../../api";
+import type {
+  ActivityItem,
+  DashboardPayload,
+  TaskDetail,
+  VersionDetail,
+  VersionProgress,
+} from "../../types";
+import { ActivityFeed } from "./ActivityFeed";
+import { DetailDrawer } from "./DetailDrawer";
+import { PipelineOverview } from "./PipelineOverview";
+import { ReleaseActions } from "./ReleaseActions";
+import { VersionProgressList } from "./VersionProgress";
+import "./dashboard.css";
+
+const REFRESH_INTERVAL_MS = 15_000;
+
+type DrawerState =
+  | { kind: "task"; id: string }
+  | { kind: "version"; id: string }
+  | null;
+
+export function Dashboard() {
+  const [payload, setPayload] = useState<DashboardPayload | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [drawer, setDrawer] = useState<DrawerState>(null);
+  const [detail, setDetail] = useState<TaskDetail | VersionDetail | null>(null);
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const next = await getOrchestrationDashboard(signal);
+      setPayload(next);
+      setError(null);
+      setLastUpdated(Date.now());
+    } catch (caught) {
+      if (caught instanceof Error && caught.name === "AbortError") return;
+      setError(caught instanceof ApiError ? caught.message : "无法加载驾驶舱数据");
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    const timer = window.setInterval(() => void load(), REFRESH_INTERVAL_MS);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [load]);
+
+  useEffect(() => {
+    if (!drawer) {
+      setDetail(null);
+      return;
+    }
+    const controller = new AbortController();
+    setDetail(null);
+    void (drawer.kind === "task"
+      ? getOrchestrationTaskDetail(drawer.id, controller.signal)
+      : getOrchestrationVersionDetail(drawer.id, controller.signal)
+    )
+      .then(setDetail)
+      .catch((caught) => {
+        if (caught instanceof Error && caught.name === "AbortError") return;
+        setDetail(null);
+      });
+    return () => controller.abort();
+  }, [drawer]);
+
+  function openActivity(item: ActivityItem) {
+    setDrawer({ kind: item.objectType, id: item.objectId });
+  }
+
+  function openVersion(version: VersionProgress) {
+    setDrawer({ kind: "version", id: version.id });
+  }
+
+  return (
+    <div className="dashboard" aria-label="运营驾驶舱">
+      <header className="dashboard-header">
+        <div>
+          <h1>运营驾驶舱</h1>
+          <p className="dashboard-subtitle">
+            {lastUpdated
+              ? `最近更新 ${new Date(lastUpdated).toLocaleTimeString("zh-CN", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}`
+              : "等待首次同步…"}
+          </p>
+        </div>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label="刷新"
+          title="刷新"
+          onClick={() => void load()}
+        >
+          <LinearIcon name="recurrence" />
+        </button>
+      </header>
+
+      {error && (
+        <div className="dashboard-error" role="alert">
+          <strong>数据加载失败</strong>
+          <span>{error}</span>
+        </div>
+      )}
+
+      {!payload && !error && (
+        <div className="dashboard-loading" aria-busy="true">正在加载驾驶舱…</div>
+      )}
+
+      {payload && (
+        <>
+          <ReleaseActions versions={payload.releasableVersions} />
+          <PipelineOverview pipeline={payload.pipeline} />
+          <VersionProgressList versions={payload.versions} onOpen={openVersion} />
+          <ActivityFeed items={payload.activity} onOpen={openActivity} />
+        </>
+      )}
+
+      {drawer && (
+        <DetailDrawer
+          kind={drawer.kind}
+          detail={detail}
+          onClose={() => setDrawer(null)}
+        />
+      )}
+    </div>
+  );
+}
