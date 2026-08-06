@@ -81,6 +81,12 @@ function sendEmpty(response, status, headers = {}) {
   response.end();
 }
 
+async function readRequestBody(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 function toFetchRequest(request) {
   const headers = new Headers();
   for (const [name, value] of Object.entries(request.headers)) {
@@ -1606,6 +1612,43 @@ export function createTaskboardServer(options = {}) {
             { port: resolved.orchestrationPort },
           );
         }
+        const contentType = upstream.headers.get("content-type") ?? "application/json; charset=utf-8";
+        response.writeHead(upstream.status, {
+          "cache-control": "no-store",
+          "content-type": contentType,
+        });
+        response.end(text);
+        return;
+      }
+
+      if (pathname === "/api/orchestration/control") {
+        assertLoopbackRequest(request);
+        if (request.method !== "GET" && request.method !== "PUT") {
+          return methodNotAllowed(response, ["GET", "PUT"]);
+        }
+        const target = `http://127.0.0.1:${resolved.orchestrationPort}${pathname}${url.search}`;
+        const init = {
+          method: request.method,
+          headers: { accept: "application/json" },
+          signal: AbortSignal.timeout(5000),
+        };
+        if (request.method === "PUT") {
+          init.headers["content-type"] = "application/json";
+          init.body = await readRequestBody(request);
+        }
+        let upstream;
+        try {
+          upstream = await fetch(target, init);
+        } catch (error) {
+          console.error("orchestration control proxy error:", error);
+          throw new ApiError(
+            503,
+            "ORCHESTRATOR_UNAVAILABLE",
+            "Orchestrator control endpoint is not running",
+            { port: resolved.orchestrationPort },
+          );
+        }
+        const text = await upstream.text();
         const contentType = upstream.headers.get("content-type") ?? "application/json; charset=utf-8";
         response.writeHead(upstream.status, {
           "cache-control": "no-store",
