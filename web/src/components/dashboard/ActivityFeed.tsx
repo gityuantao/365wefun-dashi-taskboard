@@ -1,5 +1,17 @@
 import type { ActivityItem } from "../../types";
 
+function formatActivityTime(value: string): string {
+  const time = new Date(value).getTime();
+  const delta = Date.now() - time;
+  if (delta < 60_000) return "刚刚";
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`;
+  const date = new Date(value);
+  if (date.toDateString() === new Date().toDateString()) {
+    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  }
+  return date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+}
+
 export function ActivityFeed({
   items,
   onOpen,
@@ -20,11 +32,8 @@ export function ActivityFeed({
           {items.map((item, index) => (
             <li key={`${item.objectId}-${item.time}-${index}`}>
               <button className="activity-item" type="button" onClick={() => onOpen(item)}>
-                <time className="activity-time">
-                  {new Date(item.time).toLocaleTimeString("zh-CN", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
+                <time className="activity-time" title={item.time}>
+                  {formatActivityTime(item.time)}
                 </time>
                 <span className={`activity-object activity-${item.objectType}`}>
                   {item.objectType === "version" ? "版本" : "任务"}

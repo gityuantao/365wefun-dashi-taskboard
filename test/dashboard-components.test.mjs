@@ -106,3 +106,14 @@ test("dashboard renders the orchestration master switch", () => {
   assert.match(dashboardSource, /board-setting-switch/);
   assert.match(dashboardSource, /运行中|已暂停/);
 });
+
+test("polish states and interactions are present", () => {
+  assert.match(releaseActionsSource, /暂无待发布版本，所有版本都在推进中/);
+  assert.match(versionProgressSource, /未就绪/);
+  assert.match(versionProgressSource, /存在阻塞任务/);
+  assert.match(activitySource, /刚刚|分钟前|toLocaleTimeString/);
+  assert.match(drawerSource, /Escape/);
+  assert.match(dashboardSource, /更新中/);
+  assert.match(styles, /\.version-progress-fill\.is-complete/);
+  assert.match(styles, /\.detail-drawer-overlay/);
+});

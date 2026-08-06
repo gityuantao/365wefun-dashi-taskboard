@@ -45,9 +45,16 @@ export function VersionProgressList({
                     {VERSION_STATUS_LABELS[version.status ?? ""] ?? version.status ?? "未知"}
                   </span>
                   <span className="version-progress-track" aria-hidden="true">
-                    <span className="version-progress-fill" style={{ width: `${percent}%` }} />
+                    <span
+                      className={`version-progress-fill${percent >= 100 ? " is-complete" : ""}`}
+                      style={{ width: `${percent}%` }}
+                    />
                   </span>
-                  <span className="version-progress-meta">{version.readyCount}/{version.taskCount} 就绪</span>
+                  <span className="version-progress-meta">
+                    {version.readyCount}/{version.taskCount} 就绪
+                    {version.notReadyCount > 0 && ` · 未就绪 ${version.notReadyCount} 个任务`}
+                    {version.hasOpenBlockers && " · 存在阻塞任务"}
+                  </span>
                 </button>
               </li>
             );

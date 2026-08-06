@@ -39,8 +39,10 @@ export function Dashboard() {
   const [control, setControl] = useState<OrchestrationControl | null>(null);
   const [controlPending, setControlPending] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
+    setRefreshing(true);
     try {
       const [next, controlValue] = await Promise.all([
         getOrchestrationDashboard(signal),
@@ -53,6 +55,8 @@ export function Dashboard() {
     } catch (caught) {
       if (caught instanceof Error && caught.name === "AbortError") return;
       setError(caught instanceof ApiError ? caught.message : "无法加载驾驶舱数据");
+    } finally {
+      setRefreshing(false);
     }
   }, []);
 
@@ -139,8 +143,9 @@ export function Dashboard() {
         <button
           className="icon-button"
           type="button"
-          aria-label="刷新"
-          title="刷新"
+          aria-label={refreshing ? "更新中" : "刷新"}
+          title={refreshing ? "更新中" : "刷新"}
+          disabled={refreshing}
           onClick={() => void load()}
         >
           <LinearIcon name="recurrence" />
@@ -172,11 +177,18 @@ export function Dashboard() {
       )}
 
       {drawer && (
-        <DetailDrawer
-          kind={drawer.kind}
-          detail={detail}
-          onClose={() => setDrawer(null)}
-        />
+        <>
+          <div
+            className="detail-drawer-overlay"
+            aria-hidden="true"
+            onClick={() => setDrawer(null)}
+          />
+          <DetailDrawer
+            kind={drawer.kind}
+            detail={detail}
+            onClose={() => setDrawer(null)}
+          />
+        </>
       )}
     </div>
   );

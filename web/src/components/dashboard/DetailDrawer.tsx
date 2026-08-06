@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import type { TaskDetail, VersionDetail } from "../../types";
 
 interface DetailDrawerProps {
@@ -7,6 +8,14 @@ interface DetailDrawerProps {
 }
 
 export function DetailDrawer({ kind, detail, onClose }: DetailDrawerProps) {
+  useEffect(() => {
+    function closeFromEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", closeFromEscape);
+    return () => document.removeEventListener("keydown", closeFromEscape);
+  }, [onClose]);
+
   return (
     <aside className="detail-drawer" aria-label="详情" role="dialog">
       <header className="detail-drawer-header">

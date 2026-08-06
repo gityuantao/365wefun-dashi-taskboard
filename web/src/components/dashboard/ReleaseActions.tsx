@@ -8,7 +8,7 @@ export function ReleaseActions({ versions }: { versions: ReleasableVersion[] }) 
         <span className="dashboard-section-count">{versions.length}</span>
       </div>
       {versions.length === 0 ? (
-        <p className="release-actions-empty">暂无待发布版本</p>
+        <p className="release-actions-empty">暂无待发布版本，所有版本都在推进中</p>
       ) : (
         <ul className="release-action-list">
           {versions.map((version) => (
