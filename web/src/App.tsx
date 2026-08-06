@@ -92,7 +92,6 @@ import { createRevisionPoller, getRevisionPollingInterval } from "./revisionPoll
 type ConnectionState = "connecting" | "live" | "reconnecting";
 type Theme = "light" | "dark";
 type BoardView = "issues" | "workflow";
-const SHOW_WORKFLOW_BOARD_ENTRY = false;
 
 const WorkflowBoard = lazy(() => import("./components/WorkflowBoard").then((module) => ({
   default: module.WorkflowBoard,
@@ -1392,11 +1391,6 @@ export function App() {
     });
   }
 
-  function selectBoardView(view: BoardView) {
-    closeContextMenu();
-    setBoardView(view);
-  }
-
   async function saveEditor(
     draft: TaskDraft,
     attachments: File[],
@@ -1859,8 +1853,7 @@ export function App() {
                 <span>{project.name}</span>
               </button>
             ))}
-          </div>
-          }
+          </div>}
 
           <div className="nav-spacer" />
           <div className="nav-footer">
@@ -2064,7 +2057,7 @@ export function App() {
           </div>}
         </div>}
 
-        {(loadError || actionError) && (
+        {viewMode === "issues" && (loadError || actionError) && (
           <div className="error-banner" role="alert">
             <span className="error-mark" aria-hidden="true"><LinearIcon name="alert" /></span>
             <div><strong>Taskboard needs attention</strong><p>{actionError ?? loadError}</p></div>
