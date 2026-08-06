@@ -302,11 +302,40 @@ async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
     await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind(pausedJobId(snapshot.id)).run();
     aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   }
-  if (
-    aggregate.state === "ready_for_test"
-    && ["testing", "ready_for_acceptance", "ready_for_development"].includes(snapshot.status)
-  ) {
-    const startTestId = `poller-start-test-${snapshot.id}-${aggregate.version + 1}`;
+  if (aggregate.state === "ready_for_test" && snapshot.status === "ready_for_acceptance") {
+    const resultId = "poller-" + snapshot.id + "-" + (aggregate.version + 1);
+    if (!(await loadCommandResult(env.DB, resultId))) {
+      commands.push(await runCommand(env, parseCommandEnvelope({
+        id: resultId,
+        type: "test_passed",
+        aggregateType: "task",
+        aggregateId: snapshot.id,
+        expectedVersion: aggregate.version + 1,
+        actorId: "system-poller",
+        issuedAt: now,
+        reason: "user moved task to 待验收",
+        parameters: {},
+      }), now, config));
+    }
+    aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  } else if (aggregate.state === "ready_for_test" && snapshot.status === "ready_for_development") {
+    const resultId = "poller-" + snapshot.id + "-" + (aggregate.version + 1);
+    if (!(await loadCommandResult(env.DB, resultId))) {
+      commands.push(await runCommand(env, parseCommandEnvelope({
+        id: resultId,
+        type: "test_failed",
+        aggregateType: "task",
+        aggregateId: snapshot.id,
+        expectedVersion: aggregate.version + 1,
+        actorId: "system-poller",
+        issuedAt: now,
+        reason: "user moved task back to 待开发",
+        parameters: { evidenceId: "operation-" + snapshot.id },
+      }), now, config));
+    }
+    aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  } else if (aggregate.state === "ready_for_test" && snapshot.status === "testing") {
+    const startTestId = "poller-start-test-" + snapshot.id + "-" + (aggregate.version + 1);
     if (!(await loadCommandResult(env.DB, startTestId))) {
       const startTest = parseCommandEnvelope({
         id: startTestId,
@@ -323,7 +352,7 @@ async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
     }
     aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   }
-  if (aggregate.state !== "testing") return;
+    if (aggregate.state !== "testing") return;
   const expectedVersion = aggregate.version + 1;
   let type = null;
   let reason = null;

@@ -29,6 +29,14 @@ const TASK_TRANSITIONS = new Map([
     { to: "ready_for_development", eventType: "task.development_failed", evidenceRequired: true },
   ],
   ["ready_for_test:testing", { to: "testing", eventType: "task.test_started" }],
+  [
+    "ready_for_test:ready_for_acceptance",
+    { to: "ready_for_acceptance", eventType: "task.test_passed" },
+  ],
+  [
+    "ready_for_test:ready_for_development",
+    { to: "ready_for_development", eventType: "task.test_failed", evidenceRequired: true },
+  ],
   ["testing:ready_for_acceptance", { to: "ready_for_acceptance", eventType: "task.test_passed" }],
   [
     "testing:ready_for_development",

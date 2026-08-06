@@ -192,3 +192,14 @@ test("manual rework from ready for acceptance returns to ready for development",
     "task.acceptance_needs_rework",
   );
 });
+
+test("direct test results move from ready for test without a testing state", () => {
+  assert.equal(
+    decideTaskTransition({ from: "ready_for_test", to: "ready_for_acceptance" }).eventType,
+    "task.test_passed",
+  );
+  assert.equal(
+    decideTaskTransition({ from: "ready_for_test", to: "ready_for_development", evidenceId: "ev-3" }).eventType,
+    "task.test_failed",
+  );
+});

@@ -381,8 +381,8 @@ test("moving directly to 待验收 is treated as test passed", async (t) => {
   const env = await makeEnv(harness, [sandboxTask({ status: "待验收" })]);
   const result = await pollClickUpOnce(env, { now: NOW });
   const types = result.commands.map((command) => command.type);
-  assert.ok(types.includes("start_test"));
   assert.ok(types.includes("test_passed"));
+  assert.ok(!types.includes("start_test"));
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "ready_for_acceptance");
 });
@@ -398,8 +398,8 @@ test("moving directly to 待开发 is treated as test failed", async (t) => {
   const env = await makeEnv(harness, [sandboxTask({ status: "待开发" })]);
   const result = await pollClickUpOnce(env, { now: NOW });
   const types = result.commands.map((command) => command.type);
-  assert.ok(types.includes("start_test"));
   assert.ok(types.includes("test_failed"));
+  assert.ok(!types.includes("start_test"));
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "ready_for_development");
 });
