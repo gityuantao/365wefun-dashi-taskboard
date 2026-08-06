@@ -18,7 +18,6 @@ test("task states and version states export stable lists", () => {
     "developing",
     "ready_for_test",
     "testing",
-    "ready_for_acceptance",
     "accepting",
     "ready_for_release",
     "published",

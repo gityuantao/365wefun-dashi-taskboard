@@ -23,7 +23,6 @@ const VALID_CONFIG = {
     开发中: "developing",
     待测试: "ready_for_test",
     测试中: "testing",
-    待验收: "ready_for_acceptance",
     验收中: "accepting",
     待发布: "ready_for_release",
     已发布: "published",

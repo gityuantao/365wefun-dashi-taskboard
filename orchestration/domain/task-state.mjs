@@ -8,7 +8,6 @@ export const TASK_STATES = [
   "developing",
   "ready_for_test",
   "testing",
-  "ready_for_acceptance",
   "accepting",
   "ready_for_release",
   "published",

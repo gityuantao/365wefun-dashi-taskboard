@@ -26,7 +26,6 @@ const CONFIG = {
     开发中: "developing",
     待测试: "ready_for_test",
     测试中: "testing",
-    待验收: "ready_for_acceptance",
     验收中: "accepting",
     待发布: "ready_for_release",
     已发布: "published",
@@ -119,7 +118,7 @@ test("poller processes tasks without requiring a managed flag", async (t) => {
   assert.equal(aggregate.version, 1);
 });
 
-test("poller treats a move to 待验收 as test passed", async (t) => {
+test("poller treats a move to 待发布 as test passed", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   for (let index = 0; index < 6; index += 1) {
@@ -353,7 +352,7 @@ test("acceptance failure pauses development until the user starts it manually", 
   assert.equal(pausedAfter, null);
 });
 
-test("moving directly to 待验收 is treated as test passed", async (t) => {
+test("moving directly to 待发布 is treated as test passed", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   for (let index = 0; index < 5; index += 1) {

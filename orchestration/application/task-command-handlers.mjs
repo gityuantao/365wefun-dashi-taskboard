@@ -43,18 +43,8 @@ export const TASK_COMMAND_HANDLERS = {
       evidenceId: evidence(parameters),
     });
   },
-  start_acceptance(state) {
-    return decideTaskTransition({ from: state, to: "accepting" });
-  },
   acceptance_passed(state) {
     return decideTaskTransition({ from: state, to: "ready_for_test" });
-  },
-  acceptance_needs_rework(state, parameters) {
-    return decideTaskTransition({
-      from: state,
-      to: "ready_for_development",
-      evidenceId: evidence(parameters),
-    });
   },
   acceptance_failed(state, parameters) {
     return decideTaskTransition({

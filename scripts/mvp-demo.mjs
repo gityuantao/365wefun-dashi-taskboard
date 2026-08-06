@@ -33,7 +33,6 @@ const CONFIG = {
     开发中: "developing",
     待测试: "ready_for_test",
     测试中: "testing",
-    待验收: "ready_for_acceptance",
     验收中: "accepting",
     待发布: "ready_for_release",
     已发布: "published",
@@ -191,7 +190,7 @@ try {
   });
   console.log("4. 人工测试通过 ->", await state(harness, "task", "task-demo-1"), gate.status === "succeeded" ? "" : "(失败)");
 
-  clickUpTask = task("待验收");
+  clickUpTask = task("待发布");
   await pollClickUpOnce(env, { now: NOW });
   const acceptJob = await claimFromQueue(harness.db, "accept");
   const acceptResult = await executeAcceptance({

@@ -3,7 +3,6 @@ import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 const DEVELOPED_STATES = new Set([
   "ready_for_test",
   "testing",
-  "ready_for_acceptance",
   "accepting",
   "ready_for_release",
   "published",

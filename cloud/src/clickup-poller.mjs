@@ -24,7 +24,6 @@ function jobTypeForState(status) {
   if (status === "analyzing") return "analyze";
   if (status === "ready_for_development") return "develop";
   if (status === "developing") return "develop";
-  if (status === "ready_for_acceptance") return "accept";
   if (status === "accepting") return "accept";
   return null;
 }
@@ -257,7 +256,7 @@ export async function pollClickUpOnce(env, {
 
 /**
  * 状态驱动流程：不再依赖「操作请求」字段。
- * 用户在 ClickUp 里把任务从「待测试」拖到「待验收」= 测试通过；
+ * 用户在 ClickUp 里把任务从「待测试」拖到「待发布」= 测试通过；
  * 拖回「待开发」= 测试不通过（退回返工）。系统看到状态变化即推进。
  */
 async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
@@ -294,7 +293,7 @@ async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
         expectedVersion: aggregate.version + 1,
         actorId: "system-poller",
         issuedAt: now,
-        reason: "user moved task to 待验收",
+        reason: "user moved task to 待发布",
         parameters: {},
       }), now, config));
     }
@@ -339,7 +338,7 @@ async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
   let reason = null;
   if (snapshot.status === "ready_for_release") {
     type = "test_passed";
-    reason = "status moved to 待验收";
+    reason = "status moved to 待发布";
   } else if (snapshot.status === "ready_for_development") {
     type = "test_failed";
     reason = "status moved back to 待开发";

@@ -21,7 +21,7 @@ test("client requires a token", () => {
 });
 
 test("getTask returns the parsed task", async () => {
-  const task = { id: "86d3x800a", name: "Sample", status: { status: "待验收" } };
+  const task = { id: "86d3x800a", name: "Sample", status: { status: "待发布" } };
   const calls = [];
   const client = createClickUpClient({
     token: "pk_test",

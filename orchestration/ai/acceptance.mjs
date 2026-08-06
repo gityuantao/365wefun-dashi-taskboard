@@ -44,32 +44,6 @@ export async function executeAcceptance({
     } catch {}
     // 验收开始：立即推进到「验收中」，下一轮状态同步会写回 ClickUp
     let aggregate = await loadAggregate(db, "task", taskId);
-    if (aggregate.state === "ready_for_acceptance") {
-      await dispatchCommand({
-        db,
-        command: parseCommandEnvelope({
-          id: `acceptance-start-${job.id}`,
-          type: "start_acceptance",
-          aggregateType: "task",
-          aggregateId: taskId,
-          expectedVersion: aggregate.version + 1,
-          actorId: "runner-acceptor",
-          issuedAt: now,
-          reason: "acceptance started",
-          parameters: {},
-        }),
-        now,
-      });
-      const comment = stateChangeText("task", "ready_for_acceptance", "accepting");
-      if (comment) {
-        try {
-          await client.postComment(taskId, comment);
-        } catch {
-          // 评论失败不影响验收
-        }
-      }
-      aggregate = await loadAggregate(db, "task", taskId);
-    }
     const run = await codex.run({
       prompt: buildAcceptancePrompt(task, acceptanceCriteria, commitSha, commentContext),
       workdir: job.payload.workdir,
