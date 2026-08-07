@@ -7,10 +7,10 @@ const appSource = await readFile(new URL("../web/src/App.tsx", import.meta.url),
 test("dashboard is the default view with no old board entry", () => {
   assert.match(appSource, /import \{ Dashboard \} from "\.\/components\/dashboard\/Dashboard"/);
   assert.match(appSource, /useState<"dashboard" \| "issues">\("dashboard"\)/);
-  assert.match(appSource, /运营驾驶舱/);
+  assert.match(appSource, /<Dashboard \/>/);
   assert.match(appSource, /viewMode === "dashboard" \? <Dashboard \/> : \(/);
   assert.match(appSource, /viewMode === "issues" && selectedProjectId \? \(/);
-  assert.match(appSource, /viewMode === "issues" && <div className="project-nav">/);
+  assert.doesNotMatch(appSource, /className="app-nav"/);
   assert.match(appSource, /event\.key\.toLowerCase\(\) === "c"[\s\S]*?viewMode === "issues"[\s\S]*?selectedProjectId[\s\S]*?boardView === "issues"/);
   assert.match(appSource, /event\.key === "\/" && viewMode === "issues" && !detailTaskId && selectedProjectId && boardView === "issues"/);
   assert.match(appSource, /!editor[\s\S]*?viewMode === "issues"/);
@@ -18,7 +18,7 @@ test("dashboard is the default view with no old board entry", () => {
   assert.doesNotMatch(appSource, />\s*议题看板\s*<\/button>/);
 });
 
-test("dashboard keeps an embedded drag region without rendering board chrome", () => {
-  assert.match(appSource, /viewMode === "dashboard" \? \(/);
-  assert.match(appSource, /className="workspace-header">\n\s*<div ref=\{dragRegionRef\} className="workspace-drag-region"/);
+test("dashboard keeps an invisible drag region without board chrome", () => {
+  assert.match(appSource, /className="home-window-drag-region"/);
+  assert.doesNotMatch(appSource, /className="workspace-header">\n\s*<div ref=\{dragRegionRef\} className="workspace-drag-region"/);
 });

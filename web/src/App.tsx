@@ -1823,57 +1823,6 @@ export function App() {
           setAttachmentsRevision={setAttachmentsRevision}
         />
       )}
-      {!embedded && (
-        <aside className="app-nav" aria-label="Taskboard navigation">
-          <div className="brand-row">
-            <span className="brand-mark" aria-hidden="true"><LinearIcon name="project" /></span>
-            <span>任务面板</span>
-          </div>
-
-          <nav className="primary-nav" aria-label="Views">
-            <span className="nav-label">工作区</span>
-            <button className="nav-item active" type="button" aria-current="page">
-              <span className="nav-glyph" aria-hidden="true">
-                <LinearIcon name="dashboard" />
-              </span>
-              运营驾驶舱
-            </button>
-          </nav>
-
-          {viewMode === "issues" && <div className="project-nav">
-            <span className="nav-label">项目</span>
-            {projects.map((project) => (
-              <button
-                key={project.id}
-                type="button"
-                className={`project-nav-item${selectedProjectId === project.id ? " active" : ""}`}
-                onClick={() => changeProject(project.id)}
-              >
-                <span className="project-dot" aria-hidden="true" />
-                <span>{project.name}</span>
-              </button>
-            ))}
-          </div>}
-
-          <div className="nav-spacer" />
-          <div className="nav-footer">
-            <div className={`connection connection-${connection}`}>
-              <span aria-hidden="true" />
-              {connection === "live" ? "实时同步" : "正在重新连接…"}
-            </div>
-            <button
-              type="button"
-              className="theme-toggle"
-              onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
-              aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-            >
-              <span aria-hidden="true"><LinearIcon name={theme === "dark" ? "sun" : "moon"} /></span>
-              {theme === "dark" ? "浅色模式" : "深色模式"}
-            </button>
-          </div>
-        </aside>
-      )}
-
       <main className="workspace">
         {viewMode === "issues" && selectedProjectId ? (
           <header className="workspace-header">
@@ -2009,10 +1958,6 @@ export function App() {
               </button>
             )}
           </div>
-          </header>
-        ) : viewMode === "dashboard" ? (
-          <header className="workspace-header">
-            <div ref={dragRegionRef} className="workspace-drag-region" aria-hidden="true" />
           </header>
         ) : (
           <div ref={dragRegionRef} className="home-window-drag-region" aria-hidden="true" />

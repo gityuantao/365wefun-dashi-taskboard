@@ -94,6 +94,11 @@
   width: min(304px, calc(100vw - 16px));
 }
 
+/* 嵌入 Codex 侧边栏时顶部留出标题栏拖拽区，避免内容顶到标题栏 */
+.app-shell.embedded .dashboard {
+  padding-top: 40px;
+}
+
 /* ---------- 状态条 ---------- */
 .dashboard-loading,
 .dashboard-error {
