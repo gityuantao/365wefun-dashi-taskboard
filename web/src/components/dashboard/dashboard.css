@@ -539,6 +539,21 @@
   padding: 18px 20px 22px;
 }
 
+.detail-publish-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.detail-publish-button {
+  align-self: flex-start;
+}
+
+.detail-publish-error {
+  color: var(--danger, #d64545);
+  font-size: 12px;
+}
+
 .detail-dialog-hero {
   display: flex;
   flex: 0 0 auto;

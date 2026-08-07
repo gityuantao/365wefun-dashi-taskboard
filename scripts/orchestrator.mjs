@@ -176,6 +176,7 @@ const dashboardServer = await startDashboardServer({
   port: Number(runtime.dashboardPort ?? process.env.ORCHESTRATION_DASHBOARD_PORT ?? 47824),
   versionListUrl: `https://app.clickup.com/${encodeURIComponent(config.spaceId)}/v/l/${encodeURIComponent(config.lists[versionListKey].id)}`,
   controlPath: CONTROL_PATH,
+  versionStatusMap: config.versionStatusMap,
 });
 log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
 

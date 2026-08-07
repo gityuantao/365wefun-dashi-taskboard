@@ -1,11 +1,13 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LinearIcon } from "../LinearIcon";
+import { ApiError, publishOrchestrationVersion } from "../../api";
 import type { TaskDetail, VersionDetail } from "../../types";
 
 interface DetailDrawerProps {
   kind: "task" | "version";
   detail: TaskDetail | VersionDetail | null;
   onClose: () => void;
+  onChanged?: () => void;
 }
 
 const TASK_STATUS_LABELS: Record<string, string> = {
@@ -30,7 +32,7 @@ const VERSION_STATUS_LABELS: Record<string, string> = {
   canceled: "已取消",
 };
 
-export function DetailDrawer({ kind, detail, onClose }: DetailDrawerProps) {
+export function DetailDrawer({ kind, detail, onClose, onChanged }: DetailDrawerProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -108,7 +110,7 @@ export function DetailDrawer({ kind, detail, onClose }: DetailDrawerProps) {
       ) : kind === "task" ? (
         <TaskDetailBody detail={detail as TaskDetail} />
       ) : (
-        <VersionDetailBody detail={detail as VersionDetail} />
+        <VersionDetailBody detail={detail as VersionDetail} onChanged={onChanged} />
       )}
 
     </dialog>
@@ -207,10 +209,43 @@ function TaskDetailBody({ detail }: { detail: TaskDetail }) {
   );
 }
 
-function VersionDetailBody({ detail }: { detail: VersionDetail }) {
+function VersionDetailBody({
+  detail,
+  onChanged,
+}: {
+  detail: VersionDetail;
+  onChanged?: () => void;
+}) {
   const statusLabel = VERSION_STATUS_LABELS[detail.status ?? ""] ?? detail.status ?? "未知";
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  async function publish() {
+    setPublishing(true);
+    setPublishError(null);
+    try {
+      await publishOrchestrationVersion(detail.id);
+      onChanged?.();
+    } catch (caught) {
+      setPublishError(caught instanceof ApiError ? caught.message : "发布请求失败");
+    } finally {
+      setPublishing(false);
+    }
+  }
   return (
     <div className="form-body detail-dialog-body">
+      {detail.releasable && (
+        <div className="detail-publish-actions">
+          <button
+            className="button detail-publish-button"
+            type="button"
+            disabled={publishing}
+            onClick={() => void publish()}
+          >
+            {publishing ? "发布中…" : "发布"}
+          </button>
+          {publishError && <span className="detail-publish-error">{publishError}</span>}
+        </div>
+      )}
       <div className="detail-info-grid">
         <div className="detail-info-cell">
           <dt>状态</dt>

@@ -98,3 +98,67 @@ test("task detail and version detail routes return payloads and reject bad ids",
   assert.equal(malformed.response.status, 400);
   assert.equal(malformed.body.error.code, "INVALID_PATH");
 });
+
+test("version publish route enqueues the releasing status when releasable", async (t) => {
+  const harness = await createCloudWorkerHarness({
+    bindings: {
+      ORCHESTRATION_DIAGNOSTIC_ENABLED: "true",
+      CLICKUP_CONFIG: JSON.stringify({
+        teamId: "90161712199",
+        spaceId: "90167718544",
+        lists: {
+          task: { id: "t", name: "任务" },
+          version: { id: "v", name: "版本" },
+          taskSandbox: { id: "ts", name: "任务-Sandbox" },
+          versionSandbox: { id: "vs", name: "版本-Sandbox" },
+        },
+        taskStatusMap: { 收件箱: "inbox" },
+        versionStatusMap: {
+          规划中: "planning",
+          进行中: "active",
+          发布中: "releasing",
+          发布失败: "release_failed",
+          已发布: "published",
+          已取消: "canceled",
+        },
+        fields: { task: {}, version: {}, taskSandbox: {}, versionSandbox: {} },
+      }),
+    },
+  });
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+
+  const version = await harness.request("/api/orchestration/dashboard/versions/version-1", {
+    method: "GET",
+    actorName: "owner",
+  });
+  assert.equal(version.response.status, 200);
+  assert.equal(version.body.releasable, true);
+
+  const publish = await harness.request(
+    "/api/orchestration/dashboard/versions/version-1/publish",
+    { method: "POST", actorName: "owner" },
+  );
+  assert.equal(publish.response.status, 200);
+  assert.deepEqual(publish.body, { ok: true, status: "releasing" });
+  const mutation = await harness.db
+    .prepare("SELECT target FROM outbox_mutations WHERE object_id = ? AND field = 'status'")
+    .bind("version-1")
+    .first();
+  assert.ok(mutation);
+  assert.deepEqual(JSON.parse(mutation.target), "发布中");
+
+  const notReady = await harness.request(
+    "/api/orchestration/dashboard/versions/version-2/publish",
+    { method: "POST", actorName: "owner" },
+  );
+  assert.equal(notReady.response.status, 409);
+  assert.equal(notReady.body.error.code, "NOT_RELEASABLE");
+
+  const method = await harness.request(
+    "/api/orchestration/dashboard/versions/version-1/publish",
+    { method: "GET", actorName: "owner" },
+  );
+  assert.equal(method.response.status, 405);
+  assert.deepEqual(method.body.error.details.allowed, ["POST"]);
+});

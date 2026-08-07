@@ -1,26 +1,30 @@
 import { createServer } from "node:http";
 
 import { readControl, writeControl } from "../control.mjs";
+import { enqueueMutation } from "../clickup/outbox.mjs";
 import { buildDashboard, buildTaskDetail, buildVersionDetail } from "./queries.mjs";
 
-function sendJson(response, status, value) {
+function sendJson(response, status, value, extraHeaders = {}) {
   const body = JSON.stringify(value);
   response.writeHead(status, {
     "cache-control": "no-store",
     "content-length": Buffer.byteLength(body),
     "content-type": "application/json; charset=utf-8",
+    ...extraHeaders,
   });
   response.end(body);
 }
 
 function methodNotAllowed(response, allowed) {
   sendJson(response, 405, {
-    error: {
-      code: "METHOD_NOT_ALLOWED",
-      message: "Method not allowed",
-      details: { allowed },
+      error: {
+        code: "METHOD_NOT_ALLOWED",
+        message: "Method not allowed",
+        details: { allowed },
+      },
     },
-  });
+    { allow: allowed.join(", ") },
+  );
 }
 
 async function readRequestBody(request) {
@@ -34,6 +38,7 @@ export async function startDashboardServer({
   port = 47824,
   versionListUrl = null,
   controlPath = null,
+  versionStatusMap = null,
 }) {
   const server = createServer(async (request, response) => {
     try {
@@ -86,6 +91,60 @@ export async function startDashboardServer({
           });
         }
         return sendJson(response, 200, detail);
+      }
+
+      const versionPublishMatch = pathname.match(
+        /^\/api\/orchestration\/dashboard\/versions\/([^/]+)\/publish$/,
+      );
+      if (versionPublishMatch) {
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        let versionId;
+        try {
+          versionId = decodeURIComponent(versionPublishMatch[1]);
+        } catch {
+          return sendJson(response, 400, {
+            error: { code: "INVALID_PATH", message: "Version id contains invalid encoding" },
+          });
+        }
+        const detail = await buildVersionDetail(db, versionId);
+        if (!detail) {
+          return sendJson(response, 404, {
+            error: { code: "NOT_FOUND", message: "Version not found" },
+          });
+        }
+        if (!detail.releasable) {
+          return sendJson(response, 409, {
+            error: {
+              code: "NOT_RELEASABLE",
+              message: "版本任务未全部就绪或版本已发布",
+            },
+          });
+        }
+        if (!versionStatusMap) {
+          return sendJson(response, 500, {
+            error: { code: "NO_RELEASING_STATUS", message: "版本状态配置缺少发布中" },
+          });
+        }
+        const statusName = Object.entries(versionStatusMap)
+          .find(([, canonical]) => canonical === "releasing")?.[0];
+        if (!statusName) {
+          return sendJson(response, 500, {
+            error: { code: "NO_RELEASING_STATUS", message: "版本状态配置缺少发布中" },
+          });
+        }
+        const now = new Date().toISOString();
+        await enqueueMutation(db, {
+          mutationId: `publish-${versionId}-${Date.now()}`,
+          objectType: "version",
+          objectId: versionId,
+          field: "status",
+          expectedBefore: null,
+          target: statusName,
+          actor: "dashboard",
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+          createdAt: now,
+        });
+        return sendJson(response, 200, { ok: true, status: "releasing" });
       }
 
       const versionMatch = pathname.match(/^\/api\/orchestration\/dashboard\/versions\/([^/]+)$/);

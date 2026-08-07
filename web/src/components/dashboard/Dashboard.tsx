@@ -242,6 +242,7 @@ export function Dashboard() {
           kind={drawer.kind}
           detail={detail}
           onClose={() => setDrawer(null)}
+          onChanged={() => setDrawer((current) => (current ? { ...current } : current))}
         />
       )}
 

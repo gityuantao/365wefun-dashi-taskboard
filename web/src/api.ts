@@ -141,6 +141,15 @@ export async function getOrchestrationVersionDetail(
   );
 }
 
+export async function publishOrchestrationVersion(
+  versionId: string,
+): Promise<{ ok: boolean; status: string }> {
+  return request(
+    `/api/orchestration/dashboard/versions/${encodeURIComponent(versionId)}/publish`,
+    { method: "POST" },
+  );
+}
+
 export async function getAiChatCatalog(
   projectId: string,
   signal?: AbortSignal,

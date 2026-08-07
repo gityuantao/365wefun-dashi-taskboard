@@ -1586,16 +1586,24 @@ export function createTaskboardServer(options = {}) {
         || pathname.startsWith("/api/orchestration/dashboard/")
       ) {
         assertLoopbackRequest(request);
-        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        if (request.method !== "GET" && request.method !== "POST") {
+          return methodNotAllowed(response, ["GET", "POST"]);
+        }
         const target = `http://127.0.0.1:${resolved.orchestrationPort}${pathname}${url.search}`;
+        const init = {
+          method: request.method,
+          headers: { accept: "application/json" },
+          signal: AbortSignal.timeout(5000),
+        };
+        if (request.method === "POST") {
+          init.headers["content-type"] = "application/json";
+          init.body = Readable.toWeb(request);
+          init.duplex = "half";
+        }
         let upstream;
         let text;
         try {
-          upstream = await fetch(target, {
-            method: "GET",
-            headers: { accept: "application/json" },
-            signal: AbortSignal.timeout(5000),
-          });
+          upstream = await fetch(target, init);
           text = await upstream.text();
         } catch (error) {
           console.error("orchestration dashboard proxy error:", error);
@@ -1607,9 +1615,11 @@ export function createTaskboardServer(options = {}) {
           );
         }
         const contentType = upstream.headers.get("content-type") ?? "application/json; charset=utf-8";
+        const allow = upstream.headers.get("allow");
         response.writeHead(upstream.status, {
           "cache-control": "no-store",
           "content-type": contentType,
+          ...(allow ? { allow } : {}),
         });
         response.end(text);
         return;

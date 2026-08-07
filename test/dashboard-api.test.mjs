@@ -12,6 +12,8 @@ test("api client exposes orchestration dashboard endpoints", () => {
   assert.match(apiSource, /\/api\/orchestration\/dashboard\/tasks\//);
   assert.match(apiSource, /export async function getOrchestrationVersionDetail/);
   assert.match(apiSource, /\/api\/orchestration\/dashboard\/versions\//);
+  assert.match(apiSource, /export async function publishOrchestrationVersion/);
+  assert.match(apiSource, /\/api\/orchestration\/dashboard\/versions\//);
 });
 
 test("types include dashboard payload and detail shapes", () => {
@@ -34,6 +36,7 @@ test("dashboard types carry contract-critical fields", () => {
   assert.match(typesSource, /export interface DashboardPayload[\s\S]*?activity: ActivityItem\[\];/);
   assert.match(typesSource, /export interface TaskDetail[\s\S]*?acceptanceResult: "accepted" \| "rejected" \| null;/);
   assert.match(typesSource, /export interface VersionDetail[\s\S]*?manifest: \{[\s\S]*?checksum: string;/);
+  assert.match(typesSource, /export interface VersionDetail[\s\S]*?releasable: boolean;/);
 });
 
 test("control api and version fields are typed", () => {

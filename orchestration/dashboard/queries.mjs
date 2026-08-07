@@ -340,11 +340,18 @@ export async function buildVersionDetail(db, versionId) {
       ready: task.status === "ready_for_release",
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
+  const releasable = versionTasks.length > 0
+    && versionTasks.every((task) => task.ready)
+    && snapshot.blocked !== true
+    && status !== "published"
+    && status !== "canceled"
+    && status !== "releasing";
 
   return {
     id: versionId,
     name: snapshot.name ?? versionId,
     status,
+    releasable,
     blocked: snapshot.blocked === true,
     tasks: versionTasks,
     manifest,

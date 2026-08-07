@@ -82,6 +82,62 @@ test("orchestrator dashboard server exposes read-only JSON endpoints", async (t)
   assert.equal(malformedBody.error.code, "INVALID_PATH");
 });
 
+test("orchestrator dashboard server enqueues a publish mutation when releasable", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+
+  const dashboard = await startDashboardServer({
+    db: harness.db,
+    port: 0,
+    versionListUrl: "https://app.clickup.com/space-1/v/l/version-list",
+    versionStatusMap: {
+      规划中: "planning",
+      进行中: "active",
+      发布中: "releasing",
+      发布失败: "release_failed",
+      已发布: "published",
+      已取消: "canceled",
+    },
+  });
+  t.after(() => dashboard.close());
+
+  const version = await fetch(
+    `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1`,
+  );
+  assert.equal(version.status, 200);
+  const versionBody = await version.json();
+  assert.equal(versionBody.releasable, true);
+
+  const publish = await fetch(
+    `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
+    { method: "POST" },
+  );
+  assert.equal(publish.status, 200);
+  assert.deepEqual(await publish.json(), { ok: true, status: "releasing" });
+  const mutation = await harness.db
+    .prepare("SELECT target FROM outbox_mutations WHERE object_id = ? AND field = 'status'")
+    .bind("version-1")
+    .first();
+  assert.ok(mutation);
+  assert.deepEqual(JSON.parse(mutation.target), "发布中");
+
+  const notReady = await fetch(
+    `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-2/publish`,
+    { method: "POST" },
+  );
+  assert.equal(notReady.status, 409);
+  const notReadyBody = await notReady.json();
+  assert.equal(notReadyBody.error.code, "NOT_RELEASABLE");
+
+  const method = await fetch(
+    `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
+  );
+  assert.equal(method.status, 405);
+  const methodBody = await method.json();
+  assert.deepEqual(methodBody.error.details.allowed, ["POST"]);
+});
+
 test("invalid absolute-form request targets still receive a 500 response", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

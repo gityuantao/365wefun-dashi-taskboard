@@ -81,6 +81,8 @@ test("detail drawer supports task and version bodies", () => {
   assert.match(drawerSource, /VersionDetailBody/);
   assert.match(drawerSource, /状态时间线/);
   assert.match(drawerSource, /Manifest/);
+  assert.match(drawerSource, /发布/);
+  assert.match(drawerSource, /publishOrchestrationVersion/);
 });
 
 test("dashboard styles define layout, badges and drawer classes", () => {

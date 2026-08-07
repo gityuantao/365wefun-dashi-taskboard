@@ -356,6 +356,7 @@ export interface VersionDetail {
   id: string;
   name: string;
   status: string | null;
+  releasable: boolean;
   blocked: boolean;
   tasks: Array<{
     id: string;
