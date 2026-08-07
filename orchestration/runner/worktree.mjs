@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DomainError } from "../domain/errors.mjs";
 
@@ -56,6 +57,35 @@ export function runInWorktree(worktreePath, args) {
     stdout: result.stdout,
     stderr: result.stderr,
   };
+}
+
+export function removeTaskWorktree({ repoPath, taskId, worktreesRoot }) {
+  assertSafeTaskId(taskId);
+  const branch = `task/${taskId}`;
+  const worktreePath = path.join(
+    worktreesRoot ?? path.join(repoPath, ".worktrees"),
+    `task-${taskId}`,
+  );
+  const removed = git(repoPath, ["worktree", "remove", "--force", worktreePath]);
+  if (removed.status !== 0 && !/not a working tree/i.test(removed.stderr)) {
+    throw new DomainError(
+      "WORKTREE_REMOVE_FAILED",
+      `Failed to remove worktree for ${taskId}: ${removed.stderr}`,
+      { taskId, stderr: removed.stderr },
+    );
+  }
+  if (existsSync(worktreePath)) {
+    rmSync(worktreePath, { recursive: true, force: true });
+  }
+  const branchRemoved = git(repoPath, ["branch", "-D", branch]);
+  if (branchRemoved.status !== 0 && !/not found/i.test(branchRemoved.stderr)) {
+    throw new DomainError(
+      "BRANCH_REMOVE_FAILED",
+      `Failed to remove branch ${branch}: ${branchRemoved.stderr}`,
+      { branch, stderr: branchRemoved.stderr },
+    );
+  }
+  return { worktreePath, branch };
 }
 
 export function assertClean(worktreePath) {

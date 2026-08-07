@@ -42,6 +42,7 @@ import {
 import { runCodex } from "../orchestration/runner/codex-runner.mjs";
 import {
   createTaskWorktree,
+  removeTaskWorktree,
   runInWorktree,
 } from "../orchestration/runner/worktree.mjs";
 import { claimJob, completeJob } from "../orchestration/persistence/d1-runner-jobs.mjs";
@@ -354,6 +355,21 @@ async function releaseCoordinator(now) {
       client,
     });
     log(`version ${versionId} release -> ${result.status}${result.error ? `: ${result.error}` : ""}`);
+    if (result.status === "succeeded") {
+      const manifest = await loadManifest({ db, versionId });
+      for (const taskId of (manifest?.taskIds ?? [])) {
+        try {
+          removeTaskWorktree({
+            repoPath: runtime.repoPath,
+            taskId,
+            worktreesRoot: runtime.worktreesRoot,
+          });
+          log(`cleaned worktree for task ${taskId}`);
+        } catch (error) {
+          log(`worktree cleanup failed for ${taskId}: ${error.message}`);
+        }
+      }
+    }
   }
 }
 

@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   assertClean,
   createTaskWorktree,
+  removeTaskWorktree,
   runInWorktree,
 } from "../../orchestration/runner/worktree.mjs";
 
@@ -48,6 +50,29 @@ test("createTaskWorktree creates a branch and isolated worktree", async (t) => {
   const status = runInWorktree(result.worktreePath, ["status", "--porcelain"]);
   assert.equal(status.status, 0);
   assert.equal(status.stdout, "");
+});
+
+test("removeTaskWorktree removes the worktree and branch", async (t) => {
+  const root = await makeRepo();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const worktreesRoot = path.join(root, ".wt");
+  await mkdir(worktreesRoot);
+  const { worktreePath, branch } = createTaskWorktree({
+    repoPath: root,
+    taskId: "task-remove-1",
+    baseRef: "main",
+    worktreesRoot,
+  });
+  const result = removeTaskWorktree({
+    repoPath: root,
+    taskId: "task-remove-1",
+    worktreesRoot,
+  });
+  assert.equal(result.worktreePath, worktreePath);
+  assert.equal(result.branch, branch);
+  assert.equal(existsSync(worktreePath), false);
+  const branches = execFileSync("git", ["-C", root, "branch", "--list"], { encoding: "utf8" });
+  assert.doesNotMatch(branches, /task\/task-remove-1/);
 });
 
 test("assertClean detects dirty worktrees", async (t) => {
