@@ -1,4 +1,8 @@
 import { dispatchCommand } from "../application/dispatch-command.mjs";
+import {
+  recordFailure,
+  resetRework,
+} from "../application/failure-handler.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { buildAcceptancePrompt, buildCommentContext } from "./prompts.mjs";
@@ -102,6 +106,11 @@ export async function executeAcceptance({
       } catch {
         // 评论失败不影响验收结果
       }
+      try {
+        await resetRework({ db, taskId });
+      } catch {
+        // 返工计数重置失败不影响验收结果
+      }
       return {
         status: "completed",
         commandId: result.commandId,
@@ -111,14 +120,24 @@ export async function executeAcceptance({
     }
 
     const findings = parsed.findings ?? [];
+    const { blocked } = await recordFailure({
+      db,
+      taskId,
+      reason: "acceptance failed",
+      evidence: `acceptance-${job.id}`,
+      now,
+    });
+    const outcome = blocked
+      ? "验收已连续多次不通过，已暂停自动返工；请确认原因后把状态改回「开发中」重新开发。"
+      : "已退回待开发，系统将自动重新开发。";
     const feedbackText = `${formatFullAcceptanceFeedback(findings)}
 
-已退回待开发。确认修复后请在 ClickUp 把状态改为「开发中」以重新开发。`;
+${outcome}`;
     await client.postComment(
       taskId,
       `${formatAcceptanceFeedback(findings)}
 
-已退回待开发，请修复后把状态改回「开发中」重新开发。`,
+${outcome}`,
     );
     if (fieldIds.feedback) {
       try {
@@ -139,21 +158,23 @@ export async function executeAcceptance({
       parameters: { evidenceId: `acceptance-${job.id}` },
     });
     const result = await dispatchCommand({ db, command, now });
-    await db
-      .prepare(`
-        INSERT OR IGNORE INTO runner_jobs (
-          id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
-        ) VALUES (?, ?, 'accept', ?, 'paused', 'failed', ?, ?, ?)
-      `)
-      .bind(
-        "acceptance-paused-" + taskId,
-        "auto-accept-" + taskId,
-        JSON.stringify({ taskId }),
-        JSON.stringify({ error: "acceptance_paused" }),
-        now,
-        now,
-      )
-      .run();
+    if (blocked) {
+      await db
+        .prepare(`
+          INSERT OR IGNORE INTO runner_jobs (
+            id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+          ) VALUES (?, ?, 'accept', ?, 'paused', 'failed', ?, ?, ?)
+        `)
+        .bind(
+          "acceptance-paused-" + taskId,
+          "auto-accept-" + taskId,
+          JSON.stringify({ taskId }),
+          JSON.stringify({ error: "acceptance_paused" }),
+          now,
+          now,
+        )
+        .run();
+    }
     return {
       status: "completed",
       commandId: result.commandId,

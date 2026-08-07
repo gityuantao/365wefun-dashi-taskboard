@@ -316,7 +316,7 @@ test("poller starts testing when the user moves to 测试中", async (t) => {
   assert.equal(aggregate.version, 6);
 });
 
-test("acceptance failure pauses development until the user starts it manually", async (t) => {
+test("blocked acceptance failure pauses development until the user starts it manually", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   for (let index = 0; index < 4; index += 1) {
@@ -348,6 +348,26 @@ test("acceptance failure pauses development until the user starts it manually", 
     .bind("acceptance-paused-task-1")
     .first();
   assert.equal(pausedAfter, null);
+});
+
+test("acceptance failure without a pause auto-enqueues redevelopment", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 5; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development",
+      "development_completed", "acceptance_failed"][index];
+    const parameters = type === "acceptance_failed" ? { evidenceId: "acc-fail-1" } : {};
+    await dispatchTask(harness, `poll-auto-${index}`, type, index + 1, parameters);
+  }
+  const env = await makeEnv(harness, [sandboxTask({ status: "待开发" })]);
+  await pollClickUpOnce(env, { now: NOW });
+  const job = await harness.db
+    .prepare("SELECT job_type, status FROM runner_jobs WHERE id = ?")
+    .bind("task-1-develop-5")
+    .first();
+  assert.ok(job);
+  assert.equal(job.job_type, "develop");
+  assert.equal(job.status, "queued");
 });
 
 test("moving directly to 待发布 is treated as test passed", async (t) => {

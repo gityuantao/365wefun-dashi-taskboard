@@ -4,6 +4,7 @@ import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import {
   checkReworkBudget,
   recordFailure,
+  resetRework,
 } from "../../orchestration/application/failure-handler.mjs";
 
 const NOW = "2026-08-04T00:05:00.000Z";
@@ -57,5 +58,20 @@ test("checkReworkBudget returns zero for untouched tasks", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const budget = await checkReworkBudget({ db: harness.db, taskId: "task-3" });
+  assert.deepEqual(budget, { round: 0, exhausted: false });
+});
+
+test("resetRework clears the recorded rounds", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await recordFailure({
+    db: harness.db,
+    taskId: "task-4",
+    reason: "acceptance failed",
+    evidence: "ev-1",
+    now: NOW,
+  });
+  await resetRework({ db: harness.db, taskId: "task-4" });
+  const budget = await checkReworkBudget({ db: harness.db, taskId: "task-4" });
   assert.deepEqual(budget, { round: 0, exhausted: false });
 });

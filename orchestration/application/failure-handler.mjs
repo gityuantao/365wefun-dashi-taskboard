@@ -40,3 +40,10 @@ export async function checkReworkBudget({ db, taskId }) {
   const round = row?.round ?? 0;
   return { round, exhausted: round >= REWORK_LIMIT };
 }
+
+export async function resetRework({ db, taskId }) {
+  await db
+    .prepare("DELETE FROM task_rework WHERE task_id = ?")
+    .bind(taskId)
+    .run();
+}

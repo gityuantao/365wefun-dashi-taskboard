@@ -5,6 +5,7 @@ import { dispatchCommand } from "../../orchestration/application/dispatch-comman
 import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
 import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-store.mjs";
 import { executeAcceptance } from "../../orchestration/ai/acceptance.mjs";
+import { checkReworkBudget } from "../../orchestration/application/failure-handler.mjs";
 
 const NOW = "2026-08-04T00:04:00.000Z";
 
@@ -27,6 +28,28 @@ async function seedToAccepting(harness) {
       }),
       now: NOW,
     });
+  }
+}
+
+async function advanceToAcceptingAgain(harness, round) {
+  let aggregate = await loadAggregate(harness.db, "task", "task-1");
+  for (const type of ["start_development", "development_completed"]) {
+    await dispatchCommand({
+      db: harness.db,
+      command: parseCommandEnvelope({
+        id: `reaccept-${round}-${type}`,
+        type,
+        aggregateType: "task",
+        aggregateId: "task-1",
+        expectedVersion: aggregate.version + 1,
+        actorId: "system",
+        issuedAt: NOW,
+        reason: "reseeding",
+        parameters: {},
+      }),
+      now: NOW,
+    });
+    aggregate = await loadAggregate(harness.db, "task", "task-1");
   }
 }
 
@@ -164,6 +187,35 @@ test("acceptance rejection keeps the comment concise and the field complete", as
   assert.ok(comment.includes("…"));
   assert.ok(comment.length < long.length);
   assert.ok(field[1].includes(long));
+});
+
+test("acceptance failure auto-redevelops and pauses only after repeated failures", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedToAccepting(harness);
+  for (let round = 1; round <= 3; round += 1) {
+    const result = await executeAcceptance({
+      job: { ...JOB, id: `job-r${round}` },
+      db: harness.db,
+      client: makeClient("version-9"),
+      codex: { run: async () => ({ exitCode: 0, stdout: rejectedOutput(), stderr: "" }) },
+      now: NOW,
+    });
+    assert.equal(result.status, "completed");
+    const paused = await harness.db
+      .prepare("SELECT id FROM runner_jobs WHERE id = ?")
+      .bind("acceptance-paused-task-1")
+      .first();
+    if (round < 3) {
+      assert.equal(paused, null);
+      await advanceToAcceptingAgain(harness, round);
+    } else {
+      assert.ok(paused);
+    }
+  }
+  const budget = await checkReworkBudget({ db: harness.db, taskId: "task-1" });
+  assert.equal(budget.round, 3);
+  assert.equal(budget.exhausted, true);
 });
 
 test("acceptance rejects invalid structured output", async (t) => {
