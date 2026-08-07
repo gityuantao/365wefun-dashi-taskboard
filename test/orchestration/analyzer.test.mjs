@@ -59,6 +59,33 @@ function makeClient(overrides = {}) {
   };
 }
 
+test("analysis passes the 影响平台 field into the prompt", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  let prompt = "";
+  const result = await executeAnalysis({
+    job: { id: "job-a10", commandId: "cmd-a10", jobType: "analyze", payload: { taskId: "task-1" } },
+    db: harness.db,
+    client: makeClient({
+      getTask: async () => ({
+        id: "task-1",
+        name: "录音回放按钮",
+        description: "修复录音回放",
+        status: { status: "分析中" },
+        custom_fields: [
+          { id: "field-version", name: "目标版本", value: "version-9" },
+          { id: "field-platforms", name: "影响平台", value: ["web", "ios"] },
+        ],
+      }),
+    }),
+    codex: { run: async ({ prompt: p }) => { prompt = p; return { exitCode: 0, stdout: validOutput(), stderr: "" }; } },
+    now: NOW,
+  });
+  assert.equal(result.status, "completed");
+  assert.match(prompt, /影响平台（ClickUp 字段）：web、ios/);
+});
+
 test("analysis blocks when the task has no target version", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

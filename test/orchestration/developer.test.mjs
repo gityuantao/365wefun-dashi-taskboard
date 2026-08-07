@@ -167,6 +167,36 @@ test("development that cannot reproduce parks the task in waiting_info", async (
   );
 });
 
+test("development passes the 影响平台 field into the prompt", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  let prompt = "";
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      getTask: async () => ({
+        id: "task-1",
+        name: "录音回放按钮",
+        description: "修复录音回放",
+        status: { status: "开发中" },
+        custom_fields: [
+          { id: "field-version", name: "目标版本", value: "version-9" },
+          { id: "field-platforms", name: "影响平台", value: ["小程序", "安卓"] },
+        ],
+      }),
+    }),
+    codex: {
+      run: async ({ prompt: p }) => { prompt = p; return { exitCode: 0, stdout: validOutput(), stderr: "" }; },
+    },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+  assert.equal(result.status, "completed");
+  assert.match(prompt, /影响平台（ClickUp 字段）：小程序、安卓/);
+});
+
 test("development failure leaves the task in ready for development", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

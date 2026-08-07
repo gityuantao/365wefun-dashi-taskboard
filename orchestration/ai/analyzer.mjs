@@ -3,6 +3,16 @@ import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { buildAnalysisPrompt, buildCommentContext } from "./prompts.mjs";
 
+function resolvePlatforms(task) {
+  const field = task.custom_fields?.find(
+    (candidate) => candidate.name === "影响平台" || candidate.id === "field-platforms",
+  );
+  const value = field?.value;
+  if (Array.isArray(value)) return value.filter(Boolean).join("、");
+  if (typeof value === "string" && value.trim() !== "") return value.trim();
+  return null;
+}
+
 function extractJson(stdout) {
   const start = stdout.indexOf("{");
   const end = stdout.lastIndexOf("}");
@@ -69,7 +79,7 @@ export async function executeAnalysis({
     commentContext = buildCommentContext(await client.getComments(job.payload.taskId));
   } catch {}
   const run = await codex.run({
-    prompt: buildAnalysisPrompt(task, commentContext),
+    prompt: buildAnalysisPrompt(task, commentContext, resolvePlatforms(task)),
     workdir: job.payload.workdir,
     taskId: job.payload.taskId,
   });
