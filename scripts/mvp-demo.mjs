@@ -131,6 +131,7 @@ try {
       getVersionsByList: async () => [],
       getTask: async () => clickUpTask,
       postComment: async () => ({}),
+      updateTaskDescription: async () => ({}),
       updateCustomField: async () => ({}),
     }),
   };

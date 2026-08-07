@@ -95,6 +95,20 @@ test("updateTaskStatus posts the status to the task", async () => {
   assert.deepEqual(JSON.parse(calls[0].init.body), { status: "待发布" });
 });
 
+test("updateTaskDescription posts the description to the task", async () => {
+  const calls = [];
+  const client = createClickUpClient({
+    token: "pk_test",
+    fetchImpl: recordingFetch(calls),
+  });
+  await client.updateTaskDescription("t1", "## 分析结果\n范围说明");
+  assert.ok(calls[0].url.includes("/task/t1"));
+  assert.equal(calls[0].init.method, "PUT");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    description: "## 分析结果\n范围说明",
+  });
+});
+
 test("updateCustomField posts the field value", async () => {
   const calls = [];
   const client = createClickUpClient({

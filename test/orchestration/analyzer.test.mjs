@@ -50,6 +50,7 @@ function makeClient(overrides = {}) {
       ],
     }),
     postComment: async () => ({}),
+    updateTaskDescription: async () => ({}),
     updateCustomField: async () => ({}),
     getComments: async () => [],
     ...overrides,
@@ -142,13 +143,14 @@ test("analysis rejects invalid structured output", async (t) => {
   assert.equal(aggregate.state, "analyzing");
 });
 
-test("analysis writes the execution summary and a comment", async (t) => {
+test("analysis writes the description, execution summary and a comment", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await setupTask(harness);
   const calls = [];
   const client = makeClient({
     postComment: async (id, body) => calls.push(["comment", id, body]),
+    updateTaskDescription: async (id, description) => calls.push(["description", id, description]),
     updateCustomField: async (id, field, value) => calls.push(["field", id, field, value]),
   });
   await executeAnalysis({
@@ -160,6 +162,11 @@ test("analysis writes the execution summary and a comment", async (t) => {
   });
   assert.ok(calls.some(([kind]) => kind === "comment"));
   assert.ok(calls.some(([kind, , field]) => kind === "field" && field === "field-summary"));
+  const descriptionCall = calls.find(([kind]) => kind === "description");
+  assert.ok(descriptionCall);
+  assert.match(descriptionCall[2], /## 分析结果/);
+  assert.match(descriptionCall[2], /实现录音回放按钮/);
+  assert.match(descriptionCall[2], /按钮可点击/);
 });
 
 test("analysis reads comments and includes them in the prompt", async (t) => {

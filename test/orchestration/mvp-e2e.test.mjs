@@ -96,6 +96,7 @@ async function makeEnv(harness, taskProvider) {
       ],
       getTask: async () => taskProvider(),
       postComment: async () => ({}),
+      updateTaskDescription: async () => ({}),
       updateCustomField: async () => ({}),
       updateTaskStatus: async () => ({}),
     }),

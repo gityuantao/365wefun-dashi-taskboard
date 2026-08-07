@@ -15,6 +15,19 @@ function concise(text, max = 60) {
   return clean.length > max ? clean.slice(0, max) : clean;
 }
 
+function buildAnalysisDescription(original, parsed) {
+  const marker = "\n\n---\n\n## 分析结果";
+  const index = String(original ?? "").indexOf(marker);
+  const base = index === -1 ? String(original ?? "") : String(original ?? "").slice(0, index);
+  const criteria = parsed.acceptance_criteria
+    .map((criterion, criterionIndex) => `${criterionIndex + 1}. ${criterion.criterion}`)
+    .join("\n");
+  const risks = Array.isArray(parsed.risks) && parsed.risks.length > 0
+    ? `\n### 风险\n${parsed.risks.map((risk) => `- [${risk.level ?? "低"}] ${risk.description}`).join("\n")}`
+    : "";
+  return `${base}${marker}\n### 范围\n${parsed.scope}\n### 验收标准\n${criteria}${risks}`.trim();
+}
+
 async function markNeedsHuman({ db, taskId, jobId, now, reason }) {
   const aggregate = await loadAggregate(db, "task", taskId);
   if (aggregate.state !== "analyzing") return;
@@ -113,6 +126,10 @@ export async function executeAnalysis({
   await client.postComment(
     task.id,
     `✅ 分析完成：${concise(parsed.scope)}（验收标准 ${parsed.acceptance_criteria.length} 条）`,
+  );
+  await client.updateTaskDescription(
+    task.id,
+    buildAnalysisDescription(task.description, parsed),
   );
   await client.updateCustomField(task.id, fieldIds.summary, parsed.scope);
   if (fieldIds.acceptance) {

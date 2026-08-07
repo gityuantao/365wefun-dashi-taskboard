@@ -105,6 +105,10 @@ export function createClickUpClient({
       `/task/${encodeURIComponent(taskId)}`,
       { method: "PUT", body: { status } },
     ),
+    updateTaskDescription: (taskId, description) => request(
+      `/task/${encodeURIComponent(taskId)}`,
+      { method: "PUT", body: { description } },
+    ),
     updateCustomField: (taskId, fieldId, value) => request(
       `/task/${encodeURIComponent(taskId)}/field/${encodeURIComponent(fieldId)}`,
       { method: "POST", body: { value } },
