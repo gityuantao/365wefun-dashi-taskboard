@@ -26,8 +26,8 @@
   .dashboard-header,
   .dashboard-loading,
   .dashboard-error,
-  .dashboard-section.version-progress,
-  .dashboard-section.activity-feed {
+  .dashboard-section.release-actions,
+  .dashboard-section.pipeline-overview {
     grid-column: 1 / -1;
   }
 }
@@ -293,11 +293,15 @@
 /* ---------- 流水线总览 ---------- */
 .pipeline-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-template-columns: none;
   gap: 6px;
   list-style: none;
   margin: 0;
   padding: 10px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
 }
 
 .pipeline-cell {
@@ -308,6 +312,7 @@
   justify-content: center;
   gap: 3px;
   min-height: 58px;
+  min-width: 0;
   padding: 8px 6px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -363,10 +368,13 @@
 }
 
 .pipeline-label {
+  max-width: 100%;
   color: var(--text-secondary);
   font-size: 11px;
   text-align: center;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---------- 版本进度 ---------- */

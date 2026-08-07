@@ -27,8 +27,9 @@ export function ReleaseActions({ versions }: { versions: ReleasableVersion[] }) 
                 href={version.url}
                 target="_blank"
                 rel="noreferrer"
+                title={`在 ClickUp 打开 ${version.id}`}
               >
-                在 ClickUp 操作
+                {version.id}
               </a>
             </li>
           ))}

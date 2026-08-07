@@ -47,7 +47,7 @@ test("release actions show ready versions and an empty state", () => {
   assert.match(releaseActionsSource, /export function ReleaseActions\(/);
   assert.match(releaseActionsSource, /版本发布（待你操作）/);
   assert.match(releaseActionsSource, /暂无待发布版本/);
-  assert.match(releaseActionsSource, /在 ClickUp 操作/);
+  assert.match(releaseActionsSource, /{version\.id}/);
   assert.match(releaseActionsSource, /target="_blank"/);
   assert.match(releaseActionsSource, /可重试/);
 });
@@ -142,7 +142,7 @@ test("detail dialogs reuse the new-issue dialog shell", () => {
 });
 
 test("detail dialog header links and no footer", () => {
-  assert.match(drawerSource, /在 ClickUp 查看/);
+  assert.match(drawerSource, /{detail\.id}/);
   assert.match(drawerSource, /clickup\.com\/t\//);
   assert.match(drawerSource, /detail-external-link/);
   assert.doesNotMatch(drawerSource, /dialog-footer/);

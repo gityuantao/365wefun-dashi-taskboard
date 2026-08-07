@@ -72,8 +72,9 @@ export function DetailDrawer({ kind, detail, onClose, onChanged }: DetailDrawerP
                 href={`https://app.clickup.com/t/${detail.id}`}
                 target="_blank"
                 rel="noreferrer"
+                title="在 ClickUp 打开"
               >
-                在 ClickUp 查看
+                {detail.id}
               </a>
               {kind === "task" && (detail as TaskDetail).prUrl && (
                 <a
