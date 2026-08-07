@@ -417,7 +417,7 @@ async function syncStatuses(now) {
       .first();
     const latest = await db
       .prepare(`
-        SELECT occurred_at, data FROM orchestration_events
+        SELECT command_id, occurred_at, data FROM orchestration_events
         WHERE aggregate_type = ? AND aggregate_id = ?
         ORDER BY sequence DESC LIMIT 1
       `)
@@ -430,6 +430,19 @@ async function syncStatuses(now) {
           && Date.parse(latest.occurred_at) > Date.parse(now) - 120_000;
       } catch {
         // 事件数据解析失败时按人工漂移处理
+      }
+    }
+    if (!movedBySystem && latest?.command_id) {
+      const job = await db
+        .prepare(`
+          SELECT completed_at FROM runner_jobs
+          WHERE command_id = ? AND status = 'completed'
+          LIMIT 1
+        `)
+        .bind(latest.command_id)
+        .first();
+      if (job?.completed_at && Date.parse(job.completed_at) > Date.parse(now) - 120_000) {
+        movedBySystem = true;
       }
     }
     if (correction && !pending && !movedBySystem) {
