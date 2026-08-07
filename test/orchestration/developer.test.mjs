@@ -97,6 +97,44 @@ test("development completes, creates a PR, and advances to ready for test", asyn
   assert.equal(aggregate.version, 4);
 });
 
+test("stale develop job does not restart a parked task", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  for (const [type, version] of [
+    ["start_development", 3],
+    ["development_needs_info", 4],
+  ]) {
+    await dispatchCommand({
+      db: harness.db,
+      command: parseCommandEnvelope({
+        id: `stale-${type}-${version}`,
+        type,
+        aggregateType: "task",
+        aggregateId: "task-1",
+        expectedVersion: version,
+        actorId: "system",
+        issuedAt: NOW,
+        reason: "seed",
+        parameters: {},
+      }),
+      now: NOW,
+    });
+  }
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient(),
+    codex: { run: async () => ({ exitCode: 0, stdout: validOutput(), stderr: "" }) },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /stale develop job/);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+});
+
 test("development that cannot reproduce parks the task in waiting_info", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

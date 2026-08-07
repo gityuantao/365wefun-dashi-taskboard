@@ -112,6 +112,13 @@ export async function executeDevelopment({
     });
     const startAggregate = await loadAggregate(db, "task", taskId);
     if (startAggregate.state !== "developing") {
+      // 任务已被暂停（等待补充信息/已发布等）时，过期作业不得自动重启开发
+      if (startAggregate.state !== "ready_for_development") {
+        return {
+          status: "failed",
+          error: `stale develop job: task is in ${startAggregate.state}, not restarting development`,
+        };
+      }
       await dispatchCommand({
         db,
         command: parseCommandEnvelope({
