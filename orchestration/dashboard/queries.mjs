@@ -9,6 +9,8 @@ const ACTIVITY_LABELS = {
   "task.development_started": "开始开发",
   "task.development_completed": "开发完成",
   "task.development_failed": "开发失败，退回待开发",
+  "task.development_needs_info": "开发需要补充信息",
+  "task.development_restarted": "重新开发",
   "task.test_started": "开始测试",
   "task.test_passed": "测试通过",
   "task.test_failed": "测试失败，退回待开发",

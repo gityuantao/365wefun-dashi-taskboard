@@ -48,6 +48,38 @@ async function rollbackDevelopment({ db, client, taskId, jobId, now }) {
   }
 }
 
+async function markDevelopmentNeedsInfo({ db, client, taskId, jobId, now, reason }) {
+  const aggregate = await loadAggregate(db, "task", taskId);
+  if (aggregate.state !== "developing") return;
+  const command = parseCommandEnvelope({
+    id: `development-needs-info-${jobId}`,
+    type: "development_needs_info",
+    aggregateType: "task",
+    aggregateId: taskId,
+    expectedVersion: aggregate.version + 1,
+    actorId: "runner-developer",
+    issuedAt: now,
+    reason,
+    parameters: {},
+  });
+  try {
+    await dispatchCommand({ db, command, now });
+  } catch {
+    // 状态推进失败不掩盖 needs_info 结论；用户恢复开发后仍可继续
+  }
+  try {
+    await client.postComment(
+      taskId,
+      [
+        `⚠️ 开发无法完成：${concise(reason, 200)}`,
+        "请补充必要信息（如具体静音文件名/复现方式/预期结果），然后把任务状态改回「开发中」继续。",
+      ].join("\n"),
+    );
+  } catch {
+    // 评论失败不影响状态
+  }
+}
+
 export async function executeDevelopment({
   job,
   db,
@@ -119,6 +151,13 @@ export async function executeDevelopment({
     } catch {
       await rollbackDevelopment({ db, client, taskId, jobId: job.id, now });
       return { status: "failed", error: "invalid JSON output" };
+    }
+    if (parsed.needs_info === true) {
+      const reason = typeof parsed.reason === "string" && parsed.reason.trim() !== ""
+        ? parsed.reason.trim()
+        : "开发过程中无法复现问题或信息不足";
+      await markDevelopmentNeedsInfo({ db, client, taskId, jobId: job.id, now, reason });
+      return { status: "failed", error: `needs_info: ${reason}` };
     }
     if (typeof parsed.change_summary !== "string" || parsed.change_summary === "") {
       await rollbackDevelopment({ db, client, taskId, jobId: job.id, now });

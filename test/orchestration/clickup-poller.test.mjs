@@ -283,6 +283,66 @@ test("poller resumes analysis when the user changes status back", async (t) => {
   assert.ok(job, "expected a queued analyze job after resume");
 });
 
+test("poller leaves tasks parked by development_needs_info alone", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 4; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development", "development_needs_info"][index];
+    await dispatchTask(harness, `dev-info-${index}`, type, index + 1);
+  }
+  await harness.db
+    .prepare(
+      `INSERT INTO runner_jobs (id, command_id, job_type, payload, payload_hash, status, result, created_at)
+       VALUES (?, ?, 'develop', '{}', 'h', 'failed', ?, ?)`,
+    )
+    .bind("task-1-develop-4", "auto-develop-task-1", JSON.stringify({ error: "needs_info: 线上音频实测正常，无法复现" }), NOW)
+    .run();
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待补充信息", request: null, version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(result.commands.length, 0);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  const job = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'")
+    .first();
+  assert.equal(job, null);
+});
+
+test("poller resumes development when the user changes status back to 开发中", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 4; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development", "development_needs_info"][index];
+    await dispatchTask(harness, `dev-resume-${index}`, type, index + 1);
+  }
+  await harness.db
+    .prepare(
+      `INSERT INTO runner_jobs (id, command_id, job_type, payload, payload_hash, status, result, created_at)
+       VALUES (?, ?, 'develop', '{}', 'h', 'failed', ?, ?)`,
+    )
+    .bind("task-1-develop-4", "auto-develop-task-1", JSON.stringify({ error: "needs_info: 线上音频实测正常" }), NOW)
+    .run();
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "开发中", request: null, version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(result.commands.length, 1);
+  assert.equal(result.commands[0].type, "development_restarted");
+  assert.equal(result.commands[0].status, "succeeded");
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "developing");
+  const job = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'")
+    .first();
+  assert.ok(job, "expected a queued develop job after resume");
+});
+
 test("poller does not auto-start testing while the task stays in 待测试", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

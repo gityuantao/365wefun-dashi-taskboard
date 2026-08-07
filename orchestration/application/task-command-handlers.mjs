@@ -30,6 +30,12 @@ export const TASK_COMMAND_HANDLERS = {
       evidenceId: evidence(parameters),
     });
   },
+  development_needs_info(state) {
+    return decideTaskTransition({ from: state, to: "waiting_info" });
+  },
+  development_restarted(state) {
+    return decideTaskTransition({ from: state, to: "developing" });
+  },
   start_test(state) {
     return decideTaskTransition({ from: state, to: "testing" });
   },

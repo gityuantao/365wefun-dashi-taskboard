@@ -54,6 +54,31 @@ async function resumeAnalysisAfterInfo(env, snapshot, now, commands, config) {
   commands.push(await runCommand(env, command, now, config));
 }
 
+async function resumeDevelopmentAfterInfo(env, snapshot, now, commands, config) {
+  // 清除 needs_info 失败记录，恢复开发后允许重新入队
+  await env.DB
+    .prepare(
+      "DELETE FROM runner_jobs WHERE command_id = ? AND status = 'failed' AND result LIKE '%needs_info%'",
+    )
+    .bind(`auto-develop-${snapshot.id}`)
+    .run();
+  const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  const commandId = `poller-resume-development-${snapshot.id}-${aggregate.version + 1}`;
+  if (await loadCommandResult(env.DB, commandId)) return;
+  const command = parseCommandEnvelope({
+    id: commandId,
+    type: "development_restarted",
+    aggregateType: "task",
+    aggregateId: snapshot.id,
+    expectedVersion: aggregate.version + 1,
+    actorId: "system-poller",
+    issuedAt: now,
+    reason: "task status changed back to developing after waiting for info",
+    parameters: {},
+  });
+  commands.push(await runCommand(env, command, now, config));
+}
+
 function addMinutes(iso, minutes) {
   return new Date(new Date(iso).getTime() + minutes * 60_000).toISOString();
 }
@@ -96,6 +121,9 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
     if (active) return;
     if (existing && (existing.status === "queued" || existing.status === "claimed")) return;
     if (existing?.status === "failed" && existing.result?.includes("needs_human")) {
+      return;
+    }
+    if (existing?.status === "failed" && existing.result?.includes("needs_info")) {
       return;
     }
     const retryWindowMinutes = Number(env.CLICKUP_JOB_RETRY_MINUTES ?? 5);
@@ -218,9 +246,13 @@ export async function pollClickUpOnce(env, {
     aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   }
 
-    // 等待补充信息的任务：用户回复并把状态改回「分析中」后，自动恢复分析
+    // 等待补充信息的任务：用户回复并把状态改回「分析中/开发中」后，自动恢复
     if (aggregate.state === "waiting_info" && snapshot.status !== "waiting_info") {
-      await resumeAnalysisAfterInfo(env, snapshot, now, commands, config);
+      if (snapshot.status === "analyzing") {
+        await resumeAnalysisAfterInfo(env, snapshot, now, commands, config);
+      } else if (snapshot.status === "developing") {
+        await resumeDevelopmentAfterInfo(env, snapshot, now, commands, config);
+      }
       aggregate = await loadAggregate(env.DB, "task", snapshot.id);
     }
     if (changes.some((change) => change.field === "updatedAt")) {

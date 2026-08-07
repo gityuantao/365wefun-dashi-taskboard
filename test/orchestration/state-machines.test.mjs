@@ -44,6 +44,17 @@ test("analysis needing human input parks the task and can resume", () => {
   );
 });
 
+test("development needing info parks the task and can resume", () => {
+  assert.equal(
+    decideTaskTransition({ from: "developing", to: "waiting_info" }).eventType,
+    "task.development_needs_info",
+  );
+  assert.equal(
+    decideTaskTransition({ from: "waiting_info", to: "developing" }).eventType,
+    "task.development_restarted",
+  );
+});
+
 test("task happy path is exact", () => {
   const path = [
     "inbox",

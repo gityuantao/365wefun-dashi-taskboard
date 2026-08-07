@@ -97,6 +97,38 @@ test("development completes, creates a PR, and advances to ready for test", asyn
   assert.equal(aggregate.version, 4);
 });
 
+test("development that cannot reproduce parks the task in waiting_info", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const calls = [];
+  const client = makeClient({
+    postComment: async (id, body) => calls.push(["comment", id, body]),
+  });
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client,
+    codex: {
+      run: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({ needs_info: true, reason: "线上音频实测正常，无法复现静音问题" }),
+        stderr: "",
+      }),
+    },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /needs_info/);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  assert.ok(
+    calls.some(([, , body]) => String(body).includes("开发无法完成")),
+    "should post a comment asking for more info",
+  );
+});
+
 test("development failure leaves the task in ready for development", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

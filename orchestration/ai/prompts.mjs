@@ -35,8 +35,11 @@ export function buildDevelopmentPrompt(task, acceptanceCriteria = [], commentCon
     `任务描述：${task.description ?? ""}`,
     "验收标准：",
     ...acceptanceCriteria.map((criterion) => `- ${criterion.id}: ${criterion.criterion}`),
-    "输出格式：",
+    "输出格式（完成修复时）：",
     '{ "change_summary": "改动摘要", "tests": [ { "name": "测试名", "passed": true } ] }',
+    "无法完成开发时（问题无法复现、任务信息不足、线上实测正常找不到可修点），必须输出：",
+    '{ "needs_info": true, "reason": "为什么无法完成/需要补充什么信息" }',
+    "约束：无法复现或信息不足时禁止强行改动代码或为了出 PR 而凑改动，一律输出 needs_info。",
     "约束：只修改当前 Worktree，不推进状态、不读取凭据、不部署生产。",
     "约束：不要执行 pnpm install / npm install；不要运行完整 typecheck、构建或测试套件（Worktree 无依赖，会卡住）；改为用文件检查和代码阅读验证改动正确性。",
     ...(commentContext
