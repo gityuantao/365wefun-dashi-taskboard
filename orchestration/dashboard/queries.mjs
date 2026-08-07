@@ -131,6 +131,28 @@ async function loadActivity(db, limit, tasks, versions) {
         summary = `${subject} 开发完成，PR：${prUrlOf(result)}`;
       }
     }
+    if (
+      event.type === "task.acceptance_failed"
+      && typeof event.command_id === "string"
+      && event.command_id.startsWith("acceptance-")
+    ) {
+      const row = await db
+        .prepare("SELECT result FROM runner_jobs WHERE command_id = ? AND status = 'completed'")
+        .bind(event.command_id)
+        .first();
+      const result = row ? JSON.parse(row.result) : null;
+      const findings = result?.findings ?? [];
+      if (findings.length > 0) {
+        const reasons = findings
+          .slice(0, 2)
+          .map((finding) => String(finding?.description ?? "").replace(/\s+/g, " ").trim().slice(0, 80))
+          .filter(Boolean)
+          .join("；");
+        if (reasons) {
+          summary = `${subject} 验收失败：${reasons}`;
+        }
+      }
+    }
     return {
       time: event.occurred_at,
       objectType: event.aggregate_type,

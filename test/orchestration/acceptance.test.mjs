@@ -80,14 +80,20 @@ test("acceptance passes and advances to ready for release with a target version"
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedToAccepting(harness);
+  const posts = [];
   const result = await executeAcceptance({
     job: JOB,
     db: harness.db,
-    client: makeClient("version-9"),
+    client: makeClient("version-9", {
+      postComment: async (id, body) => posts.push(body),
+    }),
     codex: { run: async () => ({ exitCode: 0, stdout: acceptedOutput(), stderr: "" }) },
     now: NOW,
   });
   assert.equal(result.status, "completed");
+  assert.equal(result.result, "accepted");
+  assert.deepEqual(result.findings, []);
+  assert.ok(posts.some((body) => body.includes("开发完成（自动验收通过）")));
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "ready_for_test");
 });
@@ -121,6 +127,8 @@ test("acceptance rejection returns the task to ready for development", async (t)
     now: NOW,
   });
   assert.equal(result.status, "completed");
+  assert.equal(result.result, "rejected");
+  assert.deepEqual(result.findings, [{ severity: "high", description: "按钮无法点击" }]);
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "ready_for_development");
 });

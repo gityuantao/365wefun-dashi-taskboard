@@ -133,7 +133,7 @@ test("development worktree failure is reported without advancing", async (t) => 
   assert.match(result.error, /disk full/);
 });
 
-test("development posts the PR as evidence", async (t) => {
+test("development stores the PR as evidence without a premature comment", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await setupTask(harness);
@@ -150,8 +150,8 @@ test("development posts the PR as evidence", async (t) => {
     gitOps: mockGitOps(),
     now: NOW,
   });
-  assert.ok(calls.some(([kind, , body]) => kind === "comment" && String(body).includes("pull/1")));
   assert.ok(calls.some(([kind, , field]) => kind === "field" && field === "field-evidence"));
+  assert.equal(calls.some(([kind, , body]) => kind === "comment" && String(body).includes("pull/1")), false);
 });
 
 test("development reads comments and includes acceptance feedback in the prompt", async (t) => {

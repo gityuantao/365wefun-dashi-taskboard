@@ -98,6 +98,47 @@ test("activity correlates the development PR by command id even when the job com
   );
 });
 
+test("activity shows acceptance failure reasons", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db
+    .prepare(`
+      INSERT INTO orchestration_events (id, sequence, aggregate_type, aggregate_id, aggregate_version, type, command_id, actor_id, occurred_at, data, previous_hash, hash)
+      VALUES ('evt-4', 4, 'task', 'task-1', 5, 'task.acceptance_failed', 'acceptance-task-1-accept-2', 'runner-acceptor', ?, '{}', 'h-e3', 'h-e4')
+    `)
+    .bind("2026-08-06T09:00:00.000Z")
+    .run();
+  await harness.db
+    .prepare(`
+      INSERT INTO runner_jobs (id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at)
+      VALUES ('task-1-accept-2', 'acceptance-task-1-accept-2', 'accept', ?, 'p4', 'completed', ?, ?, ?)
+    `)
+    .bind(
+      JSON.stringify({ taskId: "task-1" }),
+      JSON.stringify({
+        status: "completed",
+        result: "rejected",
+        findings: [
+          { severity: "high", description: "按钮无法点击" },
+          { severity: "medium", description: "旧版本兼容性未验证" },
+        ],
+      }),
+      "2026-08-06T09:00:00.000Z",
+      "2026-08-06T09:00:00.000Z",
+    )
+    .run();
+
+  const payload = await buildDashboard(harness.db);
+  const failed = payload.activity.find(
+    (item) => item.eventType === "task.acceptance_failed",
+  );
+  assert.ok(failed);
+  assert.match(failed.summary, /验收失败/);
+  assert.match(failed.summary, /按钮无法点击/);
+  assert.match(failed.summary, /旧版本兼容性未验证/);
+});
+
 test("terminal, blocked and empty versions are never releasable", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
