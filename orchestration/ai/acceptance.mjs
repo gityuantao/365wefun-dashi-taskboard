@@ -10,7 +10,23 @@ function extractJson(stdout) {
   return stdout.slice(start, end + 1);
 }
 
+function conciseLine(text, max = 120) {
+  const clean = String(text ?? "").replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
 function formatAcceptanceFeedback(findings) {
+  if (!Array.isArray(findings) || findings.length === 0) {
+    return "❌ 验收不通过：未提供具体原因。";
+  }
+  const lines = findings.map((finding, index) => {
+    const severity = finding?.severity ? `[${finding.severity}] ` : "";
+    return `${index + 1}. ${severity}${conciseLine(finding?.description)}`;
+  });
+  return `❌ 验收不通过：\n${lines.join("\n")}`;
+}
+
+function formatFullAcceptanceFeedback(findings) {
   if (!Array.isArray(findings) || findings.length === 0) {
     return "❌ 验收不通过：未提供具体原因。";
   }
@@ -95,10 +111,15 @@ export async function executeAcceptance({
     }
 
     const findings = parsed.findings ?? [];
-    const feedbackText = `${formatAcceptanceFeedback(findings)}
+    const feedbackText = `${formatFullAcceptanceFeedback(findings)}
 
 已退回待开发。确认修复后请在 ClickUp 把状态改为「开发中」以重新开发。`;
-    await client.postComment(taskId, feedbackText);
+    await client.postComment(
+      taskId,
+      `${formatAcceptanceFeedback(findings)}
+
+已退回待开发，请修复后把状态改回「开发中」重新开发。`,
+    );
     if (fieldIds.feedback) {
       try {
         await client.updateCustomField(taskId, fieldIds.feedback, feedbackText);

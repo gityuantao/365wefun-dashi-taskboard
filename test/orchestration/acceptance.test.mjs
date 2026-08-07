@@ -133,6 +133,39 @@ test("acceptance rejection returns the task to ready for development", async (t)
   assert.equal(aggregate.state, "ready_for_development");
 });
 
+test("acceptance rejection keeps the comment concise and the field complete", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedToAccepting(harness);
+  const posts = [];
+  const fields = [];
+  const long = `这是一段非常长的验收失败原因说明，${"重复内容".repeat(80)}`;
+  const output = JSON.stringify({
+    acceptance_result: "rejected",
+    criteria_results: [{ id: "ac-1", result: "failed" }],
+    findings: [{ severity: "high", description: long }],
+  });
+  const result = await executeAcceptance({
+    job: JOB,
+    db: harness.db,
+    client: makeClient("version-9", {
+      postComment: async (id, body) => posts.push(body),
+      updateCustomField: async (id, field, value) => fields.push([field, value]),
+    }),
+    codex: { run: async () => ({ exitCode: 0, stdout: output, stderr: "" }) },
+    now: NOW,
+    fieldIds: { feedback: "field-feedback" },
+  });
+  assert.equal(result.status, "completed");
+  const comment = posts.find((body) => body.includes("验收不通过"));
+  const field = fields.find(([name]) => name === "field-feedback");
+  assert.ok(comment);
+  assert.ok(field);
+  assert.ok(comment.includes("…"));
+  assert.ok(comment.length < long.length);
+  assert.ok(field[1].includes(long));
+});
+
 test("acceptance rejects invalid structured output", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
