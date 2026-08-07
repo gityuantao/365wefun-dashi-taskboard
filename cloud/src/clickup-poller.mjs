@@ -1,4 +1,5 @@
 import { dispatchCommand } from "../../orchestration/application/dispatch-command.mjs";
+import path from "node:path";
 import { createClickUpClient } from "../../orchestration/clickup/client.mjs";
 import { loadClickUpConfig } from "../../orchestration/clickup/config-registry.mjs";
 import {
@@ -140,10 +141,13 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
       versionBranch: snapshot.targetVersion
         ? `version/${snapshot.targetVersion}`
         : undefined,
+      workdir: env.CLICKUP_WORKTREES_ROOT
+        ? path.join(env.CLICKUP_WORKTREES_ROOT, `task-${snapshot.id}`)
+        : undefined,
       acceptanceCriteria,
     },
     payloadHash: snapshot.fieldsHash,
-    expiresAt: addMinutes(now, 15),
+    expiresAt: addMinutes(now, 90),
     createdAt: now,
   });
 }

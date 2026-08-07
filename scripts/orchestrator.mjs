@@ -511,7 +511,12 @@ async function tick() {
     for (const jobType of ["analyze", "develop", "accept"]) {
       let job;
       try {
-        job = await claimJob(db, { deviceId: runtime.deviceId, jobType, now });
+        job = await claimJob(db, {
+          deviceId: runtime.deviceId,
+          jobType,
+          now,
+          leaseMs: 90 * 60_000,
+        });
       } catch (error) {
         log(`claim ${jobType} error: ${error.message}`);
         continue;
