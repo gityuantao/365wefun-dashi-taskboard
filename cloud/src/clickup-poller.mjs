@@ -141,8 +141,11 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
       versionBranch: snapshot.targetVersion
         ? `version/${snapshot.targetVersion}`
         : undefined,
-      workdir: env.CLICKUP_WORKTREES_ROOT
-        ? path.join(env.CLICKUP_WORKTREES_ROOT, `task-${snapshot.id}`)
+      // 分析阶段只读，不需要任务工作区；开发/验收在任务工作区内执行
+      workdir: jobType === "develop" || jobType === "accept"
+        ? (env.CLICKUP_WORKTREES_ROOT
+            ? path.join(env.CLICKUP_WORKTREES_ROOT, `task-${snapshot.id}`)
+            : undefined)
         : undefined,
       acceptanceCriteria,
     },
@@ -189,6 +192,7 @@ export async function pollClickUpOnce(env, {
 
     if (changes.length === 0) {
       await handleStatusDrivenFlow(env, snapshot, now, commands, config);
+      await ensureInboxAnalysis(env, snapshot, now, commands, config);
       await ensureStateJob(env, snapshot, now, currentDevVersion);
       continue;
     }
@@ -228,21 +232,7 @@ export async function pollClickUpOnce(env, {
         .run();
     }
     await handleStatusDrivenFlow(env, snapshot, now, commands, config);
-    if (snapshot.status === "inbox" && aggregate.version === 0) {
-      const started = await runCommand(env, parseCommandEnvelope({
-        id: `poller-start-analysis-${snapshot.id}`,
-        type: "start_analysis",
-        aggregateType: "task",
-        aggregateId: snapshot.id,
-        expectedVersion: 1,
-        actorId: "system-poller",
-        issuedAt: now,
-        reason: "task admitted to automation",
-        parameters: {},
-      }), now, config);
-      commands.push(started);
-      aggregate = await loadAggregate(env.DB, "task", snapshot.id);
-    }
+    await ensureInboxAnalysis(env, snapshot, now, commands, config);
     await ensureStateJob(env, snapshot, now, currentDevVersion);
     await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });
   }
@@ -263,6 +253,28 @@ export async function pollClickUpOnce(env, {
  * 用户在 ClickUp 里把任务从「待测试」拖到「待发布」= 测试通过；
  * 拖回「待开发」= 测试不通过（退回返工）。系统看到状态变化即推进。
  */
+// 收件箱任务首次进入自动化：初始化聚合（inbox -> analyzing），
+// 无论快照是否有变化都应执行，否则分析完成时没有聚合可推进。
+async function ensureInboxAnalysis(env, snapshot, now, commands, config) {
+  if (snapshot.status !== "inbox") return;
+  const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  if (aggregate.version !== 0) return;
+  const commandId = `poller-start-analysis-${snapshot.id}`;
+  if (await loadCommandResult(env.DB, commandId)) return;
+  const started = await runCommand(env, parseCommandEnvelope({
+    id: commandId,
+    type: "start_analysis",
+    aggregateType: "task",
+    aggregateId: snapshot.id,
+    expectedVersion: 1,
+    actorId: "system-poller",
+    issuedAt: now,
+    reason: "task admitted to automation",
+    parameters: {},
+  }), now, config);
+  commands.push(started);
+}
+
 async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
 
   let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
