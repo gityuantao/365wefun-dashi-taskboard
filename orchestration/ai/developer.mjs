@@ -131,7 +131,7 @@ export async function executeDevelopment({
 
     await client.postComment(
       taskId,
-      `✅ 开发完成，PR：${pr.url ?? pr}`,
+      `✅ 开发完成，PR：${pr.url ?? pr}（已进入自动验收，通过后进入待测试）`,
     );
     await client.updateCustomField(taskId, fieldIds.evidence, pr.url ?? String(pr));
 

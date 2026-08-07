@@ -43,6 +43,11 @@ export async function executeAcceptance({
       commentContext = buildCommentContext(await client.getComments(taskId));
     } catch {}
     // 验收开始：任务保持「开发中」，通过后直接进入「待测试」
+    try {
+      await client.postComment(taskId, "开始自动验收，通过后进入待测试");
+    } catch {
+      // 评论失败不影响验收
+    }
     let aggregate = await loadAggregate(db, "task", taskId);
     const run = await codex.run({
       prompt: buildAcceptancePrompt(task, acceptanceCriteria, commitSha, commentContext),
