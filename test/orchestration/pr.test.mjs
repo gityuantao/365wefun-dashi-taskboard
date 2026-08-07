@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPullRequest } from "../../orchestration/git/pr.mjs";
+import {
+  closeTaskPullRequest,
+  createPullRequest,
+  deleteRemoteTaskBranch,
+  resolveRemoteRepo,
+} from "../../orchestration/git/pr.mjs";
 
 function fakeRun(script) {
   const calls = [];
@@ -85,3 +90,31 @@ test("surfaces real create failures", async (t) => {
   );
 });
 
+test("closeTaskPullRequest closes the PR and ignores already-closed", async () => {
+  const calls = [];
+  const run = async (command, args) => {
+    calls.push([command, args]);
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  assert.equal(await closeTaskPullRequest({ branch: "task/t-1", repo: "o/r", run }), true);
+  assert.ok(calls.some(([, args]) => args.includes("close") && args.includes("task/t-1")));
+  const already = async () => ({ status: 1, stdout: "", stderr: "no open pull requests found for branch" });
+  assert.equal(await closeTaskPullRequest({ branch: "task/t-2", repo: "o/r", run: already }), false);
+});
+
+test("deleteRemoteTaskBranch deletes and ignores missing branches", () => {
+  const calls = [];
+  const run = (command, args) => {
+    calls.push([command, args]);
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  assert.equal(deleteRemoteTaskBranch({ repoPath: "/r", branch: "task/t-3", run }), true);
+  assert.ok(calls.some(([, args]) => args.includes("push") && args.includes("--delete")));
+  const missing = () => ({ status: 1, stdout: "", stderr: "remote ref does not exist" });
+  assert.equal(deleteRemoteTaskBranch({ repoPath: "/r", branch: "task/t-4", run: missing }), false);
+});
+
+test("resolveRemoteRepo parses the github origin", () => {
+  const run = () => ({ status: 0, stdout: "git@github.com:gityuantao/365wefun.git\n", stderr: "" });
+  assert.equal(resolveRemoteRepo("/r", run), "gityuantao/365wefun");
+});

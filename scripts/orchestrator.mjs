@@ -48,7 +48,12 @@ import {
 import { claimJob, completeJob } from "../orchestration/persistence/d1-runner-jobs.mjs";
 import { loadAggregate } from "../orchestration/persistence/d1-aggregate-store.mjs";
 import { startDashboardServer } from "../orchestration/dashboard/http-server.mjs";
-import { createPullRequest } from "../orchestration/git/pr.mjs";
+import {
+  closeTaskPullRequest,
+  createPullRequest,
+  deleteRemoteTaskBranch,
+  resolveRemoteRepo,
+} from "../orchestration/git/pr.mjs";
 import { readControl, shouldProcess } from "../orchestration/control.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -357,7 +362,9 @@ async function releaseCoordinator(now) {
     log(`version ${versionId} release -> ${result.status}${result.error ? `: ${result.error}` : ""}`);
     if (result.status === "succeeded") {
       const manifest = await loadManifest({ db, versionId });
+      const repo = resolveRemoteRepo(runtime.repoPath);
       for (const taskId of (manifest?.taskIds ?? [])) {
+        const branch = `task/${taskId}`;
         try {
           removeTaskWorktree({
             repoPath: runtime.repoPath,
@@ -367,6 +374,13 @@ async function releaseCoordinator(now) {
           log(`cleaned worktree for task ${taskId}`);
         } catch (error) {
           log(`worktree cleanup failed for ${taskId}: ${error.message}`);
+        }
+        try {
+          await closeTaskPullRequest({ branch, repo });
+          deleteRemoteTaskBranch({ repoPath: runtime.repoPath, branch });
+          log(`cleaned PR and branch for task ${taskId}`);
+        } catch (error) {
+          log(`PR cleanup failed for ${taskId}: ${error.message}`);
         }
       }
     }

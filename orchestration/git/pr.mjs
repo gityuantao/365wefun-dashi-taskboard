@@ -15,6 +15,33 @@ function runCommand(command, args) {
 
 const URL_PATTERN = /https?:\/\/[^\s]+/;
 
+const DEFAULT_REPO = "gityuantao/365wefun";
+
+export function resolveRemoteRepo(repoPath, run = runCommand) {
+  const remote = run("git", ["-C", repoPath, "remote", "get-url", "origin"]);
+  if (remote.status === 0) {
+    const match = remote.stdout.trim().match(/(?:github\.com[:/])([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
+    if (match) return `${match[1]}/${match[2]}`;
+  }
+  return DEFAULT_REPO;
+}
+
+export async function closeTaskPullRequest({ branch, repo = DEFAULT_REPO, run = runCommand }) {
+  const result = await run("gh", ["pr", "close", branch, "--repo", repo]);
+  if (result.status !== 0 && !/no open pull requests/i.test(result.stderr)) {
+    throw new Error(result.stderr.trim() || "gh pr close failed");
+  }
+  return result.status === 0;
+}
+
+export function deleteRemoteTaskBranch({ repoPath, branch, run = runCommand }) {
+  const result = run("git", ["-C", repoPath, "push", "origin", "--delete", branch]);
+  if (result.status !== 0 && !/remote ref does not exist|couldn't find remote ref/i.test(result.stderr)) {
+    throw new Error(result.stderr.trim() || "remote branch delete failed");
+  }
+  return result.status === 0;
+}
+
 export async function createPullRequest({
   branch,
   base,
