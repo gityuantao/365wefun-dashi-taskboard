@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { LinearIcon } from "../LinearIcon";
-import { ApiError, publishOrchestrationVersion } from "../../api";
+import { ApiError, getOrchestrationVersionDetail, publishOrchestrationVersion } from "../../api";
 import type { TaskDetail, VersionDetail } from "../../types";
 
 interface DetailDrawerProps {
@@ -218,38 +218,64 @@ function VersionDetailBody({
   onChanged?: () => void;
 }) {
   const statusLabel = VERSION_STATUS_LABELS[detail.status ?? ""] ?? detail.status ?? "未知";
-  const [publishing, setPublishing] = useState(false);
+  const [publishState, setPublishState] = useState<"idle" | "submitting" | "submitted">("idle");
   const [publishError, setPublishError] = useState<string | null>(null);
+  const transitionedRef = useRef(false);
   const readyCount = detail.tasks.filter((task) => task.ready).length;
   const totalCount = detail.tasks.length;
   const percent = totalCount === 0 ? 0 : Math.round((readyCount / totalCount) * 100);
+
+  // 提交发布后轮询版本状态，直到编排器/ClickUp 同步为「发布中/已发布/发布失败」
+  useEffect(() => {
+    if (publishState !== "submitted" || !detail.releasable) return;
+    transitionedRef.current = false;
+    const timer = window.setInterval(() => {
+      if (transitionedRef.current) return;
+      void getOrchestrationVersionDetail(detail.id)
+        .then((next) => {
+          if (next.status !== "active" && next.status !== null) {
+            transitionedRef.current = true;
+            onChanged?.();
+          }
+        })
+        .catch(() => {});
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [publishState, detail.releasable, detail.id, onChanged]);
+
   async function publish() {
-    setPublishing(true);
+    setPublishState("submitting");
     setPublishError(null);
     try {
       await publishOrchestrationVersion(detail.id);
+      setPublishState("submitted");
       onChanged?.();
     } catch (caught) {
       setPublishError(caught instanceof ApiError ? caught.message : "发布请求失败");
-    } finally {
-      setPublishing(false);
+      setPublishState("idle");
     }
   }
+  const submitting = publishState === "submitting";
+  const submitted = publishState === "submitted";
   return (
     <div className="form-body detail-dialog-body">
       {detail.releasable && (
-        <div className="detail-publish-band">
+        <div className={`detail-publish-band${submitted ? " is-submitted" : ""}`}>
           <div className="detail-publish-copy">
-            <strong>此版本可以发布</strong>
-            <span>点击发布后版本状态将变为「发布中」，随后自动开始发布流程</span>
+            <strong>{submitted ? "发布已提交" : "此版本可以发布"}</strong>
+            <span>
+              {submitted
+                ? "正在同步 ClickUp，版本状态即将变为「发布中」并自动开始发布…"
+                : "点击发布后版本状态将变为「发布中」，随后自动开始发布流程"}
+            </span>
           </div>
           <button
-            className="button primary detail-publish-button"
+            className={`button primary detail-publish-button${submitted ? " is-submitted" : ""}`}
             type="button"
-            disabled={publishing}
+            disabled={submitting || submitted}
             onClick={() => void publish()}
           >
-            {publishing ? "发布中…" : "发布版本"}
+            {submitting ? "发布中…" : submitted ? "已提交" : "发布版本"}
           </button>
         </div>
       )}

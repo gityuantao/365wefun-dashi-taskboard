@@ -725,6 +725,17 @@
   flex: 0 0 auto;
 }
 
+/* 已提交发布：操作条切换为主色，按钮保持高亮不被置灰 */
+.detail-publish-band.is-submitted {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 9%, var(--surface)), var(--surface));
+}
+
+.detail-publish-button.is-submitted {
+  opacity: 1;
+  background: var(--accent);
+}
+
 .detail-publish-error {
   margin: 0;
   padding: 8px 12px;
