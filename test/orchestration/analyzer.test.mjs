@@ -10,10 +10,12 @@ const NOW = "2026-08-04T00:01:00.000Z";
 
 function validOutput() {
   return JSON.stringify({
+    summary: "修复录音回放按钮不可点击的问题",
     scope: "实现录音回放按钮",
     acceptance_criteria: [
       { id: "ac-1", criterion: "按钮可点击", verification: "手动测试" },
     ],
+    test_notes: ["提交录音后点击回放按钮，应能正常播放"],
     risks: [],
     open_questions: [],
   });
@@ -164,9 +166,10 @@ test("analysis writes the description, execution summary and a comment", async (
   assert.ok(calls.some(([kind, , field]) => kind === "field" && field === "field-summary"));
   const descriptionCall = calls.find(([kind]) => kind === "description");
   assert.ok(descriptionCall);
-  assert.match(descriptionCall[2], /## 分析结果/);
-  assert.match(descriptionCall[2], /实现录音回放按钮/);
-  assert.match(descriptionCall[2], /按钮可点击/);
+  assert.match(descriptionCall[2], /## 问题/);
+  assert.match(descriptionCall[2], /修复录音回放按钮不可点击的问题/);
+  assert.match(descriptionCall[2], /## 测试要点/);
+  assert.match(descriptionCall[2], /提交录音后点击回放按钮，应能正常播放/);
 });
 
 test("analysis reads comments and includes them in the prompt", async (t) => {

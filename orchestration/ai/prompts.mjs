@@ -14,7 +14,7 @@ export function buildAnalysisPrompt(task, commentContext = null) {
     `任务名称：${task.name ?? ""}`,
     `任务描述：${task.description ?? ""}`,
     "输出格式：",
-    '{ "scope": "范围描述", "acceptance_criteria": [ { "id": "ac-1", "criterion": "验收标准", "verification": "如何验证" } ], "risks": [ { "level": "低", "description": "风险" } ], "open_questions": [ { "question": "未决问题" } ] }',
+    '{ "summary": "一句话问题/需求概述", "scope": "范围描述", "acceptance_criteria": [ { "id": "ac-1", "criterion": "验收标准", "verification": "如何验证" } ], "test_notes": [ "测试人员需要关注或操作的测试要点" ], "risks": [ { "level": "低", "description": "风险" } ], "open_questions": [ { "question": "未决问题" } ] }',
     "约束：不修改代码，不推进状态，只输出 JSON。",
     "决策原则：你是独立的产品/研发分析者，不是客服。基于任务名称、描述和产品常识主动做合理假设，自主确定实现方向、范围和验收标准；",
     "所有假设必须写进 scope 或 risks（例如：假设 X 平台默认包含、假设未知品牌保留灰色占位图兜底），而不是抛给用户确认。",

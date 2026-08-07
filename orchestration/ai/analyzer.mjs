@@ -16,16 +16,22 @@ function concise(text, max = 60) {
 }
 
 function buildAnalysisDescription(original, parsed) {
-  const marker = "\n\n---\n\n## 分析结果";
-  const index = String(original ?? "").indexOf(marker);
-  const base = index === -1 ? String(original ?? "") : String(original ?? "").slice(0, index);
-  const criteria = parsed.acceptance_criteria
-    .map((criterion, criterionIndex) => `${criterionIndex + 1}. ${criterion.criterion}`)
-    .join("\n");
-  const risks = Array.isArray(parsed.risks) && parsed.risks.length > 0
-    ? `\n### 风险\n${parsed.risks.map((risk) => `- [${risk.level ?? "低"}] ${risk.description}`).join("\n")}`
-    : "";
-  return `${base}${marker}\n### 范围\n${parsed.scope}\n### 验收标准\n${criteria}${risks}`.trim();
+  const source = String(original ?? "");
+  const markerMatch = source.match(/\n---\n\n## (?:分析结果|问题)/);
+  const base = markerMatch ? source.slice(0, markerMatch.index) : source;
+  const summary = String(parsed.summary || parsed.scope || "").trim();
+  const notes = Array.isArray(parsed.test_notes) && parsed.test_notes.length > 0
+    ? parsed.test_notes
+    : parsed.acceptance_criteria.map((criterion) => criterion.criterion);
+  const lines = [
+    base,
+    "---",
+    "## 问题",
+    summary,
+    "## 测试要点",
+    ...notes.map((note, index) => `${index + 1}. ${note}`),
+  ];
+  return lines.filter((line) => line !== "").join("\n");
 }
 
 async function markNeedsHuman({ db, taskId, jobId, now, reason }) {
@@ -84,6 +90,12 @@ export async function executeAnalysis({
   ) {
     return { status: "failed", error: "missing scope or acceptance_criteria" };
   }
+  const summary = typeof parsed.summary === "string" && parsed.summary.trim() !== ""
+    ? parsed.summary.trim()
+    : concise(parsed.scope, 120);
+  const testNotes = Array.isArray(parsed.test_notes) && parsed.test_notes.length > 0
+    ? parsed.test_notes.map((note) => String(note))
+    : parsed.acceptance_criteria.map((criterion) => criterion.criterion);
   if (Array.isArray(parsed.open_questions) && parsed.open_questions.length > 0) {
     await markNeedsHuman({ db, taskId: task.id, jobId: job.id, now, reason: "analysis needs human input" });
     try {
@@ -129,7 +141,7 @@ export async function executeAnalysis({
   );
   await client.updateTaskDescription(
     task.id,
-    buildAnalysisDescription(task.description, parsed),
+    buildAnalysisDescription(task.description, { ...parsed, summary, test_notes: testNotes }),
   );
   await client.updateCustomField(task.id, fieldIds.summary, parsed.scope);
   if (fieldIds.acceptance) {
