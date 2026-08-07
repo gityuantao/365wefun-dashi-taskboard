@@ -59,6 +59,19 @@ export const TASK_COMMAND_HANDLERS = {
       evidenceId: evidence(parameters),
     });
   },
+  acceptance_rejected(state, parameters) {
+    return decideTaskTransition({
+      from: state,
+      to: "acceptance_rejected",
+      evidenceId: evidence(parameters),
+    });
+  },
+  acceptance_rejected_to_develop(state) {
+    return decideTaskTransition({ from: state, to: "ready_for_development" });
+  },
+  acceptance_rejected_to_test(state) {
+    return decideTaskTransition({ from: state, to: "ready_for_test" });
+  },
   publish_task(state) {
     return decideTaskTransition({ from: state, to: "published" });
   },

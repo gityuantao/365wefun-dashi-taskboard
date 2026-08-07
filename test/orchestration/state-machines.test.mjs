@@ -16,9 +16,10 @@ test("task states and version states export stable lists", () => {
     "waiting_info",
     "ready_for_development",
     "developing",
+    "accepting",
+    "acceptance_rejected",
     "ready_for_test",
     "testing",
-    "accepting",
     "ready_for_release",
     "published",
     "canceled",
@@ -52,6 +53,25 @@ test("development needing info parks the task and can resume", () => {
   assert.equal(
     decideTaskTransition({ from: "waiting_info", to: "developing" }).eventType,
     "task.development_restarted",
+  );
+});
+
+test("repeated acceptance rejection parks the task for manual routing", () => {
+  assert.equal(
+    decideTaskTransition({
+      from: "accepting",
+      to: "acceptance_rejected",
+      evidenceId: "ev-ac",
+    }).eventType,
+    "task.acceptance_rejected",
+  );
+  assert.equal(
+    decideTaskTransition({ from: "acceptance_rejected", to: "ready_for_development" }).eventType,
+    "task.acceptance_rejected_to_develop",
+  );
+  assert.equal(
+    decideTaskTransition({ from: "acceptance_rejected", to: "ready_for_test" }).eventType,
+    "task.acceptance_rejected_to_test",
   );
 });
 

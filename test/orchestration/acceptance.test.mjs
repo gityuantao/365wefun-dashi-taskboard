@@ -189,7 +189,7 @@ test("acceptance rejection keeps the comment concise and the field complete", as
   assert.ok(field[1].includes(long));
 });
 
-test("acceptance failure auto-redevelops and pauses only after repeated failures", async (t) => {
+test("acceptance failure auto-redevelops and parks after repeated failures", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedToAccepting(harness);
@@ -202,15 +202,12 @@ test("acceptance failure auto-redevelops and pauses only after repeated failures
       now: NOW,
     });
     assert.equal(result.status, "completed");
-    const paused = await harness.db
-      .prepare("SELECT id FROM runner_jobs WHERE id = ?")
-      .bind("acceptance-paused-task-1")
-      .first();
+    const aggregate = await loadAggregate(harness.db, "task", "task-1");
     if (round < 3) {
-      assert.equal(paused, null);
+      assert.equal(aggregate.state, "ready_for_development");
       await advanceToAcceptingAgain(harness, round);
     } else {
-      assert.ok(paused);
+      assert.equal(aggregate.state, "acceptance_rejected");
     }
   }
   const budget = await checkReworkBudget({ db: harness.db, taskId: "task-1" });

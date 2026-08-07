@@ -343,6 +343,50 @@ test("poller resumes development when the user changes status back to 开发中"
   assert.ok(job, "expected a queued develop job after resume");
 });
 
+test("poller routes a rejected task back to rework when user moves it to 待开发", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const types = ["start_analysis", "analysis_completed", "start_development",
+    "development_completed", "acceptance_rejected"];
+  for (let index = 0; index < types.length; index += 1) {
+    const params = types[index] === "acceptance_rejected" ? { evidenceId: "ev-rej" } : {};
+    await dispatchTask(harness, `rej-dev-${index}`, types[index], index + 1, params);
+  }
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待开发", request: null, version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.ok(result.commands.some((command) => command.type === "acceptance_rejected_to_develop"));
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "ready_for_development");
+  const job = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'")
+    .first();
+  assert.ok(job, "expected a queued develop job after routing to rework");
+});
+
+test("poller routes a rejected task to testing when user moves it to 待测试", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const types = ["start_analysis", "analysis_completed", "start_development",
+    "development_completed", "acceptance_rejected"];
+  for (let index = 0; index < types.length; index += 1) {
+    const params = types[index] === "acceptance_rejected" ? { evidenceId: "ev-rej" } : {};
+    await dispatchTask(harness, `rej-test-${index}`, types[index], index + 1, params);
+  }
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待测试", request: null, version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.ok(result.commands.some((command) => command.type === "acceptance_rejected_to_test"));
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "ready_for_test");
+});
+
 test("poller does not auto-start testing while the task stays in 待测试", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

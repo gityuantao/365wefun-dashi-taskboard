@@ -330,6 +330,42 @@ async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
     aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   }
 
+  // 验收不通过：用户处理完原因后手动改回「待开发」（重新开发）或「待测试」（直接测试）
+  if (aggregate.state === "acceptance_rejected" && snapshot.status === "ready_for_development") {
+    const devId = "poller-rejected-to-dev-" + snapshot.id + "-" + (aggregate.version + 1);
+    if (!(await loadCommandResult(env.DB, devId))) {
+      commands.push(await runCommand(env, parseCommandEnvelope({
+        id: devId,
+        type: "acceptance_rejected_to_develop",
+        aggregateType: "task",
+        aggregateId: snapshot.id,
+        expectedVersion: aggregate.version + 1,
+        actorId: "system-poller",
+        issuedAt: now,
+        reason: "user routed rejected task back to rework",
+        parameters: {},
+      }), now, config));
+    }
+    aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  }
+  if (aggregate.state === "acceptance_rejected" && snapshot.status === "ready_for_test") {
+    const testId = "poller-rejected-to-test-" + snapshot.id + "-" + (aggregate.version + 1);
+    if (!(await loadCommandResult(env.DB, testId))) {
+      commands.push(await runCommand(env, parseCommandEnvelope({
+        id: testId,
+        type: "acceptance_rejected_to_test",
+        aggregateType: "task",
+        aggregateId: snapshot.id,
+        expectedVersion: aggregate.version + 1,
+        actorId: "system-poller",
+        issuedAt: now,
+        reason: "user routed rejected task to testing",
+        parameters: {},
+      }), now, config));
+    }
+    aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  }
+
   if (aggregate.state === "ready_for_test" && snapshot.status === "ready_for_release") {
     const resultId = "poller-" + snapshot.id + "-" + (aggregate.version + 1);
     if (!(await loadCommandResult(env.DB, resultId))) {

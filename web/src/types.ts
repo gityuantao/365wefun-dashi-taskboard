@@ -296,6 +296,8 @@ export interface PipelineCounts {
   waiting_info: number;
   ready_for_development: number;
   developing: number;
+  accepting: number;
+  acceptance_rejected: number;
   ready_for_test: number;
   testing: number;
   ready_for_release: number;

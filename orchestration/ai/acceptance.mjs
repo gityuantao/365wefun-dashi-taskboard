@@ -128,7 +128,7 @@ export async function executeAcceptance({
       now,
     });
     const outcome = blocked
-      ? "验收已连续多次不通过，已暂停自动返工；请确认原因后把状态改回「开发中」重新开发。"
+      ? "验收已连续多次不通过，已转为「验收不通过」；请确认原因后手动把状态改回「待开发」或「待测试」。"
       : "已退回待开发，系统将自动重新开发。";
     const feedbackText = `${formatFullAcceptanceFeedback(findings)}
 
@@ -148,33 +148,16 @@ ${outcome}`,
     }
     const command = parseCommandEnvelope({
       id: `acceptance-${job.id}`,
-      type: "acceptance_failed",
+      type: blocked ? "acceptance_rejected" : "acceptance_failed",
       aggregateType: "task",
       aggregateId: taskId,
       expectedVersion: aggregate.version + 1,
       actorId: "runner-acceptor",
       issuedAt: now,
-      reason: "acceptance failed",
+      reason: blocked ? "acceptance rejected after repeated failures" : "acceptance failed",
       parameters: { evidenceId: `acceptance-${job.id}` },
     });
     const result = await dispatchCommand({ db, command, now });
-    if (blocked) {
-      await db
-        .prepare(`
-          INSERT OR IGNORE INTO runner_jobs (
-            id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
-          ) VALUES (?, ?, 'accept', ?, 'paused', 'failed', ?, ?, ?)
-        `)
-        .bind(
-          "acceptance-paused-" + taskId,
-          "auto-accept-" + taskId,
-          JSON.stringify({ taskId }),
-          JSON.stringify({ error: "acceptance_paused" }),
-          now,
-          now,
-        )
-        .run();
-    }
     return {
       status: "completed",
       commandId: result.commandId,

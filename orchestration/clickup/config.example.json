@@ -29,7 +29,8 @@
     "测试中": "testing",
     "待发布": "ready_for_release",
     "已发布": "published",
-    "已取消": "canceled"
+    "已取消": "canceled",
+    "验收不通过": "acceptance_rejected"
   },
   "versionStatusMap": {
     "规划中": "planning",

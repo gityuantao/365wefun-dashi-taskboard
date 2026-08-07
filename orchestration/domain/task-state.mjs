@@ -6,9 +6,10 @@ export const TASK_STATES = [
   "waiting_info",
   "ready_for_development",
   "developing",
+  "accepting",
+  "acceptance_rejected",
   "ready_for_test",
   "testing",
-  "accepting",
   "ready_for_release",
   "published",
   "canceled",
@@ -47,6 +48,18 @@ const TASK_TRANSITIONS = new Map([
   [
     "accepting:ready_for_development",
     { to: "ready_for_development", eventType: "task.acceptance_failed", evidenceRequired: true },
+  ],
+  [
+    "accepting:acceptance_rejected",
+    { to: "acceptance_rejected", eventType: "task.acceptance_rejected", evidenceRequired: true },
+  ],
+  [
+    "acceptance_rejected:ready_for_development",
+    { to: "ready_for_development", eventType: "task.acceptance_rejected_to_develop" },
+  ],
+  [
+    "acceptance_rejected:ready_for_test",
+    { to: "ready_for_test", eventType: "task.acceptance_rejected_to_test" },
   ],
   ["ready_for_release:published", { to: "published", eventType: "task.published" }],
 ]);

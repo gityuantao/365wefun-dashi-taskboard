@@ -6,6 +6,7 @@ const PIPELINE_LABELS: Array<{ key: keyof PipelineCounts; label: string }> = [
   { key: "waiting_info", label: "待补充信息" },
   { key: "ready_for_development", label: "待开发" },
   { key: "developing", label: "开发中" },
+  { key: "acceptance_rejected", label: "验收不通过" },
   { key: "ready_for_test", label: "待测试" },
   { key: "testing", label: "测试中" },
   { key: "ready_for_release", label: "待发布" },
@@ -21,7 +22,7 @@ export function PipelineOverview({ pipeline }: { pipeline: PipelineCounts }) {
       <ol className="pipeline-grid">
         {PIPELINE_LABELS.map((item) => {
           const count = pipeline[item.key];
-          const tone = item.key === "waiting_info"
+          const tone = item.key === "waiting_info" || item.key === "acceptance_rejected"
             ? "warning"
             : item.key === "ready_for_release"
               ? "success"
