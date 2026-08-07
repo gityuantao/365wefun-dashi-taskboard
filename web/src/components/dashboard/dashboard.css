@@ -1,30 +1,53 @@
+/* ==========================================================================
+   运营驾驶舱（Operations Dashboard）
+   设计语言对齐源项目：小圆角按钮、12px 菜单圆角、克制阴影、token 色板
+   ========================================================================== */
+
 .dashboard {
   display: flex;
   flex-direction: column;
   gap: 18px;
   width: 100%;
-  max-width: 980px;
+  max-width: 1080px;
   margin: 0 auto;
-  padding: 20px 24px 40px;
+  padding: 18px 22px 40px;
   overflow-y: auto;
 }
 
+/* 宽屏下让顶部两块并排，避免页面显得空 */
+@media (min-width: 900px) {
+  .dashboard {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    column-gap: 16px;
+    row-gap: 18px;
+  }
+  .dashboard-header,
+  .dashboard-loading,
+  .dashboard-error,
+  .dashboard-section.version-progress,
+  .dashboard-section.activity-feed {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ---------- Header ---------- */
 .dashboard-header {
   display: flex;
-  flex: 0 0 44px;
+  flex: 0 0 46px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   min-width: 0;
-  padding: 0 16px;
+  padding: 0 4px;
   border-bottom: var(--border-hairline) solid var(--border);
-  background: var(--header-bg);
 }
 
 .dashboard-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
   color: var(--text-secondary);
   white-space: nowrap;
@@ -34,22 +57,27 @@
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  color: var(--text-tertiary);
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .dashboard-title-mark svg {
-  width: 16px;
-  height: 16px;
+  width: 13px;
+  height: 13px;
 }
 
 .dashboard-title strong {
   color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0;
 }
 
 .dashboard-title-time {
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -59,22 +87,30 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
 }
 
 .dashboard-control-menu {
   width: min(304px, calc(100vw - 16px));
 }
 
+/* ---------- 状态条 ---------- */
 .dashboard-loading,
 .dashboard-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 14px 16px;
+  background: var(--surface);
+}
+
+.dashboard-loading {
+  color: var(--text-tertiary);
 }
 
 .dashboard-error {
-  display: flex;
   flex-direction: column;
   gap: 4px;
   background: var(--danger-soft);
@@ -82,14 +118,20 @@
   color: var(--danger);
 }
 
+.dashboard-error strong {
+  font-size: 13px;
+}
+
+/* ---------- 区块卡片 ---------- */
 .dashboard-section,
 .release-actions,
 .version-progress,
 .activity-feed {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--surface);
   box-shadow: var(--card-shadow);
+  overflow: hidden;
 }
 
 .dashboard-section-heading {
@@ -98,29 +140,64 @@
   justify-content: space-between;
   gap: 8px;
   padding: 12px 16px 10px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--border-hairline) solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-muted));
 }
 
 .dashboard-section-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   margin: 0;
   font-size: 13px;
   font-weight: 650;
   letter-spacing: 0;
+  color: var(--text-primary);
+}
+
+/* 标题前的状态圆点 */
+.dashboard-section-heading h2::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  opacity: 0.85;
+}
+
+.dashboard-section-heading h2[id^="release"]::before {
+  background: var(--warning);
+}
+
+.dashboard-section-heading h2[id^="pipeline"]::before {
+  background: var(--accent);
+}
+
+.dashboard-section-heading h2[id^="version"]::before {
+  background: var(--success);
+}
+
+.dashboard-section-heading h2[id^="activity"]::before {
+  background: var(--text-quaternary);
 }
 
 .dashboard-section-count {
   min-width: 22px;
-  padding: 1px 7px;
+  padding: 1px 8px;
   border-radius: 999px;
   background: var(--surface-muted);
   color: var(--text-secondary);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   text-align: center;
 }
 
+/* ---------- 徽标 ---------- */
 .badge {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   min-height: 20px;
   padding: 0 8px;
   border-radius: 999px;
@@ -130,12 +207,12 @@
 }
 
 .badge-releasable {
-  background: color-mix(in srgb, var(--success) 16%, transparent);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
   color: var(--success);
 }
 
 .badge-failed {
-  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
   color: var(--danger);
 }
 
@@ -144,43 +221,62 @@
   color: var(--text-secondary);
 }
 
+/* ---------- 空态 ---------- */
 .release-actions-empty,
 .version-progress-empty,
 .activity-empty {
   margin: 0;
-  padding: 18px 16px;
+  padding: 20px 16px;
   color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
-.release-action-list,
-.version-progress-list,
-.activity-list {
+/* ---------- 版本发布（待你操作） ---------- */
+.release-actions {
+  border-color: color-mix(in srgb, var(--warning) 34%, var(--border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--warning) 5%, var(--surface)), var(--surface) 42%);
+}
+
+.release-action-list {
   list-style: none;
   margin: 0;
   padding: 6px;
+  display: flex;
+  flex-direction: column;
 }
 
 .release-action-card {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 52px;
+  min-height: 54px;
   padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.release-action-card:hover {
+  background: var(--surface-hover);
 }
 
 .release-action-card + .release-action-card {
-  border-top: 1px solid var(--border);
+  border-top: var(--border-hairline) solid var(--border);
 }
 
 .release-action-copy {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   min-width: 0;
 }
 
 .release-action-copy strong {
   font-size: 13px;
   font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .release-action-copy span {
@@ -190,12 +286,14 @@
 
 .release-action-link {
   margin-left: auto;
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
+/* ---------- 流水线总览 ---------- */
 .pipeline-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
   gap: 6px;
   list-style: none;
   margin: 0;
@@ -203,10 +301,12 @@
 }
 
 .pipeline-cell {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  gap: 3px;
   min-height: 58px;
   padding: 8px 6px;
   border: 1px solid var(--border);
@@ -214,54 +314,95 @@
   background: var(--surface-muted);
 }
 
+.pipeline-cell::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: var(--text-quaternary);
+  opacity: 0.5;
+}
+
 .pipeline-cell.is-empty {
-  opacity: 0.45;
+  opacity: 0.42;
+}
+
+.pipeline-cell.is-empty::before {
+  opacity: 0.25;
 }
 
 .pipeline-warning {
-  border-color: color-mix(in srgb, var(--warning) 55%, var(--border));
-  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: color-mix(in srgb, var(--warning) 8%, var(--surface));
+}
+
+.pipeline-warning::before {
+  background: var(--warning);
+  opacity: 1;
 }
 
 .pipeline-success {
-  border-color: color-mix(in srgb, var(--success) 55%, var(--border));
-  background: color-mix(in srgb, var(--success) 12%, var(--surface));
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+  background: color-mix(in srgb, var(--success) 8%, var(--surface));
+}
+
+.pipeline-success::before {
+  background: var(--success);
+  opacity: 1;
 }
 
 .pipeline-count {
-  font-size: 18px;
-  font-weight: 650;
-  line-height: 1.2;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
 }
 
 .pipeline-label {
   color: var(--text-secondary);
   font-size: 11px;
   text-align: center;
+  white-space: nowrap;
 }
 
+/* ---------- 版本进度 ---------- */
 .version-progress-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 10px;
 }
 
 .version-progress-card {
   display: grid;
-  grid-template-columns: minmax(90px, auto) auto auto 1fr auto;
+  grid-template-columns: minmax(92px, auto) auto auto 1fr auto;
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 44px;
+  min-height: 46px;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
   text-align: left;
+  transition: background 120ms ease, border-color 120ms ease;
 }
 
-.version-progress-card:hover {
+.version-progress-card:hover,
+.version-progress-card:focus-visible {
   background: var(--surface-hover);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.version-progress-card:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .version-progress-name {
@@ -286,41 +427,59 @@
   height: 100%;
   border-radius: 999px;
   background: var(--accent);
+  transition: width 240ms ease;
+}
+
+.version-progress-fill.is-complete {
+  background: var(--success);
 }
 
 .version-progress-meta {
   color: var(--text-secondary);
   font-size: 12px;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
+/* ---------- 实时活动 ---------- */
 .activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
   display: flex;
   flex-direction: column;
 }
 
 .activity-item {
   display: grid;
-  grid-template-columns: 52px minmax(96px, auto) 1fr;
+  grid-template-columns: 56px minmax(96px, auto) 1fr;
   align-items: baseline;
   gap: 8px;
   width: 100%;
-  min-height: 34px;
+  min-height: 36px;
   padding: 6px 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   text-align: left;
+  transition: background 120ms ease;
 }
 
-.activity-item:hover {
+.activity-item:hover,
+.activity-item:focus-visible {
   background: var(--surface-hover);
+}
+
+.activity-item:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .activity-time {
   color: var(--text-tertiary);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .activity-object {
@@ -330,6 +489,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .activity-task {
@@ -348,6 +508,16 @@
   white-space: nowrap;
 }
 
+/* 活动很多时给列表一个内部滚动，避免整页被拉得过长 */
+@media (min-width: 720px) {
+  .activity-feed .activity-list {
+    max-height: 460px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
+
+/* ---------- 详情抽屉（侧滑旧版保留） ---------- */
 .detail-drawer {
   position: fixed;
   inset: 0 0 0 auto;
@@ -489,29 +659,14 @@
   overflow-wrap: anywhere;
 }
 
-.version-progress-fill.is-complete {
-  background: var(--success);
-}
-
-@media (max-width: 720px) {
-  .dashboard {
-    padding: 14px 12px 28px;
-  }
-  .dashboard-header {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .version-progress-card {
-    grid-template-columns: minmax(80px, auto) auto 1fr;
-  }
-}
-
+/* ---------- 详情对话框 ---------- */
 .detail-dialog {
   display: flex;
   flex-direction: column;
   width: min(680px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 32px));
   overflow: hidden;
+  border-radius: 14px;
 }
 
 .detail-dialog > .dialog-header,
@@ -706,4 +861,25 @@
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+/* ---------- 窄屏适配 ---------- */
+@media (max-width: 720px) {
+  .dashboard {
+    padding: 14px 12px 28px;
+  }
+  .dashboard-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .version-progress-card {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .version-progress-track {
+    grid-column: 1 / -1;
+  }
+  .version-progress-meta {
+    grid-column: 1 / -1;
+    white-space: normal;
+  }
 }
