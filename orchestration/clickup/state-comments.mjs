@@ -74,5 +74,7 @@ export function correctionText(type, to, from = null) {
   if (type === "version" && to === "active") {
     return `版本任务未全部就绪，状态回到「${toName}」。全部任务就绪后请改为「发布中」触发发布。`;
   }
-  return `状态已回到「${toName}」`;
+  const fromName = from ? names[from] ?? from : "";
+  const fromSuffix = fromName ? `（原「${fromName}」不符合当前流程）` : "";
+  return `状态已回到「${toName}」${fromSuffix}`;
 }

@@ -377,7 +377,32 @@ async function syncStatuses(now) {
     if (snapshot && snapshot.status === row.state) continue;
     // 系统纠正手动漂移的状态时，评论区说明原因
     const correction = correctionText(row.aggregate_type, row.state, snapshot?.status ?? null);
-    if (correction) {
+    const pending = await db
+      .prepare(`
+        SELECT id FROM outbox_mutations
+        WHERE object_type = ? AND object_id = ? AND field = 'status' AND status = 'pending'
+        LIMIT 1
+      `)
+      .bind(row.aggregate_type, row.aggregate_id)
+      .first();
+    const latest = await db
+      .prepare(`
+        SELECT occurred_at, data FROM orchestration_events
+        WHERE aggregate_type = ? AND aggregate_id = ?
+        ORDER BY sequence DESC LIMIT 1
+      `)
+      .bind(row.aggregate_type, row.aggregate_id)
+      .first();
+    let movedBySystem = false;
+    if (latest?.data) {
+      try {
+        movedBySystem = JSON.parse(latest.data)?.to === row.state
+          && Date.parse(latest.occurred_at) > Date.parse(now) - 120_000;
+      } catch {
+        // 事件数据解析失败时按人工漂移处理
+      }
+    }
+    if (correction && !pending && !movedBySystem) {
       try {
         const client = await clientFactory({ token });
         await client.postComment(row.aggregate_id, correction);

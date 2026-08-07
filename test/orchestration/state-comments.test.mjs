@@ -17,7 +17,10 @@ test("version corrections after release are silent", () => {
   assert.match(correctionText("version", "active", "releasing"), /未全部就绪/);
 });
 
-test("task corrections omit the original status and release sync is silent", () => {
-  assert.equal(correctionText("task", "ready_for_test", "ready_for_release"), "状态已回到「待测试」");
+test("task corrections keep the original status and release sync is silent", () => {
+  assert.equal(
+    correctionText("task", "ready_for_test", "ready_for_release"),
+    "状态已回到「待测试」（原「待发布」不符合当前流程）",
+  );
   assert.equal(correctionText("task", "published", "ready_for_release"), null);
 });
