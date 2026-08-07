@@ -138,7 +138,7 @@ function VersionHero({ detail }: { detail: VersionDetail }) {
         <h3>{detail.name}</h3>
         <span className="detail-id">{detail.id}</span>
       </div>
-      <span className={`badge badge-status${detail.status === "release_failed" ? " badge-failed" : ""}`}>
+      <span className={`badge badge-status badge-status-${detail.status ?? "unknown"}`}>
         {statusLabel}
       </span>
     </header>
@@ -219,6 +219,9 @@ function VersionDetailBody({
   const statusLabel = VERSION_STATUS_LABELS[detail.status ?? ""] ?? detail.status ?? "未知";
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
+  const readyCount = detail.tasks.filter((task) => task.ready).length;
+  const totalCount = detail.tasks.length;
+  const percent = totalCount === 0 ? 0 : Math.round((readyCount / totalCount) * 100);
   async function publish() {
     setPublishing(true);
     setPublishError(null);
@@ -234,43 +237,62 @@ function VersionDetailBody({
   return (
     <div className="form-body detail-dialog-body">
       {detail.releasable && (
-        <div className="detail-publish-actions">
+        <div className="detail-publish-band">
+          <div className="detail-publish-copy">
+            <strong>此版本可以发布</strong>
+            <span>点击发布后版本状态将变为「发布中」，随后自动开始发布流程</span>
+          </div>
           <button
-            className="button detail-publish-button"
+            className="button primary detail-publish-button"
             type="button"
             disabled={publishing}
             onClick={() => void publish()}
           >
-            {publishing ? "发布中…" : "发布"}
+            {publishing ? "发布中…" : "发布版本"}
           </button>
-          {publishError && <span className="detail-publish-error">{publishError}</span>}
         </div>
       )}
+      {publishError && <p className="detail-publish-error" role="alert">{publishError}</p>}
+
       <div className="detail-info-grid">
         <div className="detail-info-cell">
           <dt>状态</dt>
-          <dd>{statusLabel}</dd>
+          <dd className={`detail-status-text detail-status-${detail.status ?? "unknown"}`}>
+            {statusLabel}
+          </dd>
         </div>
         <div className="detail-info-cell">
           <dt>发布阻塞</dt>
-          <dd>{detail.blocked ? "是" : "否"}</dd>
+          <dd className={detail.blocked ? "detail-blocked-yes" : "detail-blocked-no"}>
+            {detail.blocked ? "是" : "否"}
+          </dd>
         </div>
-        <div className="detail-info-cell">
+        <div className="detail-info-cell detail-progress-cell">
           <dt>就绪任务</dt>
-          <dd>{detail.tasks.filter((task) => task.ready).length}/{detail.tasks.length}</dd>
+          <dd>{readyCount}/{totalCount}</dd>
+          <span className="detail-progress-track" aria-hidden="true">
+            <span
+              className={`detail-progress-fill${percent >= 100 ? " is-complete" : ""}`}
+              style={{ width: `${percent}%` }}
+            />
+          </span>
         </div>
       </div>
 
       <section className="detail-section">
-        <h4>任务清单</h4>
-        {detail.tasks.length === 0 ? (
+        <h4>任务清单 <span className="detail-section-count">{totalCount}</span></h4>
+        {totalCount === 0 ? (
           <p className="detail-empty">暂无任务</p>
         ) : (
           <ul className="detail-task-list">
             {detail.tasks.map((task) => (
               <li key={task.id}>
+                <span
+                  className={`detail-task-dot${task.ready ? " is-ready" : ""}`}
+                  aria-hidden="true"
+                />
                 <span className="detail-task-name">{task.name}</span>
-                <span className={task.ready ? "detail-ready" : "detail-task-status"}>
+                <span className={task.ready ? "badge badge-releasable detail-task-badge" : "badge badge-status detail-task-badge"}>
                   {task.ready ? "就绪" : TASK_STATUS_LABELS[task.status ?? ""] ?? task.status ?? "未知"}
                 </span>
               </li>
@@ -282,11 +304,12 @@ function VersionDetailBody({
       {detail.manifest && (
         <section className="detail-section">
           <h4>Manifest</h4>
-          <p className="detail-monospace">
-            checksum: {detail.manifest.checksum}
-            <br />
-            createdAt: {detail.manifest.createdAt}
-          </p>
+          <pre className="detail-manifest">
+            <code>
+              {`checksum:   ${detail.manifest.checksum}
+createdAt:  ${detail.manifest.createdAt}`}
+            </code>
+          </pre>
         </section>
       )}
     </div>
