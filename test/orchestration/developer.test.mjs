@@ -163,6 +163,20 @@ test("development reads comments and includes acceptance feedback in the prompt"
     job: JOB,
     db: harness.db,
     client: makeClient({
+      getTask: async () => ({
+        id: "task-1",
+        name: "录音回放按钮",
+        description: "修复录音回放",
+        status: { status: "开发中" },
+        custom_fields: [
+          { id: "field-version", name: "目标版本", value: "version-9" },
+          {
+            id: "field-acceptance-feedback",
+            name: "验收反馈",
+            value: "完整验收失败详情：按钮无法点击",
+          },
+        ],
+      }),
       getComments: async () => [
         { id: "c1", comment_text: "❌ 验收不通过：按钮无法点击，已退回待开发。" },
         { id: "c2", comment_text: "需求补充：点击后需要跳转" },
@@ -175,4 +189,5 @@ test("development reads comments and includes acceptance feedback in the prompt"
   assert.equal(result.status, "completed");
   assert.match(prompt, /验收不通过：按钮无法点击/);
   assert.match(prompt, /需求补充：点击后需要跳转/);
+  assert.match(prompt, /完整验收失败详情：按钮无法点击/);
 });

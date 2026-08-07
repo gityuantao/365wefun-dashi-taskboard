@@ -64,6 +64,14 @@ export async function executeDevelopment({
     try {
       commentContext = buildCommentContext(await client.getComments(taskId));
     } catch {}
+    const feedbackField = task.custom_fields?.find(
+      (field) => field.name === "验收反馈" || field.id === "field-acceptance-feedback",
+    );
+    if (feedbackField?.value) {
+      commentContext = [commentContext, `验收反馈：${feedbackField.value}`]
+        .filter(Boolean)
+        .join("\n");
+    }
     const worktree = await gitOps.createWorktree({
       repoPath,
       taskId,
