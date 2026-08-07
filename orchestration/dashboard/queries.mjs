@@ -155,6 +155,7 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
   }
 
   const versionProgress = versions
+    .filter((version) => version.status !== "published" && version.status !== "canceled")
     .map((version) => {
       const tasksInVersion = tasks.filter(
         (task) => task.targetVersion === (version.name ?? version.id),

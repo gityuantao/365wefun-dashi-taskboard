@@ -107,7 +107,7 @@ test("terminal, blocked and empty versions are never releasable", async (t) => {
     .prepare("UPDATE orchestration_aggregates SET state = 'published' WHERE aggregate_type = 'version' AND aggregate_id = 'version-1'")
     .run();
   let payload = await buildDashboard(harness.db);
-  assert.equal(payload.versions.find((v) => v.name === "1.0.1").releasable, false);
+  assert.equal(payload.versions.some((v) => v.name === "1.0.1"), false);
   assert.deepEqual(payload.releasableVersions.map((v) => v.name), ["1.0.4"]);
   const blockedCard = payload.versions.find((v) => v.name === "1.0.3");
   assert.equal(blockedCard.hasOpenBlockers, true);
