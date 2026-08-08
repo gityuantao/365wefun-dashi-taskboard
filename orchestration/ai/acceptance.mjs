@@ -46,6 +46,23 @@ function concise(text, max = 60) {
   return clean.length > max ? clean.slice(0, max) : clean;
 }
 
+function staleAcceptanceResult(aggregate) {
+  const result = {
+    status: "failed",
+    error: `stale accept job: task is in ${aggregate.state} at version ${aggregate.version}`,
+  };
+  if (aggregate.state === "waiting_info") result.classification = "paused_waiting_info";
+  return result;
+}
+
+async function currentAcceptance(db, taskId, expectedVersion) {
+  const aggregate = await loadAggregate(db, "task", taskId);
+  return {
+    active: aggregate.state === "accepting" && aggregate.version === expectedVersion,
+    aggregate,
+  };
+}
+
 export async function executeAcceptance({
   job,
   db,
@@ -56,18 +73,30 @@ export async function executeAcceptance({
 }) {
   const { taskId, acceptanceCriteria, commitSha } = job.payload;
   try {
+    const startAggregate = await loadAggregate(db, "task", taskId);
+    if (startAggregate.state !== "accepting") return staleAcceptanceResult(startAggregate);
+    if (
+      Number.isInteger(job.payload.aggregateVersion)
+      && startAggregate.version !== job.payload.aggregateVersion
+    ) {
+      return staleAcceptanceResult(startAggregate);
+    }
+    const executionVersion = startAggregate.version;
     const task = await client.getTask(taskId);
     let commentContext = null;
     try {
       commentContext = buildCommentContext(await client.getComments(taskId));
     } catch {}
     // 验收开始：任务保持「开发中」，通过后直接进入「待测试」
-    let aggregate = await loadAggregate(db, "task", taskId);
+    let activity = await currentAcceptance(db, taskId, executionVersion);
+    if (!activity.active) return staleAcceptanceResult(activity.aggregate);
     const run = await codex.run({
       prompt: buildAcceptancePrompt(task, acceptanceCriteria, commitSha, commentContext),
       workdir: job.payload.workdir,
       taskId,
     });
+    activity = await currentAcceptance(db, taskId, executionVersion);
+    if (!activity.active) return staleAcceptanceResult(activity.aggregate);
     if (run.exitCode !== 0) {
       return { status: "failed", error: `codex exited ${run.exitCode}: ${run.stderr}` };
     }
@@ -89,6 +118,9 @@ export async function executeAcceptance({
       if (!targetVersion) {
         return { status: "failed", error: "task has no target version" };
       }
+      activity = await currentAcceptance(db, taskId, executionVersion);
+      if (!activity.active) return staleAcceptanceResult(activity.aggregate);
+      const aggregate = activity.aggregate;
       const command = parseCommandEnvelope({
         id: `acceptance-${job.id}`,
         type: "acceptance_passed",
@@ -120,6 +152,8 @@ export async function executeAcceptance({
     }
 
     const findings = parsed.findings ?? [];
+    activity = await currentAcceptance(db, taskId, executionVersion);
+    if (!activity.active) return staleAcceptanceResult(activity.aggregate);
     const { blocked } = await recordFailure({
       db,
       taskId,
@@ -127,6 +161,8 @@ export async function executeAcceptance({
       evidence: `acceptance-${job.id}`,
       now: new Date().toISOString(),
     });
+    activity = await currentAcceptance(db, taskId, executionVersion);
+    if (!activity.active) return staleAcceptanceResult(activity.aggregate);
     const outcome = blocked
       ? "验收已连续多次不通过，已转为「验收不通过」；请确认原因后手动把状态改回「待开发」或「待测试」。"
       : "已退回待开发，系统将自动重新开发。";
@@ -139,13 +175,18 @@ ${outcome}`;
 
 ${outcome}`,
     );
+    activity = await currentAcceptance(db, taskId, executionVersion);
+    if (!activity.active) return staleAcceptanceResult(activity.aggregate);
     if (fieldIds.feedback) {
       try {
         await client.updateCustomField(taskId, fieldIds.feedback, feedbackText);
       } catch {
         // 字段写入失败不影响验收结果
       }
+      activity = await currentAcceptance(db, taskId, executionVersion);
+      if (!activity.active) return staleAcceptanceResult(activity.aggregate);
     }
+    const aggregate = activity.aggregate;
     const command = parseCommandEnvelope({
       id: `acceptance-${job.id}`,
       type: blocked ? "acceptance_rejected" : "acceptance_failed",

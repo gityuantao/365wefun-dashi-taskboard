@@ -236,7 +236,7 @@ export async function executeDevelopment({
         ? parsed.reason.trim()
         : "开发过程中无法复现问题或信息不足";
       await markDevelopmentNeedsInfo({ db, client, taskId, jobId: job.id, now, reason });
-      return { status: "failed", error: `needs_info: ${reason}` };
+      return { status: "failed", classification: "needs_info", error: `needs_info: ${reason}` };
     }
     if (typeof parsed.change_summary !== "string" || parsed.change_summary === "") {
       await rollbackDevelopment({

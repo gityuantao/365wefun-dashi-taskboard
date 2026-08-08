@@ -46,7 +46,7 @@ function buildAnalysisDescription(original, parsed) {
 
 async function markNeedsHuman({ db, taskId, jobId, now, reason }) {
   const aggregate = await loadAggregate(db, "task", taskId);
-  if (aggregate.state !== "analyzing") return;
+  if (aggregate.state !== "analyzing") return false;
   const command = parseCommandEnvelope({
     id: `analysis-needs-human-${jobId}`,
     type: "analysis_needs_human",
@@ -60,8 +60,10 @@ async function markNeedsHuman({ db, taskId, jobId, now, reason }) {
   });
   try {
     await dispatchCommand({ db, command, now: new Date().toISOString() });
+    return true;
   } catch (error) {
     // 状态推进失败不掩盖 needs_human 结论；下一次恢复流程仍可处理
+    return false;
   }
 }
 
@@ -138,7 +140,16 @@ export async function executeAnalysis({
     ? parsed.test_notes.map((note) => String(note))
     : parsed.acceptance_criteria.map((criterion) => criterion.criterion);
   if (Array.isArray(parsed.open_questions) && parsed.open_questions.length > 0) {
-    await markNeedsHuman({ db, taskId: task.id, jobId: job.id, now, reason: "analysis needs human input" });
+    const transitioned = await markNeedsHuman({
+      db,
+      taskId: task.id,
+      jobId: job.id,
+      now,
+      reason: "analysis needs human input",
+    });
+    if (!transitioned) {
+      return staleAnalysisResult(await loadAggregate(db, "task", task.id));
+    }
     try {
       await client.postComment(
         task.id,
@@ -153,6 +164,7 @@ export async function executeAnalysis({
     }
     return {
       status: "failed",
+      classification: "needs_human",
       error: "needs_human: open questions require human input",
       openQuestions: parsed.open_questions,
     };
@@ -161,7 +173,16 @@ export async function executeAnalysis({
     (field) => field.name === "目标版本" || field.id === "field-version",
   )?.value ?? null;
   if (!targetVersion) {
-    await markNeedsHuman({ db, taskId: task.id, jobId: job.id, now, reason: "task must be linked to a target version" });
+    const transitioned = await markNeedsHuman({
+      db,
+      taskId: task.id,
+      jobId: job.id,
+      now,
+      reason: "task must be linked to a target version",
+    });
+    if (!transitioned) {
+      return staleAnalysisResult(await loadAggregate(db, "task", task.id));
+    }
     try {
       await client.postComment(
         task.id,
@@ -172,6 +193,7 @@ export async function executeAnalysis({
     }
     return {
       status: "failed",
+      classification: "needs_human",
       error: "needs_human: task must be linked to a target version before analysis can complete",
     };
   }

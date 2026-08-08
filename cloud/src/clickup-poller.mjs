@@ -33,7 +33,9 @@ async function resumeAnalysisAfterInfo(env, snapshot, now, commands, config) {
   // 清除 needs_human 失败记录，恢复分析后允许重新入队
   await env.DB
     .prepare(
-      "DELETE FROM runner_jobs WHERE command_id = ? AND status = 'failed' AND result LIKE '%needs_human%'",
+      `DELETE FROM runner_jobs
+       WHERE command_id = ? AND status = 'failed'
+         AND json_extract(result, '$.classification') IN ('needs_human', 'paused_waiting_info')`,
     )
     .bind(`auto-analyze-${snapshot.id}`)
     .run();
@@ -60,7 +62,7 @@ async function resumeDevelopmentAfterInfo(env, snapshot, now, commands, config) 
     .prepare(
       `DELETE FROM runner_jobs
        WHERE command_id = ? AND status = 'failed'
-         AND (result LIKE '%needs_info%' OR result LIKE '%\"classification\":\"paused_waiting_info\"%')`,
+         AND json_extract(result, '$.classification') IN ('needs_info', 'paused_waiting_info')`,
     )
     .bind(`auto-develop-${snapshot.id}`)
     .run();
@@ -106,6 +108,7 @@ async function reconcileManualWaitingInfo(env, snapshot, now, commands, config) 
     analyzing: "analysis_needs_human",
     ready_for_development: "manual_pause_for_info",
     developing: "development_needs_info",
+    accepting: "manual_pause_for_info",
   }[aggregate.state];
   if (commandType) {
     const commandId = `poller-manual-pause-${snapshot.id}-${aggregate.version + 1}`;
@@ -317,22 +320,24 @@ export async function pollClickUpOnce(env, {
         && change.to === "developing"
       ));
 
-    // 等待补充信息的任务：用户回复并把状态改回「分析中/开发中」后，自动恢复
-    if (aggregate.state === "waiting_info" && snapshot.status !== "waiting_info") {
-      if (snapshot.status === "analyzing") {
+    // 仅接受已确认的 waiting_info -> analyzing/developing 状态变化作为显式恢复。
+    if (aggregate.state === "waiting_info") {
+      const resumeAnalysis = changes.some((change) => (
+        change.field === "status"
+        && change.from === "waiting_info"
+        && change.to === "analyzing"
+      ));
+      const resumeDevelopment = changes.some((change) => (
+        change.field === "status"
+        && change.from === "waiting_info"
+        && change.to === "developing"
+      ));
+      if (resumeAnalysis) {
         await resumeAnalysisAfterInfo(env, snapshot, now, commands, config);
-      } else if (snapshot.status === "developing") {
+      } else if (resumeDevelopment) {
         await resumeDevelopmentAfterInfo(env, snapshot, now, commands, config);
       }
       aggregate = await loadAggregate(env.DB, "task", snapshot.id);
-    }
-    if (changes.some((change) => change.field === "updatedAt")) {
-      await env.DB
-        .prepare(
-          "DELETE FROM runner_jobs WHERE command_id = ? AND status = 'failed' AND result LIKE '%needs_human%'",
-        )
-        .bind(`auto-analyze-${snapshot.id}`)
-        .run();
     }
     await handleStatusDrivenFlow(env, snapshot, now, commands, config, {
       manualDevelopmentStart,

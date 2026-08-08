@@ -154,6 +154,65 @@ test("analysis with open questions blocks without advancing", async (t) => {
   assert.equal(aggregate.version, 2);
 });
 
+test("analysis does not publish its question comment when a manual pause wins the transition", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  let aggregateReads = 0;
+  const racingDb = {
+    prepare(sql) {
+      const statement = harness.db.prepare(sql);
+      if (!String(sql).includes("FROM orchestration_aggregates")) return statement;
+      aggregateReads += 1;
+      if (aggregateReads !== 4) return statement;
+      return {
+        bind(...args) {
+          const bound = statement.bind(...args);
+          return {
+            async first() {
+              await dispatchCommand({
+                db: harness.db,
+                command: parseCommandEnvelope({
+                  id: "manual-pause-before-analysis-question",
+                  type: "analysis_needs_human",
+                  aggregateType: "task",
+                  aggregateId: "task-1",
+                  expectedVersion: 2,
+                  actorId: "system-poller",
+                  issuedAt: NOW,
+                  reason: "user moved task to waiting_info",
+                  parameters: {},
+                }),
+                now: NOW,
+              });
+              return bound.first();
+            },
+          };
+        },
+      };
+    },
+  };
+  const comments = [];
+  const output = JSON.stringify({
+    scope: "实现录音回放按钮",
+    acceptance_criteria: [{ id: "ac-1", criterion: "按钮可点击", verification: "手动测试" }],
+    risks: [],
+    open_questions: [{ question: "是否支持旧版本？" }],
+  });
+
+  const result = await executeAnalysis({
+    job: { id: "job-question-race", commandId: "cmd-question-race", jobType: "analyze", payload: { taskId: "task-1", aggregateVersion: 1 } },
+    db: racingDb,
+    client: makeClient({ postComment: async (_id, body) => comments.push(body) }),
+    codex: { run: async () => ({ exitCode: 0, stdout: output, stderr: "" }) },
+    now: NOW,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.classification, "paused_waiting_info");
+  assert.deepEqual(comments, []);
+});
+
 test("manual pause during Codex analysis prevents ClickUp writes and completion", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

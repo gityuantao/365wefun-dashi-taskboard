@@ -295,6 +295,19 @@ test("poller resumes analysis when the user changes status back", async (t) => {
   t.after(() => harness.dispose());
   await dispatchTask(harness, "seed-waiting-3", "start_analysis", 1);
   await dispatchTask(harness, "seed-waiting-4", "analysis_needs_human", 2);
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "waiting_info",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:00.000Z",
+      fieldsHash: "analysis-waiting-before-resume",
+    },
+    readAt: "2026-08-04T00:00:00.000Z",
+  });
   const env = await makeEnv(harness, [
     sandboxTask({ status: "分析中", request: null, version: "1.0.1" }),
   ], [
@@ -517,6 +530,149 @@ test("manual 待补充信息 pauses a task that was queued for development", asy
   assert.equal(queued, null);
 });
 
+test("manual 待补充信息 pauses acceptance, cancels queued accept, and can resume to development", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 4; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development", "development_completed"][index];
+    await dispatchTask(harness, `accept-pause-${index}`, type, index + 1);
+  }
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "developing",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:00.000Z",
+      fieldsHash: "accepting-before-pause",
+    },
+    readAt: "2026-08-04T00:00:00.000Z",
+  });
+  for (const [id, status] of [["queued-accept", "queued"], ["claimed-accept", "claimed"]]) {
+    await harness.db
+      .prepare(
+        `INSERT INTO runner_jobs (
+          id, command_id, job_type, payload, payload_hash, status, device_id,
+          fencing_token, expires_at, created_at, claimed_at
+        ) VALUES (?, 'auto-accept-task-1', 'accept', ?, 'h', ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        id,
+        JSON.stringify({ taskId: "task-1", aggregateVersion: 4 }),
+        status,
+        status === "claimed" ? "device-accept" : null,
+        status === "claimed" ? 1 : 0,
+        "2026-08-04T01:00:00.000Z",
+        NOW,
+        status === "claimed" ? NOW : null,
+      )
+      .run();
+  }
+  const versions = [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }];
+  const pauseEnv = await makeEnv(harness, [
+    sandboxTask({ status: "待补充信息", version: "1.0.1" }),
+  ], versions);
+
+  const paused = await pollClickUpOnce(pauseEnv, { now: NOW });
+
+  assert.ok(paused.commands.some((command) => command.type === "manual_pause_for_info"));
+  let aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  assert.equal(
+    await harness.db.prepare("SELECT id FROM runner_jobs WHERE id = 'queued-accept'").first(),
+    null,
+  );
+  const claimed = await harness.db
+    .prepare("SELECT status FROM runner_jobs WHERE id = 'claimed-accept'")
+    .first();
+  assert.equal(claimed.status, "claimed");
+
+  const resumeEnv = await makeEnv(harness, [
+    sandboxTask({ status: "开发中", version: "1.0.1" }),
+  ], versions);
+  const resumed = await pollClickUpOnce(resumeEnv, { now: NOW });
+  assert.ok(resumed.commands.some((command) => command.type === "development_restarted"));
+  aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "developing");
+});
+
+test("unrelated ClickUp updates do not resume waiting tasks or delete ordinary failures", async (t) => {
+  for (const mode of ["development", "analysis"]) {
+    await t.test(mode, async (subtest) => {
+      const harness = await createCloudWorkerHarness();
+      subtest.after(() => harness.dispose());
+      if (mode === "analysis") {
+        await dispatchTask(harness, "strict-analysis-start", "start_analysis", 1);
+        await dispatchTask(harness, "strict-analysis-wait", "analysis_needs_human", 2);
+      } else {
+        for (let index = 0; index < 4; index += 1) {
+          const type = ["start_analysis", "analysis_completed", "start_development", "development_needs_info"][index];
+          await dispatchTask(harness, `strict-dev-${index}`, type, index + 1);
+        }
+      }
+      const status = mode === "analysis" ? "analyzing" : "developing";
+      await saveSnapshot(harness.db, {
+        type: "task",
+        snapshot: {
+          id: "task-1",
+          listId: "901616314492",
+          status,
+          targetVersion: "1.0.1",
+          assignee: null,
+          updatedAt: "2026-08-04T00:00:00.000Z",
+          fieldsHash: `confirmed-${status}`,
+        },
+        readAt: "2026-08-04T00:00:00.000Z",
+      });
+      const commandId = `auto-${mode === "analysis" ? "analyze" : "develop"}-task-1`;
+      await harness.db
+        .prepare(
+          `INSERT INTO runner_jobs (
+            id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+          ) VALUES (?, ?, ?, ?, 'h', 'failed', ?, ?, ?)`,
+        )
+        .bind(
+          `ordinary-${mode}-failure`,
+          commandId,
+          mode === "analysis" ? "analyze" : "develop",
+          JSON.stringify({ taskId: "task-1" }),
+          JSON.stringify({
+            status: "failed",
+            classification: "ordinary_failure",
+            error: mode === "analysis"
+              ? "parser says needs_human text was malformed"
+              : "log contains needs_info but this is an ordinary crash",
+          }),
+          NOW,
+          NOW,
+        )
+        .run();
+      const env = await makeEnv(harness, [
+        sandboxTask({
+          status: mode === "analysis" ? "分析中" : "开发中",
+          version: "1.0.1",
+        }),
+      ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]);
+
+      const result = await pollClickUpOnce(env, { now: NOW });
+
+      assert.equal(
+        result.commands.some((command) => ["analysis_restarted", "development_restarted"].includes(command.type)),
+        false,
+      );
+      const aggregate = await loadAggregate(harness.db, "task", "task-1");
+      assert.equal(aggregate.state, "waiting_info");
+      const failure = await harness.db
+        .prepare("SELECT id FROM runner_jobs WHERE id = ?")
+        .bind(`ordinary-${mode}-failure`)
+        .first();
+      assert.ok(failure, "ordinary failure text must not be deleted by substring matching");
+    });
+  }
+});
+
 test("poller resumes development when the user changes status back to 开发中", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -529,8 +685,26 @@ test("poller resumes development when the user changes status back to 开发中"
       `INSERT INTO runner_jobs (id, command_id, job_type, payload, payload_hash, status, result, created_at)
        VALUES (?, ?, 'develop', '{}', 'h', 'failed', ?, ?)`,
     )
-    .bind("task-1-develop-4", "auto-develop-task-1", JSON.stringify({ error: "needs_info: 线上音频实测正常" }), NOW)
+    .bind(
+      "task-1-develop-4",
+      "auto-develop-task-1",
+      JSON.stringify({ classification: "needs_info", error: "needs_info: 线上音频实测正常" }),
+      NOW,
+    )
     .run();
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "waiting_info",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:00.000Z",
+      fieldsHash: "development-waiting-before-resume",
+    },
+    readAt: "2026-08-04T00:00:00.000Z",
+  });
   const env = await makeEnv(harness, [
     sandboxTask({ status: "开发中", request: null, version: "1.0.1" }),
   ], [

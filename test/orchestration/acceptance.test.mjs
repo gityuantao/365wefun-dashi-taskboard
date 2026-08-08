@@ -80,6 +80,7 @@ const JOB = {
       { id: "ac-1", criterion: "按钮可点击", verification: "手动测试" },
     ],
     commitSha: "abc123",
+    aggregateVersion: 4,
   },
 };
 
@@ -138,6 +139,52 @@ test("acceptance refuses to advance without a target version", async (t) => {
   assert.equal(aggregate.state, "accepting");
 });
 
+test("manual pause during Codex acceptance prevents writes and completion", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedToAccepting(harness);
+  const sideEffects = [];
+  const result = await executeAcceptance({
+    job: JOB,
+    db: harness.db,
+    client: makeClient("version-9", {
+      postComment: async () => sideEffects.push("comment"),
+      updateCustomField: async () => sideEffects.push("field"),
+    }),
+    codex: {
+      run: async () => {
+        await dispatchCommand({
+          db: harness.db,
+          command: parseCommandEnvelope({
+            id: "manual-pause-during-acceptance",
+            type: "manual_pause_for_info",
+            aggregateType: "task",
+            aggregateId: "task-1",
+            expectedVersion: 5,
+            actorId: "system-poller",
+            issuedAt: NOW,
+            reason: "user moved task to waiting_info",
+            parameters: {},
+          }),
+          now: NOW,
+        });
+        return { exitCode: 0, stdout: acceptedOutput(), stderr: "" };
+      },
+    },
+    now: NOW,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.classification, "paused_waiting_info");
+  assert.deepEqual(sideEffects, []);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  const completion = await harness.db
+    .prepare("SELECT id FROM orchestration_events WHERE type IN ('task.acceptance_passed', 'task.acceptance_failed')")
+    .first();
+  assert.equal(completion, null);
+});
+
 test("acceptance rejection returns the task to ready for development", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -194,8 +241,13 @@ test("acceptance failure auto-redevelops and parks after repeated failures", asy
   t.after(() => harness.dispose());
   await seedToAccepting(harness);
   for (let round = 1; round <= 3; round += 1) {
+    const beforeAcceptance = await loadAggregate(harness.db, "task", "task-1");
     const result = await executeAcceptance({
-      job: { ...JOB, id: `job-r${round}` },
+      job: {
+        ...JOB,
+        id: `job-r${round}`,
+        payload: { ...JOB.payload, aggregateVersion: beforeAcceptance.version },
+      },
       db: harness.db,
       client: makeClient("version-9"),
       codex: { run: async () => ({ exitCode: 0, stdout: rejectedOutput(), stderr: "" }) },
