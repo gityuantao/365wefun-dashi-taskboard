@@ -58,7 +58,9 @@ async function resumeDevelopmentAfterInfo(env, snapshot, now, commands, config) 
   // 清除 needs_info 失败记录，恢复开发后允许重新入队
   await env.DB
     .prepare(
-      "DELETE FROM runner_jobs WHERE command_id = ? AND status = 'failed' AND result LIKE '%needs_info%'",
+      `DELETE FROM runner_jobs
+       WHERE command_id = ? AND status = 'failed'
+         AND (result LIKE '%needs_info%' OR result LIKE '%\"classification\":\"paused_waiting_info\"%')`,
     )
     .bind(`auto-develop-${snapshot.id}`)
     .run();
@@ -282,6 +284,10 @@ export async function pollClickUpOnce(env, {
     const confirmed = await loadLastConfirmed(env.DB, "task", snapshot.id);
     const changes = compareSnapshots(confirmed, snapshot);
 
+    // A manual pause is authoritative even when the task is not in the current version.
+    // Reconcile it before the version gate can skip all other task processing.
+    await reconcileManualWaitingInfo(env, snapshot, now, commands, config);
+
     // 版本门禁：非当前开发版本的任务不做任何操作（分析/开发/测试/验收均不允许）
     const gate = checkTaskVersionGate({
       targetVersion: snapshot.targetVersion,
@@ -294,8 +300,6 @@ export async function pollClickUpOnce(env, {
       }
       continue;
     }
-
-    await reconcileManualWaitingInfo(env, snapshot, now, commands, config);
 
     if (changes.length === 0) {
       await handleStatusDrivenFlow(env, snapshot, now, commands, config);

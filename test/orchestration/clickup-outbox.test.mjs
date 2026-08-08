@@ -21,7 +21,10 @@ const CONFIG = loadClickUpConfig({
   taskStatusMap: {
     收件箱: "inbox",
     待补充信息: "waiting_info",
+    待开发: "ready_for_development",
     开发中: "developing",
+    待发布: "ready_for_release",
+    测试中: "testing",
   },
   versionStatusMap: { 规划中: "planning" },
   fields: {
@@ -146,6 +149,41 @@ test("flushOutbox cannot overwrite a confirmed manual 待补充信息 status", a
     .bind("stale-developing")
     .first();
   assert.equal(row.status, "expired");
+});
+
+test("flushOutbox trusts remote 待补充信息 over a stale local developing snapshot", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616282651",
+      status: "developing",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: NOW,
+      fieldsHash: "stale-local-developing",
+    },
+    readAt: NOW,
+  });
+  let writes = 0;
+  const client = {
+    getTask: async () => ({ id: "task-1", status: { status: "待补充信息" } }),
+    updateTaskStatus: async () => { writes += 1; },
+    updateCustomField: async () => { writes += 1; },
+  };
+  await enqueueMutation(harness.db, mutationBase({
+    mutationId: "remote-waiting-info",
+    expectedBefore: "待开发",
+    target: "开发中",
+  }));
+
+  const result = await flushOutbox(harness.db, client, { now: NOW, config: CONFIG });
+
+  assert.deepEqual(result.flushed, []);
+  assert.deepEqual(result.expired, ["remote-waiting-info"]);
+  assert.equal(writes, 0);
 });
 
 test("flushOutbox writes custom fields through the field id mapping", async (t) => {

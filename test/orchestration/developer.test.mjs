@@ -240,6 +240,7 @@ test("manual pause during Codex run prevents commit PR evidence and completion",
 
   assert.equal(result.status, "failed");
   assert.match(result.error, /stale develop job/);
+  assert.equal(result.classification, "paused_waiting_info");
   assert.deepEqual(sideEffects, []);
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "waiting_info");

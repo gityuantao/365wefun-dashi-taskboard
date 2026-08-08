@@ -72,7 +72,23 @@ export async function flushOutbox(db, client, { now, config }) {
       if (row.object_type === "task") {
         const snapshot = await loadLastConfirmed(db, "task", row.object_id);
         const targetState = config.taskStatusMap[target];
-        if (snapshot?.status === "waiting_info" && targetState !== "waiting_info") {
+        let authoritativeState = snapshot?.status ?? null;
+        if (typeof client.getTask === "function") {
+          const remote = await client.getTask(row.object_id);
+          const remoteStatusName = remote?.status?.status === "to do"
+            ? "收件箱"
+            : remote?.status?.status;
+          authoritativeState = config.taskStatusMap[remoteStatusName] ?? remoteStatusName ?? null;
+        }
+        const expectedState = config.taskStatusMap[row.expected_before]
+          ?? row.expected_before
+          ?? null;
+        const preconditionFailed = expectedState !== null
+          && authoritativeState !== null
+          && authoritativeState !== expectedState;
+        const manualPauseConflict = authoritativeState === "waiting_info"
+          && targetState !== "waiting_info";
+        if (preconditionFailed || manualPauseConflict) {
           await db
             .prepare(
               "UPDATE outbox_mutations SET status = 'expired' WHERE id = ? AND status = 'pending'",

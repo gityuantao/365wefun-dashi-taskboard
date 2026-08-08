@@ -65,6 +65,23 @@ async function markNeedsHuman({ db, taskId, jobId, now, reason }) {
   }
 }
 
+function staleAnalysisResult(aggregate) {
+  const result = {
+    status: "failed",
+    error: `stale analyze job: task is in ${aggregate.state} at version ${aggregate.version}`,
+  };
+  if (aggregate.state === "waiting_info") result.classification = "paused_waiting_info";
+  return result;
+}
+
+async function currentAnalysis(db, taskId, expectedVersion) {
+  const aggregate = await loadAggregate(db, "task", taskId);
+  return {
+    active: aggregate.state === "analyzing" && aggregate.version === expectedVersion,
+    aggregate,
+  };
+}
+
 export async function executeAnalysis({
   job,
   db,
@@ -73,16 +90,30 @@ export async function executeAnalysis({
   now,
   fieldIds = { summary: "field-summary", acceptance: null },
 }) {
-  const task = await client.getTask(job.payload.taskId);
+  const taskId = job.payload.taskId;
+  const startAggregate = await loadAggregate(db, "task", taskId);
+  if (startAggregate.state !== "analyzing") return staleAnalysisResult(startAggregate);
+  if (
+    Number.isInteger(job.payload.aggregateVersion)
+    && startAggregate.version !== job.payload.aggregateVersion
+  ) {
+    return staleAnalysisResult(startAggregate);
+  }
+  const executionVersion = startAggregate.version;
+  const task = await client.getTask(taskId);
   let commentContext = null;
   try {
-    commentContext = buildCommentContext(await client.getComments(job.payload.taskId));
+    commentContext = buildCommentContext(await client.getComments(taskId));
   } catch {}
+  let activity = await currentAnalysis(db, taskId, executionVersion);
+  if (!activity.active) return staleAnalysisResult(activity.aggregate);
   const run = await codex.run({
     prompt: buildAnalysisPrompt(task, commentContext, resolvePlatforms(task)),
     workdir: job.payload.workdir,
-    taskId: job.payload.taskId,
+    taskId,
   });
+  activity = await currentAnalysis(db, taskId, executionVersion);
+  if (!activity.active) return staleAnalysisResult(activity.aggregate);
   if (run.exitCode !== 0) {
     return { status: "failed", error: `codex exited ${run.exitCode}: ${run.stderr}` };
   }
@@ -145,16 +176,24 @@ export async function executeAnalysis({
     };
   }
 
+  activity = await currentAnalysis(db, taskId, executionVersion);
+  if (!activity.active) return staleAnalysisResult(activity.aggregate);
   await client.postComment(
     task.id,
     `✅ 分析完成：${concise(parsed.scope)}（验收标准 ${parsed.acceptance_criteria.length} 条）`,
   );
+  activity = await currentAnalysis(db, taskId, executionVersion);
+  if (!activity.active) return staleAnalysisResult(activity.aggregate);
   await client.updateTaskDescription(
     task.id,
     buildAnalysisDescription(task.description, { ...parsed, summary, test_notes: testNotes }),
   );
+  activity = await currentAnalysis(db, taskId, executionVersion);
+  if (!activity.active) return staleAnalysisResult(activity.aggregate);
   await client.updateCustomField(task.id, fieldIds.summary, parsed.scope);
   if (fieldIds.acceptance) {
+    activity = await currentAnalysis(db, taskId, executionVersion);
+    if (!activity.active) return staleAnalysisResult(activity.aggregate);
     await client.updateCustomField(
       task.id,
       fieldIds.acceptance,
@@ -164,7 +203,9 @@ export async function executeAnalysis({
     );
   }
 
-  const aggregate = await loadAggregate(db, "task", task.id);
+  activity = await currentAnalysis(db, taskId, executionVersion);
+  if (!activity.active) return staleAnalysisResult(activity.aggregate);
+  const aggregate = activity.aggregate;
   const command = parseCommandEnvelope({
     id: `analysis-${job.id}`,
     type: "analysis_completed",

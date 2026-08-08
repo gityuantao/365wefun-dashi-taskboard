@@ -115,10 +115,12 @@ async function markDevelopmentNeedsInfo({ db, client, taskId, jobId, now, reason
 }
 
 function staleDevelopmentResult(aggregate) {
-  return {
+  const result = {
     status: "failed",
     error: `stale develop job: task is in ${aggregate.state} at version ${aggregate.version}`,
   };
+  if (aggregate.state === "waiting_info") result.classification = "paused_waiting_info";
+  return result;
 }
 
 async function currentDevelopment(db, taskId, expectedVersion) {

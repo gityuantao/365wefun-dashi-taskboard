@@ -420,6 +420,68 @@ test("manual 待补充信息 pauses active development and invalidates queued wo
   assert.equal(mutation.status, "expired", "stale status sync must not restore 开发中");
 });
 
+test("manual 待补充信息 pauses a non-current-version task before the version gate", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 3; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development"][index];
+    await dispatchTask(harness, `gated-pause-${index}`, type, index + 1);
+  }
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "developing",
+      targetVersion: "1.0.2",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:00.000Z",
+      fieldsHash: "gated-developing",
+    },
+    readAt: "2026-08-04T00:00:00.000Z",
+  });
+  for (const [id, status] of [["queued-gated-develop", "queued"], ["claimed-gated-develop", "claimed"]]) {
+    await harness.db
+      .prepare(
+        `INSERT INTO runner_jobs (
+          id, command_id, job_type, payload, payload_hash, status, device_id,
+          fencing_token, expires_at, created_at, claimed_at
+        ) VALUES (?, 'auto-develop-task-1', 'develop', ?, 'h', ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        id,
+        JSON.stringify({ taskId: "task-1", aggregateVersion: 3 }),
+        status,
+        status === "claimed" ? "device-1" : null,
+        status === "claimed" ? 1 : 0,
+        "2026-08-04T01:00:00.000Z",
+        NOW,
+        status === "claimed" ? NOW : null,
+      )
+      .run();
+  }
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待补充信息", version: "1.0.2" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+    { id: "v2", name: "1.0.2", status: { status: "进行中" } },
+  ]);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.ok(result.commands.some((command) => command.type === "development_needs_info"));
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  const queued = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE id = 'queued-gated-develop'")
+    .first();
+  assert.equal(queued, null, "queued work must be canceled even when the version is gated");
+  const claimed = await harness.db
+    .prepare("SELECT status FROM runner_jobs WHERE id = 'claimed-gated-develop'")
+    .first();
+  assert.equal(claimed.status, "claimed", "claimed work must remain leased for cooperative stop");
+});
+
 test("manual 待补充信息 pauses a task that was queued for development", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -484,6 +546,71 @@ test("poller resumes development when the user changes status back to 开发中"
     .prepare("SELECT id FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'")
     .first();
   assert.ok(job, "expected a queued develop job after resume");
+});
+
+test("manual resume clears one claimed-development pause result and queues one retry", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 4; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development", "development_needs_info"][index];
+    await dispatchTask(harness, `claimed-resume-${index}`, type, index + 1);
+  }
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "waiting_info",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:00.000Z",
+      fieldsHash: "claimed-paused",
+    },
+    readAt: "2026-08-04T00:00:00.000Z",
+  });
+  await harness.db
+    .prepare(
+      `INSERT INTO runner_jobs (
+        id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+      ) VALUES (?, ?, 'develop', ?, 'h', 'failed', ?, ?, ?)`,
+    )
+    .bind(
+      "claimed-paused-develop",
+      "auto-develop-task-1",
+      JSON.stringify({ taskId: "task-1", aggregateVersion: 3 }),
+      JSON.stringify({
+        status: "failed",
+        classification: "paused_waiting_info",
+        error: "stale develop job: task is in waiting_info at version 4",
+      }),
+      NOW,
+      NOW,
+    )
+    .run();
+  const versions = [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }];
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "开发中", version: "1.0.1" }),
+  ], versions);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.ok(result.commands.some((command) => command.type === "development_restarted"));
+  const oldFailure = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE id = 'claimed-paused-develop'")
+    .first();
+  assert.equal(oldFailure, null);
+  const queued = await harness.db
+    .prepare("SELECT COUNT(*) AS count FROM runner_jobs WHERE command_id = ? AND status = 'queued'")
+    .bind("auto-develop-task-1")
+    .first();
+  assert.equal(queued.count, 1);
+
+  await pollClickUpOnce(env, { now: NOW });
+  const queuedAfterRepeat = await harness.db
+    .prepare("SELECT COUNT(*) AS count FROM runner_jobs WHERE command_id = ? AND status = 'queued'")
+    .bind("auto-develop-task-1")
+    .first();
+  assert.equal(queuedAfterRepeat.count, 1, "manual resume must enqueue exactly once");
 });
 
 test("poller does not automatically requeue an ordinary failed development", async (t) => {

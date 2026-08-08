@@ -154,6 +154,58 @@ test("analysis with open questions blocks without advancing", async (t) => {
   assert.equal(aggregate.version, 2);
 });
 
+test("manual pause during Codex analysis prevents ClickUp writes and completion", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const sideEffects = [];
+  const result = await executeAnalysis({
+    job: {
+      id: "job-analysis-paused",
+      commandId: "auto-analyze-task-1",
+      jobType: "analyze",
+      payload: { taskId: "task-1", aggregateVersion: 1 },
+    },
+    db: harness.db,
+    client: makeClient({
+      postComment: async () => sideEffects.push("comment"),
+      updateTaskDescription: async () => sideEffects.push("description"),
+      updateCustomField: async () => sideEffects.push("field"),
+    }),
+    codex: {
+      run: async () => {
+        await dispatchCommand({
+          db: harness.db,
+          command: parseCommandEnvelope({
+            id: "manual-pause-during-analysis",
+            type: "analysis_needs_human",
+            aggregateType: "task",
+            aggregateId: "task-1",
+            expectedVersion: 2,
+            actorId: "system-poller",
+            issuedAt: NOW,
+            reason: "user moved task to waiting_info",
+            parameters: {},
+          }),
+          now: NOW,
+        });
+        return { exitCode: 0, stdout: validOutput(), stderr: "" };
+      },
+    },
+    now: NOW,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.classification, "paused_waiting_info");
+  assert.deepEqual(sideEffects, []);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  const completion = await harness.db
+    .prepare("SELECT id FROM orchestration_events WHERE type = 'task.analysis_completed'")
+    .first();
+  assert.equal(completion, null);
+});
+
 test("analysis rejects invalid structured output", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
