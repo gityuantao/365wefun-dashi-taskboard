@@ -124,6 +124,58 @@ Additional targeted verification:
 - Version/development ordering: 17 passed, 0 failed (`development-order`, `version-assignment`, and `version-gate`; `duration_ms 1003.204625`). These tests do not model relationship arrays in development-order.
 - Outbox: 5 passed, 0 failed (`duration_ms 989.521208`). The suite proves delivery and local confirmation, but does not verify `expected_before` or remote readback.
 
+### ORCH-P1-003 reproduction
+
+Exact read-only command using a mock D1/client boundary:
+
+```bash
+node --input-type=module <<'NODE'
+import { flushOutbox } from './orchestration/clickup/outbox.mjs';
+
+const sqlCalls = [];
+const row = {
+  id: 'stale-status',
+  object_type: 'task',
+  object_id: 'task-1',
+  field: 'status',
+  expected_before: '开发中',
+  target: JSON.stringify('待开发'),
+  actor: 'test',
+  status: 'pending',
+  expires_at: '2026-08-08T01:10:00.000Z',
+  created_at: '2026-08-08T01:00:00.000Z',
+};
+const db = {
+  prepare(sql) {
+    sqlCalls.push(sql.replace(/\s+/g, ' ').trim());
+    return {
+      all: async () => ({ results: [row] }),
+      bind() {
+        return { run: async () => ({ meta: { changes: 1 } }) };
+      },
+    };
+  },
+};
+const clientCalls = [];
+const client = {
+  getTask: async () => {
+    clientCalls.push(['getTask']);
+    return { status: { status: '已取消' } };
+  },
+  updateTaskStatus: async (id, status) => {
+    clientCalls.push(['updateTaskStatus', id, status]);
+  },
+};
+const result = await flushOutbox(db, client, {
+  now: '2026-08-08T01:01:00.000Z',
+  config: {},
+});
+console.log(JSON.stringify({ result, clientCalls, sqlCalls }, null, 2));
+NODE
+```
+
+Expected current output contains `clientCalls: [["updateTaskStatus","task-1","待开发"]]`, no `getTask` call, and `flushed: ["stale-status"]`. The remediation regression belongs in `test/orchestration/clickup-outbox.test.mjs` and must prove a mismatched current remote status prevents the update and confirmation.
+
 ## A. Inbox and external-task admission
 
 Entry → decision → side effect → observable result → recovery:
@@ -160,6 +212,54 @@ The relationship-array reproduction for ORCH-P1-002 returned:
 
 The same fixture with legacy string version values returned a block for the unfinished predecessor. Thus branch routing is correct only after an ordering gate that currently fails for the authoritative ClickUp relationship representation.
 
+Exact read-only reproduction command:
+
+```bash
+node --input-type=module <<'NODE'
+import { checkDevelopmentOrder } from './orchestration/application/development-order.mjs';
+
+const current = {
+  id: 'task-current',
+  priority: { priority: '2' },
+  date_created: '2026-08-08T01:00:00.000Z',
+  custom_fields: [{
+    id: 'field-version',
+    name: '目标版本',
+    value: [{ id: 'version-1', name: '1.0.1' }],
+  }],
+};
+const predecessor = {
+  id: 'task-predecessor',
+  priority: { priority: '1' },
+  date_created: '2026-08-08T00:00:00.000Z',
+  custom_fields: [{
+    id: 'field-version',
+    name: '目标版本',
+    value: [{ id: 'version-1', name: '1.0.1' }],
+  }],
+};
+let aggregateReads = 0;
+const result = await checkDevelopmentOrder({
+  db: {
+    prepare() {
+      aggregateReads += 1;
+      throw new Error('aggregate should be read for predecessor');
+    },
+  },
+  taskId: current.id,
+  client: {
+    getTask: async () => current,
+    getTasksByList: async () => [predecessor, current],
+  },
+  listId: 'tasks',
+  now: new Date().toISOString(),
+});
+console.log(JSON.stringify({ result, aggregateReads }));
+NODE
+```
+
+Expected current output: `{"result":{"blocked":false},"aggregateReads":0}`. The remediation regression belongs in `test/orchestration/development-order.test.mjs` and must expect `blocked: true` plus one predecessor aggregate read.
+
 ## D. Testing and acceptance rejection/retry
 
 1. Development completion enters `accepting`; the poller enqueues acceptance with the latest analysis criteria (`cloud/src/clickup-poller.mjs:142-179`).
@@ -175,7 +275,7 @@ The test/retry behavior is observable in aggregate events, rework blockers, comm
 2. Task PRs target the version branch, but production code never calls `mergeTaskPrToVersionBranch`; only its isolated unit test imports it.
 3. `freezeManifest` stores only `versionId`, task IDs, timestamp, and a checksum over those values (`orchestration/release/version-aggregator.mjs:53-78`). It contains no version-branch/RC commit, artifact identity, regression result, or immutable Candidate reference.
 4. When ClickUp version status becomes `releasing`, `releaseCoordinator` uses an in-memory deployer whose preflight and health checks always succeed and whose upload/switch methods only return fabricated metadata (`scripts/orchestrator.mjs:321-363`).
-5. `handleConfirmRelease` therefore writes `version.published` and publishes every manifest task (`orchestration/application/release-commands.mjs:49-93`). The coordinator then forcibly removes task worktrees/local branches, closes PRs, and deletes remote task branches (`scripts/orchestrator.mjs:364-385`).
+5. `handleConfirmRelease` therefore writes `version.published` and publishes every manifest task (`orchestration/application/release-commands.mjs:49-93`). The coordinator then force-removes each local task worktree and local task branch, closes the PR, and deletes the remote task branch ref (`scripts/orchestrator.mjs:364-385`). Closing a PR does not delete its PR record, and the hosting service may retain commit references; however, this flow records no immutable Candidate/manifest commit and therefore provides no guaranteed or recorded recovery point.
 6. There is no Candidate creation, version-level build/regression, staging-by-SHA, main promotion, or remote-state verification path. ORCH-P0-001 is the resulting hard stop.
 
 ## F. Polling idempotency, leases, restart, and stale jobs
@@ -191,7 +291,7 @@ The test/retry behavior is observable in aggregate events, rework blockers, comm
 1. Read models join ClickUp snapshots with aggregate state, runner results, blockers, manifests, and events (`orchestration/dashboard/queries.mjs:38-365`). Task list status favors the user-visible ClickUp snapshot while version status favors the aggregate.
 2. The Dashboard binds to `127.0.0.1`, exposes read/control routes, and writes control state atomically through a temporary file/rename (`orchestration/dashboard/http-server.mjs:36-189`; `orchestration/control.mjs:14-41`).
 3. Publishing verifies the local read model is releasable, then enqueues a ClickUp version-status mutation (`orchestration/dashboard/http-server.mjs:96-147`). The mutation is the observable trigger consumed by the release coordinator.
-4. The standalone server has no authentication or Host/Origin validation. The existing test invokes a bare POST and receives 200 (`test/orchestration/dashboard-http.test.mjs:85-123`). A client able to reach loopback can send a cross-origin POST even when it cannot read the response. That can trigger the release path and is ORCH-P1-005.
+4. The standalone server is an unauthenticated loopback mutation endpoint with no Host/Origin validation. The existing test invokes a bare POST and receives 200 (`test/orchestration/dashboard-http.test.mjs:85-123`). Any local process that can reach the loopback port can trigger the release mutation. Whether a remote web page can exploit the endpoint cross-origin is environment-dependent (browser Private Network Access, mixed-content, and request-origin policies differ), so browser exploitability is not required for ORCH-P1-005.
 
 ## H. Server shutdown, secrets, and local-network boundary
 
@@ -204,11 +304,11 @@ The test/retry behavior is observable in aggregate events, rework blockers, comm
 
 | ID | priority | path | evidence | impact | verification | remediation |
 |---|---|---|---|---|---|---|
-| ORCH-P0-001 | P0 | `scripts/orchestrator.mjs:321-385`; `orchestration/application/release-commands.mjs:49-93`; `orchestration/release/version-aggregator.mjs:53-78`; `orchestration/git/merge.mjs:7-27` | The live coordinator injects always-success placeholder deploy methods, the manifest has no commit/Candidate, and the only merge helper has no production caller. A returned success marks version/tasks published and then closes/deletes task PR branches. | ClickUp and Git remotes can report a production release that never integrated or deployed task code; cleanup can remove the remaining remote task branch/PR evidence. This is an irreversible/remote false-release path. | `rg -n "mergeTaskPrToVersionBranch|preflight: async|upload: async|switchEntry: async|healthCheck: async|removeTaskWorktree|closeTaskPullRequest|deleteRemoteTaskBranch|release_succeeded|publish_task" orchestration scripts test/orchestration` shows the merge helper only in its unit test and the placeholder/cleanup chain in the runtime. The release unit suites pass only with mock deployers (11/11 targeted tests). | Disable release triggering/cleanup until a reviewed integration flow merges verified task PR heads into `version/<target>`, freezes an immutable Candidate commit/artifact plus version-level regression evidence, promotes that exact Candidate, verifies remote deployment, and only then publishes/cleans branches. |
+| ORCH-P0-001 | P0 | `scripts/orchestrator.mjs:321-385`; `orchestration/application/release-commands.mjs:49-93`; `orchestration/release/version-aggregator.mjs:53-78`; `orchestration/git/merge.mjs:7-27` | The live coordinator injects always-success placeholder deploy methods, the manifest has no commit/Candidate, and the only merge helper has no production caller. A returned success marks version/tasks published, force-removes the local task worktree/local branch, closes the PR, and deletes the remote task branch ref. | ClickUp and Git remotes can report a production release that never integrated or deployed task code. The PR record may retain commit references after closure, but the flow preserves no immutable Candidate/manifest commit, so recovery from deleted local/remote task branch refs is neither guaranteed nor recorded. The reachable false-publish plus ref cleanup remains an irreversible/remote P0 path. | `rg -n "mergeTaskPrToVersionBranch|preflight: async|upload: async|switchEntry: async|healthCheck: async|removeTaskWorktree|closeTaskPullRequest|deleteRemoteTaskBranch|release_succeeded|publish_task" orchestration scripts test/orchestration` shows the merge helper only in its unit test and the placeholder/cleanup chain in the runtime. The release unit suites pass only with mock deployers (11/11 targeted tests). | Disable release triggering/ref cleanup until a reviewed integration flow merges verified task PR heads into `version/<target>`, freezes an immutable Candidate commit/artifact plus version-level regression evidence, promotes that exact Candidate, verifies remote deployment, and only then closes PRs/removes branch refs. |
 | ORCH-P1-002 | P1 | `orchestration/application/development-order.mjs:12-16,38-50` | `targetVersionOf` returns raw ClickUp field values and compares them with `===`. The authoritative value is a fresh relationship array for each task, so equal versions do not compare equal. | Higher-priority unfinished siblings are omitted; same-version development can run out of order, invalidating the claimed baseline/dependency sequencing. | A read-only Node reproduction with two distinct `[{id:"version-1",name:"1.0.1"}]` arrays returned `{"blocked":false,"aggregateReads":0}`. The same fixture using legacy strings returned `blocked:true`. The 17 passing version/order tests cover strings but not relationship arrays. | Normalize with the same `targetVersionName`/configured field helper used by assignment/gating, and add a relationship-array regression proving an unfinished predecessor blocks. |
-| ORCH-P1-003 | P1 | `orchestration/clickup/outbox.mjs:54-79`; `cloud/src/clickup-poller.mjs:516-526`; `cloud/migrations/0004_outbox_mutations.sql:1` | Mutations persist `expected_before`, but `flushOutbox` never reads or compares it and marks confirmed immediately after the update call, without ClickUp readback. | A queued stale mutation can overwrite a newer manual ClickUp status (for example, restore `待开发` after the user canceled/moved the task), causing state drift and unintended re-entry. Unknown outcomes can also be blindly retried. | A mock flush with `expected_before="开发中"` and a simulated current remote status `已取消` made no `getTask` call, still called `updateTaskStatus(task-1, "待开发")`, and returned the mutation as flushed/confirmed. Existing outbox tests pass 5/5 but do not assert precondition/readback. | Before execution, read/normalize the authoritative remote value and compare it with `expected_before`; classify conflict/unknown separately. After write, read back the target before confirmation. Retry only operations with proven safe/idempotent semantics. |
+| ORCH-P1-003 | P1 | `orchestration/clickup/outbox.mjs:54-79`; `cloud/src/clickup-poller.mjs:516-526`; `cloud/migrations/0004_outbox_mutations.sql:1` | Mutations persist `expected_before`, but `flushOutbox` never reads or compares it and marks confirmed immediately after the update call, without ClickUp readback. | A queued stale mutation can overwrite a newer manual ClickUp status (for example, restore `待开发` after the user canceled/moved the task), causing state drift and unintended re-entry. Unknown outcomes can also be blindly retried. | The exact read-only mock command under "ORCH-P1-003 reproduction" makes no `getTask` call, still calls `updateTaskStatus(task-1, "待开发")`, and reports the stale mutation flushed/confirmed. Existing outbox tests pass 5/5 but do not assert precondition/readback. | Before execution, read/normalize the authoritative remote value and compare it with `expected_before`; classify conflict/unknown separately. After write, read back the target before confirmation. Retry only operations with proven safe/idempotent semantics. |
 | ORCH-P1-004 | P1 | `scripts/orchestrator.mjs:279-285,539-598`; `orchestration/runner/codex-runner.mjs:20-51`; `orchestration/persistence/d1-runner-jobs.mjs:32-102` | Jobs run detached from the tick (`void runJob`); startup resets all claimed jobs, including unexpired ones; there is no shutdown/drain/child cancellation. Fencing is checked only when recording the job result. | After stop/crash/restart, an orphan Codex/Git/ClickUp execution may continue while the reset job runs again, causing duplicate development or remote side effects. | Static lifecycle search finds SIG handlers only in `server/index.mjs`, while the orchestrator ends with `recoverOrphanedLeases`, `tick`, and `setInterval`. Lease tests prove stale completion rejection but do not fence side effects. | Add orchestrator shutdown state, stop scheduling, cancel/await active runners, close Dashboard/Miniflare, and recover only expired leases. Thread a fencing/abort check through every pre-side-effect boundary and reconcile remote facts before retry. |
-| ORCH-P1-005 | P1 | `orchestration/dashboard/http-server.mjs:36-47,96-147,181-189`; `test/orchestration/dashboard-http.test.mjs:85-123` | The loopback Dashboard accepts publish POSTs without authentication or Host/Origin validation. The existing test proves a bare POST immediately enqueues the releasing mutation. | An untrusted local client, DNS-rebinding origin, or browser/runtime that permits a cross-origin loopback POST can trigger a version release without user authorization. | Code review finds no request-origin/secret check before `enqueueMutation`; the Dashboard test confirms status 200 and a persisted `发布中` mutation without credentials. | Require an unguessable session/CSRF token and validate Host/Origin/Sec-Fetch-Site for control mutations, or remove direct mutations from the standalone listener and accept them only through the main server's loopback-validated proxy. |
+| ORCH-P1-005 | P1 | `orchestration/dashboard/http-server.mjs:36-47,96-147,181-189`; `test/orchestration/dashboard-http.test.mjs:85-123` | The standalone Dashboard is an unauthenticated loopback mutation endpoint and accepts publish POSTs without Host/Origin validation. The existing test proves a bare POST immediately enqueues the releasing mutation. | Any untrusted local process with loopback access can trigger a version release without authorization. Browser cross-origin exploitability is environment-dependent and is not assumed as proof. | Code review finds no request-origin/secret check before `enqueueMutation`; the Dashboard test confirms status 200 and a persisted `发布中` mutation without credentials. | Require an unguessable local session/CSRF token and validate Host/Origin/Sec-Fetch-Site for control mutations, or remove direct mutations from the standalone listener and accept them only through the main server's loopback-validated proxy. |
 | ORCH-P2-006 | P2 | `test/orchestration/mvp-e2e.test.mjs:315-336`; `cloud/src/clickup-poller.mjs:285-320`; `orchestration/ai/developer.mjs:123-163` | The deterministic test still expects aggregate version 0 after the poller imports an external `待开发` task (versions 1-2), development starts (3), and failure rollback is recorded (4). | The mandated orchestration suite is red and cannot serve as a release/dashboard regression baseline, although the final state correctly returns to `ready_for_development`. | Full suite 209/210; recovery subset 40/41; isolated reproduction 0/1, always actual 4 versus expected 0. `git show 5bea561 -- cloud/src/clickup-poller.mjs test/orchestration/mvp-e2e.test.mjs` shows external-import behavior was added without updating this assertion. | Amend the test to assert the intended final state and exact event/version sequence for imported-task failure. Do not erase the rollback event merely to preserve version 0. |
 | ORCH-P2-007 | P2 | `orchestration/runner/companion.mjs:23-50`; `scripts/companion.mjs:12-19` | `runCompanionOnce` posts `completed` for a handler that returns `{status:"failed"}`; only a thrown error posts failed. The shipped companion script supplies no handlers, so a claimed job throws instead of executing orchestration work. | The generic/cloud companion contract can misclassify domain failures and the shipped script cannot process a real job. The integrated local orchestrator is not affected because it maps `result.status` itself. | Source trace plus passing companion tests show only successful returns and thrown errors are distinguished; there is no returned-failure test. | Map handler result status explicitly, require a callable handler before claim or ship real handlers, and add returned-failure coverage. |
 

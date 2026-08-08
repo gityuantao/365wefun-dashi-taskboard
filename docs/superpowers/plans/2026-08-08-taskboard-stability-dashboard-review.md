@@ -285,6 +285,152 @@ git commit -m "docs: record taskboard orchestration review"
 
 ---
 
+### Mandatory remediation block: resolve Task 3 P0/P1 before Tasks 4–8
+
+Task 3 gate is `STOP`. None of Tasks 4–8 may start until every remediation below is implemented in order, its named regression command passes, an evidence review confirms the finding is closed, and the user explicitly re-approves reopening Dashboard work. Product-code execution of this block also requires the user's approval of this amended plan; the amendment itself does not authorize the fixes.
+
+#### Task 3R1: Stop false publishing and preserve an immutable Candidate (ORCH-P0-001)
+
+**Files:**
+- Modify: `scripts/orchestrator.mjs`
+- Modify: `orchestration/application/release-commands.mjs`
+- Modify: `orchestration/release/version-aggregator.mjs`
+- Modify: `orchestration/git/merge.mjs`
+- Create: `test/orchestration/release-coordinator.test.mjs`
+- Modify: `test/orchestration/release-commands.test.mjs`
+- Modify: `test/orchestration/version-aggregator.test.mjs`
+- Modify: `test/orchestration/git-merge.test.mjs`
+
+**Required regression contracts:**
+- A version cannot become `published` when the task PRs have not been integrated into `version/<target>`, no immutable Candidate commit is frozen, the deployer is missing/placeholder, version-level regression evidence is absent, or remote deployment readback is not confirmed.
+- The frozen manifest records the exact Candidate commit, version branch, included task PR heads, artifact identity, and regression evidence.
+- Failure before confirmed publication must not close the PR or remove local worktrees/local branches/remote branch refs.
+- Successful cleanup occurs only after the exact frozen Candidate is confirmed deployed and published; the PR is closed, while local worktree/local branch/remote branch refs may then be removed under the recorded cleanup result.
+
+**Commands:**
+
+```bash
+node --test \
+  test/orchestration/release-coordinator.test.mjs \
+  test/orchestration/release-commands.test.mjs \
+  test/orchestration/version-aggregator.test.mjs \
+  test/orchestration/git-merge.test.mjs \
+  test/orchestration/web-adapter.test.mjs
+rg -n "mergeTaskPrToVersionBranch|candidateCommit|regressionEvidence|removeTaskWorktree|closeTaskPullRequest|deleteRemoteTaskBranch" \
+  scripts/orchestrator.mjs orchestration test/orchestration
+```
+
+#### Task 3R2: Normalize ClickUp relationship values in development order (ORCH-P1-002)
+
+**Files:**
+- Modify: `orchestration/application/development-order.mjs`
+- Modify: `test/orchestration/development-order.test.mjs`
+
+**Required regression contract:** two separately allocated ClickUp `list_relationship` arrays that refer to the same version must be treated as the same version, and an unfinished higher-priority sibling must block development.
+
+**Command:**
+
+```bash
+node --test test/orchestration/development-order.test.mjs test/orchestration/version-gate.test.mjs
+```
+
+#### Task 3R3: Enforce outbox preconditions and remote confirmation (ORCH-P1-003)
+
+**Files:**
+- Modify: `orchestration/clickup/outbox.mjs`
+- Modify: `orchestration/clickup/client.mjs`
+- Modify: `test/orchestration/clickup-outbox.test.mjs`
+- Modify: `test/orchestration/clickup-client.test.mjs`
+
+**Required regression contracts:**
+- A remote value that no longer equals `expected_before` must not be overwritten or marked confirmed.
+- A successful write is confirmed only after normalized remote readback equals the target.
+- A transport failure with unknown outcome is reconciled before retry; it is not blindly replayed.
+
+**Command:**
+
+```bash
+node --test test/orchestration/clickup-outbox.test.mjs test/orchestration/clickup-client.test.mjs
+```
+
+#### Task 3R4: Drain jobs and recover only safe leases (ORCH-P1-004)
+
+**Files:**
+- Modify: `scripts/orchestrator.mjs`
+- Modify: `orchestration/runner/codex-runner.mjs`
+- Modify: `orchestration/persistence/d1-runner-jobs.mjs`
+- Create: `test/orchestration/orchestrator-lifecycle.test.mjs`
+- Modify: `test/orchestration/codex-runner.test.mjs`
+- Modify: `test/orchestration/runner-jobs.test.mjs`
+
+**Required regression contracts:**
+- SIGINT/SIGTERM stops new claims, cancels or drains active Codex runs, awaits job settlement, closes Dashboard/Miniflare, and clears the polling interval.
+- Restart never resets a live, unexpired claim; only expired/reconciled jobs can be requeued.
+- A stale fencing token is checked before every Git/GitHub/ClickUp side-effect boundary, not only at result completion.
+
+**Command:**
+
+```bash
+node --test \
+  test/orchestration/orchestrator-lifecycle.test.mjs \
+  test/orchestration/codex-runner.test.mjs \
+  test/orchestration/runner-jobs.test.mjs
+```
+
+#### Task 3R5: Authorize standalone loopback mutations (ORCH-P1-005)
+
+**Files:**
+- Modify: `orchestration/dashboard/http-server.mjs`
+- Modify: `scripts/orchestrator.mjs`
+- Modify: `server/app.mjs`
+- Modify: `test/orchestration/dashboard-http.test.mjs`
+- Modify: `test/orchestration/control-http.test.mjs`
+- Modify: `test/server.test.mjs`
+
+**Required regression contracts:**
+- Unauthenticated direct loopback `POST .../publish` and `PUT .../control` requests are rejected and create no mutation/control write.
+- The main server's loopback-validated proxy can authorize those mutations with a per-process secret that is not returned by read APIs.
+- Valid authenticated requests preserve current success/error semantics. Browser cross-origin exploitability is environment-dependent and is not the acceptance criterion; the invariant is authorization of every mutation request.
+
+**Command:**
+
+```bash
+node --test \
+  test/orchestration/dashboard-http.test.mjs \
+  test/orchestration/control-http.test.mjs \
+  test/server.test.mjs
+```
+
+#### Task 3R6: Restore the orchestration regression gate
+
+**Files:**
+- Modify: `test/orchestration/mvp-e2e.test.mjs`
+
+**Required regression contract:** the failed-development scenario asserts the intended final `ready_for_development` state and exact four-event/version sequence after external admission, start, and rollback; it must not require aggregate version zero.
+
+**Commands:**
+
+```bash
+node --test --test-name-pattern='failed development blocks without advancing the task' \
+  test/orchestration/mvp-e2e.test.mjs
+pnpm test:orchestration
+```
+
+#### Mandatory evidence review and human re-approval checkpoint
+
+After Tasks 3R1–3R6, rerun every command above plus:
+
+```bash
+pnpm typecheck
+pnpm build
+pnpm test:orchestration
+git diff --check
+```
+
+Update `docs/superpowers/reviews/2026-08-08-taskboard-orchestration-review.md` with the exact outputs and one closure row per P0/P1. An independent review must confirm there is no remaining P0/P1 and that the release path has no placeholder external side effect. Then stop and ask the user to review the evidence and explicitly approve reopening Tasks 4–8. Silence, test success, or reviewer approval alone does not reopen the gate.
+
+---
+
 ### Task 4: Add stale-response protection to Dashboard loading
 
 **Files:**
