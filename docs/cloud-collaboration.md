@@ -31,15 +31,15 @@ When cloud mode is active, the cloud is the only business-data source. A failed 
 Install dependencies and build the frontend:
 
 ```bash
-npm ci
-npm run build:web
+pnpm install --frozen-lockfile
+pnpm build:web
 ```
 
 Create an ignored `.dev.vars` file containing a local-only value for `TASKBOARD_SHARED_SECRET`, apply the D1 migration to Wrangler's local state, and start the Worker:
 
 ```bash
-npm run cloud:migrate:local
-npm run dev:cloud
+pnpm cloud:migrate:local
+pnpm dev:cloud
 ```
 
 Open the printed loopback URL. The browser shows its native Basic Authentication prompt. Enter any local actor name as the username and the value from `.dev.vars` as the password.
@@ -67,15 +67,15 @@ npx wrangler r2 bucket create codex-taskboard-attachments
 Apply the remote D1 migration and validate the deployment bundle:
 
 ```bash
-npm run cloud:migrate
-npm run cloud:deploy:dry-run
+pnpm cloud:migrate
+pnpm cloud:deploy:dry-run
 ```
 
 Set the shared password through Wrangler's private interactive prompt after the database schema is ready. Do not put the value in `wrangler.jsonc`, a shell command, a log, or a committed file. Then deploy the production Worker:
 
 ```bash
 npx wrangler secret put TASKBOARD_SHARED_SECRET
-npm run cloud:deploy
+pnpm cloud:deploy
 ```
 
 These commands create or update Cloudflare resources. This repository contains the production D1 database ID for the binding, but it does not contain the shared password or any API or OAuth token. Keep those credentials out of Git; cloning the repository does not grant access or mean the Worker has already been deployed.
@@ -95,25 +95,25 @@ The owner follows this device setup too, using the owner's own actor name and ch
 
 ```bash
 git pull --ff-only
-npm ci
-npm run build:web
+pnpm install --frozen-lockfile
+pnpm build:web
 ```
 
 Start the local companion:
 
 ```bash
-CODEX_TASKBOARD_HOST=127.0.0.1 npm start
+CODEX_TASKBOARD_HOST=127.0.0.1 pnpm start
 ```
 
 In a second terminal, configure cloud mode. Use the deployed HTTPS Worker origin, choose the actor name that should appear on their actions, and enter the shared password only at the private `Shared key:` prompt:
 
 ```bash
-npm run taskctl -- cloud login \
+pnpm taskctl -- cloud login \
   --url https://YOUR-WORKER-ORIGIN \
   --actor-name "FRIEND-DISPLAY-NAME"
 
-npm run taskctl -- cloud status
-npm run taskctl -- project list
+pnpm taskctl -- cloud status
+pnpm taskctl -- project list
 ```
 
 The shared password is not part of the command and is not echoed by the prompt.
@@ -121,7 +121,7 @@ The shared password is not part of the command and is not echoed by the prompt.
 For every cloud project used with Codex, map its project ID to that friend's own absolute checkout path:
 
 ```bash
-npm run taskctl -- project map PROJECT_ID \
+pnpm taskctl -- project map PROJECT_ID \
   --workspace-path /absolute/path/on/their/device
 ```
 
@@ -130,10 +130,10 @@ The owner runs the same mapping command with the owner's own path. Mappings are 
 Launch the injected Codex window:
 
 ```bash
-CODEX_TASKBOARD_HOST=127.0.0.1 npm run codex
+CODEX_TASKBOARD_HOST=127.0.0.1 pnpm codex
 ```
 
-`npm run codex` reuses or starts the loopback companion. Keep it running while using the embedded board. The companion supplies local Codex/Git/Skill/MCP capabilities and sends the shared password to the Worker only in the HTTPS Basic `Authorization` header. It does not write that password to D1 or R2, return it to the browser UI, or print it in logs. Device paths also stay off Cloudflare.
+`pnpm codex` reuses or starts the loopback companion. Keep it running while using the embedded board. The companion supplies local Codex/Git/Skill/MCP capabilities and sends the shared password to the Worker only in the HTTPS Basic `Authorization` header. It does not write that password to D1 or R2, return it to the browser UI, or print it in logs. Device paths also stay off Cloudflare.
 
 Do not point `CODEX_TASKBOARD_URL` directly at the cloud origin for this workflow. `taskctl` talks to the loopback companion, which applies Basic Authentication and the device's local project mapping. If the companion uses a non-default loopback port, set `CODEX_TASKBOARD_COMPANION_URL` to that loopback origin.
 
@@ -163,7 +163,7 @@ Because both collaborators share one password, rotation affects both at once. Th
 The migration tool takes a consistent SQLite snapshot with `VACUUM INTO`, removes structured device-only paths, exports attachment hashes, and writes a private bundle. The default local paths are:
 
 ```bash
-npm run cloud:data -- export \
+pnpm cloud:data -- export \
   --database .data/taskboard.sqlite \
   --attachments .data/attachments \
   --output cloud-migration-exports/initial
@@ -171,16 +171,16 @@ npm run cloud:data -- export \
 
 The output directory contains issue content and attachment bytes. It is mode-restricted and ignored by Git, but it must still be handled as private data. This export is optional when starting with an empty cloud board.
 
-Before importing, authenticate Wrangler, provision the named D1 and R2 resources, and run `npm run cloud:migrate` so the remote D1 schema exists. The target D1 must contain no projects, and none of the bundle's attachment keys may already exist in R2. Import refuses a non-empty target instead of merging or overwriting it.
+Before importing, authenticate Wrangler, provision the named D1 and R2 resources, and run `pnpm cloud:migrate` so the remote D1 schema exists. The target D1 must contain no projects, and none of the bundle's attachment keys may already exist in R2. Import refuses a non-empty target instead of merging or overwriting it.
 
 Run the one-time Wrangler adapter with an explicit remote-operation acknowledgement:
 
 ```bash
-TASKBOARD_MIGRATION_REMOTE=1 npm run cloud:data -- import \
+TASKBOARD_MIGRATION_REMOTE=1 pnpm cloud:data -- import \
   --bundle cloud-migration-exports/initial \
   --adapter ./scripts/wrangler-cloud-adapter.mjs
 
-TASKBOARD_MIGRATION_REMOTE=1 npm run cloud:data -- verify \
+TASKBOARD_MIGRATION_REMOTE=1 pnpm cloud:data -- verify \
   --bundle cloud-migration-exports/initial \
   --adapter ./scripts/wrangler-cloud-adapter.mjs
 ```
