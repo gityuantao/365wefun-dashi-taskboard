@@ -5,6 +5,7 @@ import { loadClickUpConfig } from "../../orchestration/clickup/config-registry.m
 import { dispatchCommand } from "../../orchestration/application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
 import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-store.mjs";
+import { saveSnapshot } from "../../orchestration/clickup/snapshot.mjs";
 import { pollClickUpOnce } from "../../cloud/src/clickup-poller.mjs";
 
 const NOW = "2026-08-04T00:00:10.000Z";
@@ -389,6 +390,40 @@ test("poller does not automatically requeue an ordinary failed development", asy
   assert.equal(queued, null, "ordinary failure must remain blocked until an explicit manual retry");
 });
 
+test("poller retries a development-order waiting job after the retry window", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await dispatchTask(harness, "waiting-order-start", "start_analysis", 1);
+  await dispatchTask(harness, "waiting-order-ready", "analysis_completed", 2);
+  await harness.db
+    .prepare(
+      `INSERT INTO runner_jobs (
+        id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+      ) VALUES (?, ?, 'develop', '{}', 'h', 'failed', ?, ?, ?)`,
+    )
+    .bind(
+      "task-1-develop-2",
+      "auto-develop-task-1",
+      JSON.stringify({ error: "waiting: predecessor task task-0 has not finished development" }),
+      NOW,
+      NOW,
+    )
+    .run();
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+
+  await pollClickUpOnce(env, { now: "2026-08-04T00:06:10.000Z" });
+
+  const job = await harness.db
+    .prepare("SELECT status FROM runner_jobs WHERE id = ?")
+    .bind("task-1-develop-2")
+    .first();
+  assert.equal(job.status, "queued", "development-order waiting should be retried automatically");
+});
+
 test("moving an ordinarily failed task from 待开发 to 开发中 allows one manual retry", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -420,6 +455,44 @@ test("moving an ordinarily failed task from 待开发 to 开发中 allows one ma
     .bind("auto-develop-task-1")
     .first();
   assert.equal(queuedAfterRepeatPoll.count, 1, "unchanged status must not add another retry");
+});
+
+test("a stale developing ClickUp snapshot does not release an ordinary failure block", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedOrdinaryDevelopmentFailure(harness);
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "developing",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:00.000Z",
+      fieldsHash: "stale-developing",
+    },
+    readAt: "2026-08-04T00:00:00.000Z",
+  });
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "开发中", version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.equal(result.commands.some((command) => command.type === "start_development"), false);
+  const failed = await harness.db
+    .prepare("SELECT COUNT(*) AS count FROM runner_jobs WHERE command_id = ? AND status = 'failed'")
+    .bind("auto-develop-task-1")
+    .first();
+  assert.equal(failed.count, 1, "sync lag must not clear the failure record");
+  const queued = await harness.db
+    .prepare("SELECT COUNT(*) AS count FROM runner_jobs WHERE command_id = ? AND status = 'queued'")
+    .bind("auto-develop-task-1")
+    .first();
+  assert.equal(queued.count, 0, "sync lag must not queue a retry");
 });
 
 test("poller routes a rejected task back to rework when user moves it to 待开发", async (t) => {

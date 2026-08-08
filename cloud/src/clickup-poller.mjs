@@ -89,6 +89,7 @@ async function clearOrdinaryDevelopmentFailures(db, taskId) {
       `DELETE FROM runner_jobs
        WHERE command_id = ? AND status = 'failed'
          AND COALESCE(result, '') NOT LIKE '%waiting_version%'
+         AND COALESCE(result, '') NOT LIKE '%waiting:%'
          AND COALESCE(result, '') NOT LIKE '%needs_human%'
          AND COALESCE(result, '') NOT LIKE '%needs_info%'`,
     )
@@ -127,6 +128,7 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
         `SELECT id FROM runner_jobs
          WHERE command_id = ? AND status = 'failed'
            AND COALESCE(result, '') NOT LIKE '%waiting_version%'
+           AND COALESCE(result, '') NOT LIKE '%waiting:%'
            AND COALESCE(result, '') NOT LIKE '%needs_human%'
            AND COALESCE(result, '') NOT LIKE '%needs_info%'
          ORDER BY completed_at DESC, created_at DESC LIMIT 1`,
@@ -255,26 +257,12 @@ export async function pollClickUpOnce(env, {
     }
     processed += 1;
     let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
-  if (aggregate.state === "ready_for_development" && snapshot.status === "developing") {
-    await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind("acceptance-paused-" + snapshot.id).run();
-    await clearOrdinaryDevelopmentFailures(env.DB, snapshot.id);
-    const startId = "poller-start-dev-" + snapshot.id + "-" + (aggregate.version + 1);
-    if (!(await loadCommandResult(env.DB, startId))) {
-      const start = parseCommandEnvelope({
-        id: startId,
-        type: "start_development",
-        aggregateType: "task",
-        aggregateId: snapshot.id,
-        expectedVersion: aggregate.version + 1,
-        actorId: "system-poller",
-        issuedAt: now,
-        reason: "user moved task to 开发中",
-        parameters: {},
-      });
-      commands.push(await runCommand(env, start, now, config));
-    }
-    aggregate = await loadAggregate(env.DB, "task", snapshot.id);
-  }
+    const manualDevelopmentStart = confirmed?.status === "ready_for_development"
+      && changes.some((change) => (
+        change.field === "status"
+        && change.from === "ready_for_development"
+        && change.to === "developing"
+      ));
 
     // 等待补充信息的任务：用户回复并把状态改回「分析中/开发中」后，自动恢复
     if (aggregate.state === "waiting_info" && snapshot.status !== "waiting_info") {
@@ -293,7 +281,9 @@ export async function pollClickUpOnce(env, {
         .bind(`auto-analyze-${snapshot.id}`)
         .run();
     }
-    await handleStatusDrivenFlow(env, snapshot, now, commands, config);
+    await handleStatusDrivenFlow(env, snapshot, now, commands, config, {
+      manualDevelopmentStart,
+    });
     await ensureInboxAnalysis(env, snapshot, now, commands, config);
     await ensureExternalTaskImport(env, snapshot, now, commands, config);
     await ensureStateJob(env, snapshot, now, currentDevVersion);
@@ -375,10 +365,21 @@ async function ensureInboxAnalysis(env, snapshot, now, commands, config) {
   commands.push(started);
 }
 
-async function handleStatusDrivenFlow(env, snapshot, now, commands, config) {
+async function handleStatusDrivenFlow(
+  env,
+  snapshot,
+  now,
+  commands,
+  config,
+  { manualDevelopmentStart = false } = {},
+) {
 
   let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
-  if (aggregate.state === "ready_for_development" && snapshot.status === "developing") {
+  if (
+    manualDevelopmentStart
+    && aggregate.state === "ready_for_development"
+    && snapshot.status === "developing"
+  ) {
     await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind("acceptance-paused-" + snapshot.id).run();
     await clearOrdinaryDevelopmentFailures(env.DB, snapshot.id);
     const startId = "poller-start-dev-" + snapshot.id + "-" + (aggregate.version + 1);

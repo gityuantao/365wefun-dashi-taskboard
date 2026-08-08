@@ -242,6 +242,61 @@ test("unexpected development failure posts a short redacted diagnostic after rol
   assert.doesNotMatch(failureComment, /super-secret-value/);
 });
 
+test("rollback diagnostics redact common credential formats", async (t) => {
+  const cases = [
+    {
+      name: "quoted JSON credentials",
+      message: 'request failed: {"token":"json-token-secret","password":"json-password-secret"}',
+      secrets: ["json-token-secret", "json-password-secret"],
+    },
+    {
+      name: "quoted JSON Authorization bearer",
+      message: 'request failed: {"Authorization":"Bearer json-bearer-secret"}',
+      secrets: ["json-bearer-secret"],
+    },
+    {
+      name: "Authorization Basic header",
+      message: "request failed: Authorization: Basic dXNlcjpzdXBlci1zZWNyZXQ=",
+      secrets: ["dXNlcjpzdXBlci1zZWNyZXQ="],
+    },
+    {
+      name: "quoted API key assignment",
+      message: "request failed: api_key='quoted-api-secret'",
+      secrets: ["quoted-api-secret"],
+    },
+  ];
+
+  for (const credentialCase of cases) {
+    await t.test(credentialCase.name, async (subtest) => {
+      const harness = await createCloudWorkerHarness();
+      subtest.after(() => harness.dispose());
+      await setupTask(harness);
+      const comments = [];
+      await executeDevelopment({
+        job: JOB,
+        db: harness.db,
+        client: makeClient({
+          postComment: async (_taskId, body) => comments.push(body),
+        }),
+        codex: { run: async () => ({ exitCode: 0, stdout: validOutput(), stderr: "" }) },
+        gitOps: mockGitOps({
+          commitAll: async () => {
+            throw new Error(credentialCase.message);
+          },
+        }),
+        now: NOW,
+      });
+
+      const failureComment = comments.find((body) => String(body).includes("开发失败"));
+      assert.ok(failureComment);
+      assert.match(failureComment, /\[REDACTED\]/);
+      for (const secret of credentialCase.secrets) {
+        assert.equal(String(failureComment).includes(secret), false);
+      }
+    });
+  }
+});
+
 test("development worktree failure is reported without advancing", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
