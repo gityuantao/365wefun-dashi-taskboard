@@ -20,9 +20,9 @@ const CONFIG = loadClickUpConfig({
   taskStatusMap: { 收件箱: "inbox" },
   versionStatusMap: { 进行中: "active", 已发布: "published" },
   fields: {
-    task: { 目标版本: { id: "field-version", type: "short_text" } },
+    task: { 目标版本: { id: "field-version", type: "list_relationship" } },
     version: {},
-    taskSandbox: { 目标版本: { id: "field-version", type: "short_text" } },
+    taskSandbox: { 目标版本: { id: "field-version", type: "list_relationship" } },
     versionSandbox: {},
   },
 });
