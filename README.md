@@ -9,9 +9,9 @@ A local-first issue board that runs in a browser and can be embedded in Codex th
 ## Run locally
 
 ```bash
-npm install
-npm run build
-npm start
+pnpm install
+pnpm build
+pnpm start
 ```
 
 Open <http://127.0.0.1:47823>. The SQLite database is stored at `.data/taskboard.sqlite`.
@@ -19,7 +19,7 @@ Open <http://127.0.0.1:47823>. The SQLite database is stored at `.data/taskboard
 For development with live frontend reload:
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
 The Vite UI runs at <http://127.0.0.1:5173> and proxies API requests to the local service.
@@ -29,12 +29,12 @@ The Vite UI runs at <http://127.0.0.1:5173> and proxies API requests to the loca
 Run it from the project:
 
 ```bash
-npm run taskctl -- project create \
+pnpm taskctl -- project create \
   --id my-project \
   --name "My project" \
   --workspace-path /absolute/path/to/repository
 
-npm run taskctl -- issue create \
+pnpm taskctl -- issue create \
   --project my-project \
   --title "Implement the next slice" \
   --status todo \
@@ -42,7 +42,7 @@ npm run taskctl -- issue create \
   --labels product,mvp
 ```
 
-Use `npm link` if you want `taskctl` on your shell path. Set `CODEX_TASKBOARD_URL` to point the CLI at another local or LAN service. Cloud deployments are configured through the loopback companion with `taskctl cloud login`.
+Use `pnpm link --global` if you want `taskctl` on your shell path. Set `CODEX_TASKBOARD_URL` to point the CLI at another local or LAN service. Cloud deployments are configured through the loopback companion with `taskctl cloud login`.
 
 ## Install the Codex Skill
 
@@ -71,7 +71,7 @@ After the new Codex window appears, run the injector in another terminal:
 
 ```bash
 CODEX_TASKBOARD_HOST=127.0.0.1 \
-npm run codex:inject -- --port 9231 --open
+pnpm codex:inject -- --port 9231 --open
 ```
 
 Keep the injector terminal running while using the embedded panel. The original Codex window remains unchanged, and the new window receives the Taskboard sidebar entry. If port `9231` is occupied, use another port in both commands.
@@ -81,7 +81,7 @@ Keep the injector terminal running while using the embedded panel. The original 
 Quit every running Codex window, then run:
 
 ```bash
-CODEX_TASKBOARD_HOST=127.0.0.1 npm run codex
+CODEX_TASKBOARD_HOST=127.0.0.1 pnpm codex
 ```
 
 This starts the local Taskboard service when needed, launches the official macOS Codex app with a loopback-only CDP port, injects a native-looking Taskboard entry after Plugins, and keeps watching both the service and replacement renderers. Opening Taskboard asks this launcher to health-check the fixed local service, restart it when needed, and rebuild a failed iframe. Keep this command running while using the embedded panel. The launcher does not modify `ChatGPT.app` or its `app.asar`.
@@ -91,7 +91,7 @@ Codex 26.715.52143 ships a renderer CSP that blocks arbitrary HTTP iframes. The 
 To inject into a Codex instance that was already launched with CDP by another method, run:
 
 ```bash
-npm run codex:inject -- --port 9229 --open
+pnpm codex:inject -- --port 9229 --open
 ```
 
 This command also stays resident so the injected tab can restart Taskboard after a service exit. Stop it with `Ctrl-C`.
@@ -111,7 +111,7 @@ To use a different UI origin, set `window.__CODEX_TASKBOARD_URL__` before the us
 | `CODEX_TASKBOARD_DATA_DIR` | `.data` | SQLite data directory |
 | `CODEX_TASKBOARD_URL` | `http://127.0.0.1:47823` | CLI API origin |
 
-`npm start` prints both the local URL and the available LAN URLs. Teammates on the same trusted network can open one of those LAN URLs and use the same taskboard service. Task, comment, and attachment changes are broadcast to every open client through server-sent events; reconnecting clients perform a full refresh so changes made while disconnected are not missed. A teammate using `taskctl` can point it at the shared service with `CODEX_TASKBOARD_URL=http://<host-ip>:47823`.
+`pnpm start` prints both the local URL and the available LAN URLs. Teammates on the same trusted network can open one of those LAN URLs and use the same taskboard service. Task, comment, and attachment changes are broadcast to every open client through server-sent events; reconnecting clients perform a full refresh so changes made while disconnected are not missed. A teammate using `taskctl` can point it at the shared service with `CODEX_TASKBOARD_URL=http://<host-ip>:47823`.
 
 LAN mode has no account authentication: anyone on the trusted local network who can reach the URL can read and write the taskboard. Public internet and cloud deployment require an authenticated deployment boundary.
 
@@ -126,7 +126,7 @@ See [Cloud collaboration](docs/cloud-collaboration.md) for owner deployment, exi
 ## Verify
 
 ```bash
-npm run check
+pnpm check
 ```
 
 This runs TypeScript checking, a production frontend build, and the server/CLI/injection test suite.
