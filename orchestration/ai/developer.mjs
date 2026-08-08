@@ -26,7 +26,17 @@ function concise(text, max = 60) {
   return clean.length > max ? clean.slice(0, max) : clean;
 }
 
-async function rollbackDevelopment({ db, client, taskId, jobId, now }) {
+function safeDiagnostic(reason) {
+  return concise(reason, 200)
+    .replace(/(bearer\s+)[^\s,;]+/gi, "$1[REDACTED]")
+    .replace(
+      /((?:api[_-]?key|token|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      "$1[REDACTED]",
+    )
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|pk_[A-Za-z0-9_-]{8,})\b/g, "[REDACTED]");
+}
+
+async function rollbackDevelopment({ db, client, taskId, jobId, now, reason }) {
   try {
     const current = await loadAggregate(db, "task", taskId);
     if (current.state !== "developing") return;
@@ -45,7 +55,12 @@ async function rollbackDevelopment({ db, client, taskId, jobId, now }) {
       }),
       now: new Date().toISOString(),
     });
-    const comment = stateChangeText("task", "developing", "ready_for_development");
+    const comment = stateChangeText(
+      "task",
+      "developing",
+      "ready_for_development",
+      safeDiagnostic(reason),
+    );
     if (comment) {
       try {
         await client.postComment(taskId, comment);
@@ -159,14 +174,22 @@ export async function executeDevelopment({
       taskId,
     });
     if (run.exitCode !== 0) {
-      await rollbackDevelopment({ db, client, taskId, jobId: job.id, now });
-      return { status: "failed", error: `codex exited ${run.exitCode}: ${run.stderr}` };
+      const reason = `codex exited ${run.exitCode}: ${run.stderr}`;
+      await rollbackDevelopment({ db, client, taskId, jobId: job.id, now, reason });
+      return { status: "failed", error: reason };
     }
     let parsed;
     try {
       parsed = JSON.parse(extractJson(run.stdout));
     } catch {
-      await rollbackDevelopment({ db, client, taskId, jobId: job.id, now });
+      await rollbackDevelopment({
+        db,
+        client,
+        taskId,
+        jobId: job.id,
+        now,
+        reason: "invalid JSON output",
+      });
       return { status: "failed", error: "invalid JSON output" };
     }
     if (parsed.needs_info === true) {
@@ -177,7 +200,14 @@ export async function executeDevelopment({
       return { status: "failed", error: `needs_info: ${reason}` };
     }
     if (typeof parsed.change_summary !== "string" || parsed.change_summary === "") {
-      await rollbackDevelopment({ db, client, taskId, jobId: job.id, now });
+      await rollbackDevelopment({
+        db,
+        client,
+        taskId,
+        jobId: job.id,
+        now,
+        reason: "missing change_summary",
+      });
       return { status: "failed", error: "missing change_summary" };
     }
     await gitOps.commitAll(worktree.worktreePath, `Task ${taskId}: ${parsed.change_summary}`);
@@ -215,7 +245,7 @@ export async function executeDevelopment({
       changeSummary: parsed.change_summary,
     };
   } catch (error) {
-    await rollbackDevelopment({ db, taskId, jobId: job.id, now });
+    await rollbackDevelopment({ db, client, taskId, jobId: job.id, now, reason: error.message });
     return { status: "failed", error: error.message };
   }
 }

@@ -285,6 +285,31 @@ git commit -m "docs: record taskboard orchestration review"
 
 ---
 
+### Priority hotfix: stop development-status flapping
+
+The user approved this hotfix before the mandatory remediation block after observing a task repeatedly moving between `待开发` and `开发中`.
+
+**Files:**
+- Modify: `cloud/src/clickup-poller.mjs`
+- Modify: `orchestration/ai/developer.mjs`
+- Modify: `test/orchestration/clickup-poller.test.mjs`
+- Modify: `test/orchestration/developer.test.mjs`
+
+**Required regression contracts:**
+- A normal failed `develop` runner job remains blocked across aggregate-version changes and is not automatically re-enqueued.
+- An explicit ClickUp status change from `待开发` to `开发中` clears that normal failure block and queues exactly one manual retry.
+- Existing `waiting_version`, `needs_human`, and `needs_info` parking/resume behavior remains unchanged.
+- Development rollback posts a concise diagnostic ClickUp comment, including for the top-level exception path, while redacting common secret forms.
+
+**Commands:**
+
+```bash
+node --test test/orchestration/developer.test.mjs test/orchestration/clickup-poller.test.mjs
+pnpm test:orchestration
+```
+
+---
+
 ### Mandatory remediation block: resolve Task 3 P0/P1 before Tasks 4–8
 
 Task 3 gate is `STOP`. None of Tasks 4–8 may start until every remediation below is implemented in order, its named regression command passes, an evidence review confirms the finding is closed, and the user explicitly re-approves reopening Dashboard work. Product-code execution of this block also requires the user's approval of this amended plan; the amendment itself does not authorize the fixes.

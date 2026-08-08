@@ -102,6 +102,33 @@ async function dispatchTask(harness, id, type, version, parameters = {}) {
   });
 }
 
+async function seedOrdinaryDevelopmentFailure(harness) {
+  for (let index = 0; index < 4; index += 1) {
+    const type = [
+      "start_analysis",
+      "analysis_completed",
+      "start_development",
+      "development_failed",
+    ][index];
+    const parameters = type === "development_failed" ? { evidenceId: "dev-fail-1" } : {};
+    await dispatchTask(harness, `ordinary-dev-failure-${index}`, type, index + 1, parameters);
+  }
+  await harness.db
+    .prepare(
+      `INSERT INTO runner_jobs (
+        id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+      ) VALUES (?, ?, 'develop', '{}', 'h', 'failed', ?, ?, ?)`,
+    )
+    .bind(
+      "task-1-develop-2",
+      "auto-develop-task-1",
+      JSON.stringify({ error: "codex exited 2: build failed" }),
+      NOW,
+      NOW,
+    )
+    .run();
+}
+
 test("poller processes tasks without requiring a managed flag", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -341,6 +368,58 @@ test("poller resumes development when the user changes status back to 开发中"
     .prepare("SELECT id FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'")
     .first();
   assert.ok(job, "expected a queued develop job after resume");
+});
+
+test("poller does not automatically requeue an ordinary failed development", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedOrdinaryDevelopmentFailure(harness);
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+
+  await pollClickUpOnce(env, { now: NOW });
+
+  const queued = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE command_id = ? AND status = 'queued'")
+    .bind("auto-develop-task-1")
+    .first();
+  assert.equal(queued, null, "ordinary failure must remain blocked until an explicit manual retry");
+});
+
+test("moving an ordinarily failed task from 待开发 to 开发中 allows one manual retry", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedOrdinaryDevelopmentFailure(harness);
+  const versions = [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ];
+
+  const waitingEnv = await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], versions);
+  await pollClickUpOnce(waitingEnv, { now: NOW });
+
+  const retryEnv = await makeEnv(harness, [
+    sandboxTask({ status: "开发中", version: "1.0.1" }),
+  ], versions);
+  const result = await pollClickUpOnce(retryEnv, { now: NOW });
+
+  assert.ok(result.commands.some((command) => command.type === "start_development"));
+  const queued = await harness.db
+    .prepare("SELECT COUNT(*) AS count FROM runner_jobs WHERE command_id = ? AND status = 'queued'")
+    .bind("auto-develop-task-1")
+    .first();
+  assert.equal(queued.count, 1, "explicit ClickUp status change should release one retry");
+
+  await pollClickUpOnce(retryEnv, { now: NOW });
+  const queuedAfterRepeatPoll = await harness.db
+    .prepare("SELECT COUNT(*) AS count FROM runner_jobs WHERE command_id = ? AND status = 'queued'")
+    .bind("auto-develop-task-1")
+    .first();
+  assert.equal(queuedAfterRepeatPoll.count, 1, "unchanged status must not add another retry");
 });
 
 test("poller routes a rejected task back to rework when user moves it to 待开发", async (t) => {

@@ -215,6 +215,33 @@ test("development failure leaves the task in ready for development", async (t) =
   assert.equal(aggregate.state, "ready_for_development");
 });
 
+test("unexpected development failure posts a short redacted diagnostic after rollback", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const comments = [];
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      postComment: async (_taskId, body) => comments.push(body),
+    }),
+    codex: { run: async () => ({ exitCode: 0, stdout: validOutput(), stderr: "" }) },
+    gitOps: mockGitOps({
+      commitAll: async () => {
+        throw new Error("git commit failed token=super-secret-value");
+      },
+    }),
+    now: NOW,
+  });
+
+  assert.equal(result.status, "failed");
+  const failureComment = comments.find((body) => String(body).includes("开发失败"));
+  assert.ok(failureComment, "rollback should leave a visible failure comment in ClickUp");
+  assert.match(failureComment, /git commit failed/);
+  assert.doesNotMatch(failureComment, /super-secret-value/);
+});
+
 test("development worktree failure is reported without advancing", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
