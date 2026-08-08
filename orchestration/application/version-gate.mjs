@@ -45,9 +45,23 @@ export function checkTaskVersionGate({ targetVersion, currentDevVersion }) {
   return { blocked: false, reason: null, waitingFor: null };
 }
 
+export function targetVersionName(value) {
+  // 目标版本 是 list_relationship 字段：ClickUp 返回 [{ id, name, ... }]，取第一个的 name
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value.trim() || null;
+  if (Array.isArray(value)) {
+    const name = value[0]?.name;
+    return typeof name === "string" && name.trim() ? name.trim() : null;
+  }
+  if (typeof value === "object" && typeof value.name === "string") {
+    return value.name.trim() || null;
+  }
+  return null;
+}
+
 export function targetVersionOfTask(task, config, taskListKey) {
   const field = fieldConfig(config, taskListKey, "目标版本");
-  return task.custom_fields?.find(
+  return targetVersionName(task.custom_fields?.find(
     (candidate) => candidate.id === field.id || candidate.name === "目标版本",
-  )?.value ?? null;
+  )?.value ?? null);
 }

@@ -1,4 +1,5 @@
 import { DomainError } from "../domain/errors.mjs";
+import { targetVersionName } from "../application/version-gate.mjs";
 import {
   fieldConfig,
   fieldId,
@@ -66,7 +67,7 @@ export function normalizeTask(payload, config, listKind = "task") {
   const clickupStatus = payload.status?.status === "to do" ? "收件箱" : payload.status?.status;
   const status = resolveTaskStatus(config, clickupStatus);
   const custom = customFieldMap(payload);
-  const targetVersion = toNullableString(
+  const targetVersion = targetVersionName(
     fieldValue(custom, fieldId(config, listKind, "目标版本")),
   );
   const assignee = toNullableString(

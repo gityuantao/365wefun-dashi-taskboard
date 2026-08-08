@@ -54,12 +54,12 @@ async function markNeedsHuman({ db, taskId, jobId, now, reason }) {
     aggregateId: taskId,
     expectedVersion: aggregate.version + 1,
     actorId: "runner-analyzer",
-    issuedAt: now,
+    issuedAt: new Date().toISOString(),
     reason,
     parameters: {},
   });
   try {
-    await dispatchCommand({ db, command, now });
+    await dispatchCommand({ db, command, now: new Date().toISOString() });
   } catch (error) {
     // 状态推进失败不掩盖 needs_human 结论；下一次恢复流程仍可处理
   }
@@ -172,12 +172,12 @@ export async function executeAnalysis({
     aggregateId: task.id,
     expectedVersion: aggregate.version + 1,
     actorId: "runner-analyzer",
-    issuedAt: now,
+    issuedAt: new Date().toISOString(),
     reason: "analysis completed",
     parameters: {},
   });
   try {
-    const result = await dispatchCommand({ db, command, now });
+    const result = await dispatchCommand({ db, command, now: new Date().toISOString() });
     return {
       status: "completed",
       commandId: result.commandId,

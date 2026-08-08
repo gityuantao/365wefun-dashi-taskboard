@@ -507,3 +507,43 @@ test("moving directly to 待开发 is treated as test failed", async (t) => {
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "ready_for_development");
 });
+
+test("poller imports external task placed directly in 待开发 and enqueues develop", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待开发" }),
+  ]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(result.processed, 1);
+  assert.equal(result.commands.length, 2);
+  assert.equal(result.commands[0].type, "start_analysis");
+  assert.equal(result.commands[1].type, "analysis_completed");
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "ready_for_development");
+  assert.equal(aggregate.version, 2);
+  const job = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE job_type = 'develop' AND payload LIKE '%task-1%' LIMIT 1")
+    .first();
+  assert.ok(job, "develop job should be enqueued for external task");
+  // 幂等：第二次轮询不再重复导入
+  const second = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(second.commands.length, 0);
+});
+
+test("poller imports external task placed directly in 开发中", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "开发中" }),
+  ]);
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(result.commands.length, 2);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "ready_for_development");
+  assert.equal(aggregate.version, 2);
+  const job = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE job_type = 'develop' AND payload LIKE '%task-1%' LIMIT 1")
+    .first();
+  assert.ok(job, "develop job should be enqueued");
+});

@@ -221,6 +221,7 @@ export async function pollClickUpOnce(env, {
     if (changes.length === 0) {
       await handleStatusDrivenFlow(env, snapshot, now, commands, config);
       await ensureInboxAnalysis(env, snapshot, now, commands, config);
+      await ensureExternalTaskImport(env, snapshot, now, commands, config);
       await ensureStateJob(env, snapshot, now, currentDevVersion);
       continue;
     }
@@ -265,6 +266,7 @@ export async function pollClickUpOnce(env, {
     }
     await handleStatusDrivenFlow(env, snapshot, now, commands, config);
     await ensureInboxAnalysis(env, snapshot, now, commands, config);
+    await ensureExternalTaskImport(env, snapshot, now, commands, config);
     await ensureStateJob(env, snapshot, now, currentDevVersion);
     await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });
   }
@@ -278,6 +280,43 @@ export async function pollClickUpOnce(env, {
   }
 
   return { processed, commands };
+}
+
+/**
+ * 外部导入：任务无聚合记录（从未进入编排流程），但用户已手动把状态放到
+ * 待开发/开发中（如补完信息后直接拖到开发）。系统按「已就绪任务」初始化聚合
+ * （inbox -> analyzing -> ready_for_development），使后续开发作业可正常执行。
+ * 仅限 ready_for_development / developing 两个状态；其它状态走正常流程。
+ */
+async function ensureExternalTaskImport(env, snapshot, now, commands, config) {
+  if (!["ready_for_development", "developing"].includes(snapshot.status)) return;
+  const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  if (aggregate.version !== 0) return;
+  const startId = `poller-import-start-${snapshot.id}`;
+  const doneId = `poller-import-done-${snapshot.id}`;
+  if (await loadCommandResult(env.DB, startId)) return;
+  commands.push(await runCommand(env, parseCommandEnvelope({
+    id: startId,
+    type: "start_analysis",
+    aggregateType: "task",
+    aggregateId: snapshot.id,
+    expectedVersion: 1,
+    actorId: "system-poller",
+    issuedAt: now,
+    reason: "external task admitted (already ready for development)",
+    parameters: {},
+  }), now, config));
+  commands.push(await runCommand(env, parseCommandEnvelope({
+    id: doneId,
+    type: "analysis_completed",
+    aggregateType: "task",
+    aggregateId: snapshot.id,
+    expectedVersion: 2,
+    actorId: "system-poller",
+    issuedAt: now,
+    reason: "external task already ready for development",
+    parameters: {},
+  }), now, config));
 }
 
 /**

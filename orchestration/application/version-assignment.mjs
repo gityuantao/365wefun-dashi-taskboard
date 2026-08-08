@@ -1,4 +1,5 @@
 import { fieldConfig } from "../clickup/config-registry.mjs";
+import { targetVersionName } from "./version-gate.mjs";
 import {
   bumpVersion,
   maxVersionName,
@@ -9,9 +10,9 @@ const TERMINAL_VERSION_STATUSES = new Set(["已发布", "已取消"]);
 
 function targetVersionOf(task, config, taskListKey) {
   const field = fieldConfig(config, taskListKey, "目标版本");
-  return task.custom_fields?.find(
+  return targetVersionName(task.custom_fields?.find(
     (candidate) => candidate.id === field.id || candidate.name === "目标版本",
-  )?.value ?? null;
+  )?.value ?? null);
 }
 
 function extractJson(stdout) {
@@ -42,27 +43,37 @@ export async function assignTaskVersion({
   );
   let versionName;
   let created = false;
+  let versionTaskId = null;
 
   if (unreleased.length === 1) {
     versionName = unreleased[0].name;
+    versionTaskId = unreleased[0].id;
   } else if (unreleased.length === 0) {
     const latest = maxVersionName(versions.map((version) => version.name));
     versionName = bumpVersion(latest);
-    await client.createTask(config.lists[versionListKey].id, {
+    const createdTask = await client.createTask(config.lists[versionListKey].id, {
       name: versionName,
       description: `自动创建的下一个版本（基于 ${latest}）`,
       status: "进行中",
     });
     created = true;
+    versionTaskId = createdTask.id;
   } else {
     versionName = await decideVersionByAI(task, unreleased, codex);
     if (!versionName) {
       return { versionName: null, created: false, assigned: false, error: "version decision failed" };
     }
+    versionTaskId = [...versions, ...unreleased]
+      .find((version) => version.name === versionName)?.id ?? null;
   }
 
-  await client.updateCustomField(taskId, versionField.id, versionName);
-  log(`assigned task ${taskId} to version ${versionName}${created ? " (created)" : ""}`);
+  if (!versionTaskId) {
+    return { versionName, created, assigned: false, error: `version task not found: ${versionName}` };
+  }
+
+  // 目标版本 是 list_relationship 类型，ClickUp 要求 value 为 { add: [任务ID], rem: [] }
+  await client.updateCustomField(taskId, versionField.id, { add: [versionTaskId], rem: [] });
+  log(`assigned task ${taskId} to version ${versionName} (${versionTaskId})${created ? " (created)" : ""}`);
   return { versionName, created, assigned: true };
 }
 

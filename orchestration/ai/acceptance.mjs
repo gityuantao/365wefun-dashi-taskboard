@@ -96,11 +96,11 @@ export async function executeAcceptance({
         aggregateId: taskId,
         expectedVersion: aggregate.version + 1,
         actorId: "runner-acceptor",
-        issuedAt: now,
+        issuedAt: new Date().toISOString(),
         reason: "acceptance passed",
         parameters: { targetVersion },
       });
-      const result = await dispatchCommand({ db, command, now });
+      const result = await dispatchCommand({ db, command, now: new Date().toISOString() });
       try {
         await client.postComment(taskId, "✅ 开发完成（自动验收通过），进入待测试");
       } catch {
@@ -125,7 +125,7 @@ export async function executeAcceptance({
       taskId,
       reason: "acceptance failed",
       evidence: `acceptance-${job.id}`,
-      now,
+      now: new Date().toISOString(),
     });
     const outcome = blocked
       ? "验收已连续多次不通过，已转为「验收不通过」；请确认原因后手动把状态改回「待开发」或「待测试」。"
@@ -153,11 +153,11 @@ ${outcome}`,
       aggregateId: taskId,
       expectedVersion: aggregate.version + 1,
       actorId: "runner-acceptor",
-      issuedAt: now,
+      issuedAt: new Date().toISOString(),
       reason: blocked ? "acceptance rejected after repeated failures" : "acceptance failed",
       parameters: { evidenceId: `acceptance-${job.id}` },
     });
-    const result = await dispatchCommand({ db, command, now });
+    const result = await dispatchCommand({ db, command, now: new Date().toISOString() });
     return {
       status: "completed",
       commandId: result.commandId,

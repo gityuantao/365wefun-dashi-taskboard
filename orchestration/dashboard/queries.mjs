@@ -45,7 +45,8 @@ async function loadTasks(db) {
   `).all()).results;
   return rows
     .map((row) => {
-      const state = row.aggregate_state ?? row.snapshot_status;
+      // 展示以 ClickUp 实际（快照）状态为准：用户手动改状态可实时反映；聚合状态兜底
+      const state = row.snapshot_status ?? row.aggregate_state;
       return {
         ...parseSnapshot(row),
         status: state === "accepting" ? "developing" : state,

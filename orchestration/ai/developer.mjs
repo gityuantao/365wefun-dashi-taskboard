@@ -39,11 +39,11 @@ async function rollbackDevelopment({ db, client, taskId, jobId, now }) {
         aggregateId: taskId,
         expectedVersion: current.version + 1,
         actorId: "runner-developer",
-        issuedAt: now,
+        issuedAt: new Date().toISOString(),
         reason: "development failed",
         parameters: { evidenceId: `development-${jobId}` },
       }),
-      now,
+      now: new Date().toISOString(),
     });
     const comment = stateChangeText("task", "developing", "ready_for_development");
     if (comment) {
@@ -68,12 +68,12 @@ async function markDevelopmentNeedsInfo({ db, client, taskId, jobId, now, reason
     aggregateId: taskId,
     expectedVersion: aggregate.version + 1,
     actorId: "runner-developer",
-    issuedAt: now,
+    issuedAt: new Date().toISOString(),
     reason,
     parameters: {},
   });
   try {
-    await dispatchCommand({ db, command, now });
+    await dispatchCommand({ db, command, now: new Date().toISOString() });
   } catch {
     // 状态推进失败不掩盖 needs_info 结论；用户恢复开发后仍可继续
   }
@@ -138,11 +138,11 @@ export async function executeDevelopment({
           aggregateId: taskId,
           expectedVersion: startAggregate.version + 1,
           actorId: "runner-developer",
-          issuedAt: now,
+          issuedAt: new Date().toISOString(),
           reason: "development started",
           parameters: {},
         }),
-        now,
+        now: new Date().toISOString(),
       });
       const comment = stateChangeText("task", "ready_for_development", "developing");
       if (comment) {
@@ -203,11 +203,11 @@ export async function executeDevelopment({
       aggregateId: taskId,
       expectedVersion: aggregate.version + 1,
       actorId: "runner-developer",
-      issuedAt: now,
+      issuedAt: new Date().toISOString(),
       reason: "development completed",
       parameters: {},
     });
-    const result = await dispatchCommand({ db, command, now });
+    const result = await dispatchCommand({ db, command, now: new Date().toISOString() });
     return {
       status: "completed",
       commandId: result.commandId,

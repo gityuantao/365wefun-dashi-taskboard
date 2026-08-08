@@ -406,6 +406,15 @@ async function syncStatuses(now) {
     // 避免幂等跳过导致用户手动改的状态（如版本提前拖到发布中）不被纠正。
     const snapshot = await loadLastConfirmed(db, row.aggregate_type, row.aggregate_id);
     if (snapshot && snapshot.status === row.state) continue;
+    // 豁免：待补充信息（waiting_info）被手动移到待发布（ready_for_release）时，
+    // 视为用户主动操作（如用户确认信息已齐、准备发布），不再自动纠正回待补充信息。
+    if (
+      row.aggregate_type === "task"
+      && row.state === "waiting_info"
+      && snapshot?.status === "ready_for_release"
+    ) {
+      continue;
+    }
     // 系统纠正手动漂移的状态时，评论区说明原因
     const correction = correctionText(row.aggregate_type, row.state, snapshot?.status ?? null);
     const pending = await db
@@ -434,17 +443,35 @@ async function syncStatuses(now) {
       }
     }
     if (!movedBySystem && latest?.command_id) {
-      const job = await db
-        .prepare(`
-          SELECT completed_at FROM runner_jobs
-          WHERE command_id = ? AND status = 'completed'
-          LIMIT 1
-        `)
-        .bind(latest.command_id)
-        .first();
+      // 事件 command_id（如 acceptance-<jobId>）与 runner_jobs.command_id（如 auto-accept-<taskId>）
+      // 不是同一个 id，按任务+作业类型查最近完成的系统作业；120s 内完成的视为系统迁移
+      const job = row.aggregate_type === "task"
+        ? await db
+            .prepare(`
+              SELECT completed_at FROM runner_jobs
+              WHERE job_type IN ('analyze', 'develop', 'accept')
+                AND json_extract(payload, '$.taskId') = ?
+                AND status = 'completed'
+              ORDER BY completed_at DESC LIMIT 1
+            `)
+            .bind(row.aggregate_id)
+            .first()
+        : await db
+            .prepare(`
+              SELECT completed_at FROM runner_jobs
+              WHERE command_id = ? AND status = 'completed'
+              LIMIT 1
+            `)
+            .bind(latest.command_id)
+            .first();
       if (job?.completed_at && Date.parse(job.completed_at) > Date.parse(now) - 120_000) {
         movedBySystem = true;
       }
+    }
+    // 任务的用户手动漂移（非系统迁移）：尊重手动状态，不评论也不纠正。
+    // 任务自动流转（movedBySystem=true）仍会同步 ClickUp；版本状态仍由编排纠正（发布流程依赖）。
+    if (row.aggregate_type === "task" && !movedBySystem) {
+      continue;
     }
     if (correction && !pending && !movedBySystem) {
       try {

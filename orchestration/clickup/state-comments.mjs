@@ -4,6 +4,7 @@ const TASK_NAMES = {
   waiting_info: "待补充信息",
   ready_for_development: "待开发",
   developing: "开发中",
+  acceptance_rejected: "验收不通过",
   ready_for_test: "待测试",
   testing: "测试中",
   ready_for_release: "待发布",
@@ -33,6 +34,9 @@ const TASK_COMMENTS = {
   "ready_for_test:ready_for_release": "测试通过，进入待发布",
   "testing:ready_for_development": "测试不通过，退回待开发",
   "accepting:ready_for_test": "验收通过，进入待测试",
+  "accepting:acceptance_rejected": "验收连续不通过，转为「验收不通过」，等待人工处理",
+  "acceptance_rejected:ready_for_development": "开始重新开发",
+  "acceptance_rejected:ready_for_test": "直接进入待测试",
   "accepting:ready_for_development": "验收不通过，退回待开发",
   "ready_for_release:published": "任务已随版本发布",
 };
