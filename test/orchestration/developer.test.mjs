@@ -167,6 +167,56 @@ test("development that cannot reproduce parks the task in waiting_info", async (
   );
 });
 
+test("needs_info comments redact common credential formats", async (t) => {
+  const cases = [
+    {
+      name: "quoted JSON token",
+      reason: '无法复现 {"token":"needs-info-json-secret"}',
+      secret: "needs-info-json-secret",
+    },
+    {
+      name: "Authorization Bearer",
+      reason: "请求失败 Authorization: Bearer needs-info-bearer-secret",
+      secret: "needs-info-bearer-secret",
+    },
+    {
+      name: "Authorization Basic",
+      reason: "请求失败 Authorization: Basic bmVlZHMtaW5mby1iYXNpYw==",
+      secret: "bmVlZHMtaW5mby1iYXNpYw==",
+    },
+  ];
+
+  for (const credentialCase of cases) {
+    await t.test(credentialCase.name, async (subtest) => {
+      const harness = await createCloudWorkerHarness();
+      subtest.after(() => harness.dispose());
+      await setupTask(harness);
+      const comments = [];
+      await executeDevelopment({
+        job: JOB,
+        db: harness.db,
+        client: makeClient({
+          postComment: async (_taskId, body) => comments.push(body),
+        }),
+        codex: {
+          run: async () => ({
+            exitCode: 0,
+            stdout: JSON.stringify({ needs_info: true, reason: credentialCase.reason }),
+            stderr: "",
+          }),
+        },
+        gitOps: mockGitOps(),
+        now: NOW,
+      });
+
+      const needsInfoComment = comments.find((body) => String(body).includes("开发无法完成"));
+      assert.ok(needsInfoComment);
+      assert.match(needsInfoComment, /\[REDACTED\]/);
+      assert.equal(String(needsInfoComment).includes(credentialCase.secret), false);
+    });
+  }
+});
+
 test("development passes the 影响平台 field into the prompt", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

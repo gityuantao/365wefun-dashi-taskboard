@@ -105,7 +105,7 @@ async function markDevelopmentNeedsInfo({ db, client, taskId, jobId, now, reason
     await client.postComment(
       taskId,
       [
-        `⚠️ 开发无法完成：${concise(reason, 200)}`,
+        `⚠️ 开发无法完成：${safeDiagnostic(reason)}`,
         "请补充必要信息（如具体静音文件名/复现方式/预期结果），然后把任务状态改回「开发中」继续。",
       ].join("\n"),
     );
