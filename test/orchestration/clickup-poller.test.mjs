@@ -7,6 +7,7 @@ import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
 import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-store.mjs";
 import { saveSnapshot } from "../../orchestration/clickup/snapshot.mjs";
 import { pollClickUpOnce } from "../../cloud/src/clickup-poller.mjs";
+import { claimJob } from "../../orchestration/persistence/d1-runner-jobs.mjs";
 
 const NOW = "2026-08-04T00:00:10.000Z";
 
@@ -338,6 +339,120 @@ test("poller leaves tasks parked by development_needs_info alone", async (t) => 
     .prepare("SELECT id FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'")
     .first();
   assert.equal(job, null);
+});
+
+test("manual 待补充信息 pauses active development and invalidates queued work", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 3; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development"][index];
+    await dispatchTask(harness, `manual-pause-${index}`, type, index + 1);
+  }
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "developing",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:00.000Z",
+      fieldsHash: "confirmed-developing",
+    },
+    readAt: "2026-08-04T00:00:00.000Z",
+  });
+  await harness.db
+    .prepare(
+      `INSERT INTO runner_jobs (
+        id, command_id, job_type, payload, payload_hash, status, expires_at, created_at
+      ) VALUES (?, ?, 'develop', ?, 'h', 'queued', ?, ?)`,
+    )
+    .bind(
+      "task-1-develop-3",
+      "auto-develop-task-1",
+      JSON.stringify({ taskId: "task-1" }),
+      "2026-08-04T01:00:00.000Z",
+      NOW,
+    )
+    .run();
+  await harness.db
+    .prepare(
+      `INSERT INTO outbox_mutations (
+        id, object_type, object_id, field, expected_before, target, actor,
+        status, expires_at, created_at
+      ) VALUES (?, 'task', ?, 'status', ?, ?, 'system-sync', 'pending', ?, ?)`,
+    )
+    .bind(
+      "stale-developing-status",
+      "task-1",
+      JSON.stringify("待开发"),
+      JSON.stringify("开发中"),
+      "2026-08-04T01:00:00.000Z",
+      NOW,
+    )
+    .run();
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待补充信息", version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.ok(result.commands.some((command) => command.type === "development_needs_info"));
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  const queued = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE id = ?")
+    .bind("task-1-develop-3")
+    .first();
+  assert.equal(queued, null, "queued development must be canceled when the user pauses the task");
+  const claimed = await claimJob(harness.db, {
+    deviceId: "device-after-pause",
+    jobType: "develop",
+    now: NOW,
+  });
+  assert.equal(claimed, null, "paused work must not remain claimable");
+  const mutation = await harness.db
+    .prepare("SELECT status FROM outbox_mutations WHERE id = ?")
+    .bind("stale-developing-status")
+    .first();
+  assert.equal(mutation.status, "expired", "stale status sync must not restore 开发中");
+});
+
+test("manual 待补充信息 pauses a task that was queued for development", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await dispatchTask(harness, "ready-pause-analysis", "start_analysis", 1);
+  await dispatchTask(harness, "ready-pause-complete", "analysis_completed", 2);
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "ready_for_development",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:00.000Z",
+      fieldsHash: "confirmed-ready",
+    },
+    readAt: "2026-08-04T00:00:00.000Z",
+  });
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待补充信息", version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.ok(result.commands.some((command) => command.type === "manual_pause_for_info"));
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  const queued = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'")
+    .first();
+  assert.equal(queued, null);
 });
 
 test("poller resumes development when the user changes status back to 开发中", async (t) => {

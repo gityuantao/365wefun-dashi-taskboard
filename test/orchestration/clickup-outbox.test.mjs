@@ -7,6 +7,7 @@ import {
   enqueueMutation,
   flushOutbox,
 } from "../../orchestration/clickup/outbox.mjs";
+import { saveSnapshot } from "../../orchestration/clickup/snapshot.mjs";
 
 const CONFIG = loadClickUpConfig({
   teamId: "90161712199",
@@ -17,7 +18,11 @@ const CONFIG = loadClickUpConfig({
     taskSandbox: { id: "901616314492", name: "任务-Sandbox" },
     versionSandbox: { id: "901616314494", name: "版本-Sandbox" },
   },
-  taskStatusMap: { 收件箱: "inbox" },
+  taskStatusMap: {
+    收件箱: "inbox",
+    待补充信息: "waiting_info",
+    开发中: "developing",
+  },
   versionStatusMap: { 规划中: "planning" },
   fields: {
     task: {
@@ -100,6 +105,45 @@ test("flushOutbox expires stale mutations without executing them", async (t) => 
   const row = await harness.db
     .prepare("SELECT status FROM outbox_mutations WHERE id = ?")
     .bind("mut-1")
+    .first();
+  assert.equal(row.status, "expired");
+});
+
+test("flushOutbox cannot overwrite a confirmed manual 待补充信息 status", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616282651",
+      status: "waiting_info",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: NOW,
+      fieldsHash: "manual-waiting-info",
+    },
+    readAt: NOW,
+  });
+  let writes = 0;
+  const client = {
+    updateTaskStatus: async () => { writes += 1; },
+    updateCustomField: async () => { writes += 1; },
+  };
+  await enqueueMutation(harness.db, mutationBase({
+    mutationId: "stale-developing",
+    expectedBefore: "待开发",
+    target: "开发中",
+  }));
+
+  const result = await flushOutbox(harness.db, client, { now: NOW, config: CONFIG });
+
+  assert.deepEqual(result.flushed, []);
+  assert.deepEqual(result.expired, ["stale-developing"]);
+  assert.equal(writes, 0);
+  const row = await harness.db
+    .prepare("SELECT status FROM outbox_mutations WHERE id = ?")
+    .bind("stale-developing")
     .first();
   assert.equal(row.status, "expired");
 });

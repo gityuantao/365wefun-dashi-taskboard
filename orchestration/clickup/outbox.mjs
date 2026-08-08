@@ -1,4 +1,5 @@
 import { fieldId } from "./config-registry.mjs";
+import { loadLastConfirmed } from "./snapshot.mjs";
 
 export async function enqueueMutation(db, {
   mutationId,
@@ -68,6 +69,20 @@ export async function flushOutbox(db, client, { now, config }) {
     }
     const target = parseTarget(row.target);
     if (row.field === "status") {
+      if (row.object_type === "task") {
+        const snapshot = await loadLastConfirmed(db, "task", row.object_id);
+        const targetState = config.taskStatusMap[target];
+        if (snapshot?.status === "waiting_info" && targetState !== "waiting_info") {
+          await db
+            .prepare(
+              "UPDATE outbox_mutations SET status = 'expired' WHERE id = ? AND status = 'pending'",
+            )
+            .bind(row.id)
+            .run();
+          expired.push(row.id);
+          continue;
+        }
+      }
       await client.updateTaskStatus(row.object_id, target);
     } else {
       const id = fieldId(config, row.object_type, row.field);

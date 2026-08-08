@@ -33,6 +33,9 @@ export const TASK_COMMAND_HANDLERS = {
   development_needs_info(state) {
     return decideTaskTransition({ from: state, to: "waiting_info" });
   },
+  manual_pause_for_info(state) {
+    return decideTaskTransition({ from: state, to: "waiting_info" });
+  },
   development_restarted(state) {
     return decideTaskTransition({ from: state, to: "developing" });
   },

@@ -41,6 +41,7 @@ const JOB = {
     baseRef: "main",
     versionBranch: "version/v-1",
     acceptanceCriteria: [{ id: "ac-1", criterion: "按钮可点击" }],
+    aggregateVersion: 2,
   },
 };
 
@@ -133,6 +134,119 @@ test("stale develop job does not restart a parked task", async (t) => {
   assert.match(result.error, /stale develop job/);
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "waiting_info");
+});
+
+test("parked development exits before reading ClickUp or creating a worktree", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  for (const [type, version] of [
+    ["start_development", 3],
+    ["development_needs_info", 4],
+  ]) {
+    await dispatchCommand({
+      db: harness.db,
+      command: parseCommandEnvelope({
+        id: `preflight-${type}-${version}`,
+        type,
+        aggregateType: "task",
+        aggregateId: "task-1",
+        expectedVersion: version,
+        actorId: "system",
+        issuedAt: NOW,
+        reason: "seed",
+        parameters: {},
+      }),
+      now: NOW,
+    });
+  }
+  const calls = [];
+
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      getTask: async () => { calls.push("getTask"); throw new Error("must not read task"); },
+      getComments: async () => { calls.push("getComments"); return []; },
+    }),
+    codex: { run: async () => { calls.push("codex"); return { exitCode: 0, stdout: validOutput(), stderr: "" }; } },
+    gitOps: mockGitOps({
+      createWorktree: async () => { calls.push("createWorktree"); throw new Error("must not create worktree"); },
+    }),
+    now: NOW,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /stale develop job/);
+  assert.deepEqual(calls, []);
+});
+
+test("manual pause during Codex run prevents commit PR evidence and completion", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  await dispatchCommand({
+    db: harness.db,
+    command: parseCommandEnvelope({
+      id: "pause-during-run-start",
+      type: "start_development",
+      aggregateType: "task",
+      aggregateId: "task-1",
+      expectedVersion: 3,
+      actorId: "system",
+      issuedAt: NOW,
+      reason: "seed",
+      parameters: {},
+    }),
+    now: NOW,
+  });
+  const sideEffects = [];
+
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      updateCustomField: async () => sideEffects.push("evidence"),
+    }),
+    codex: {
+      run: async () => {
+        await dispatchCommand({
+          db: harness.db,
+          command: parseCommandEnvelope({
+            id: "manual-pause-during-codex",
+            type: "development_needs_info",
+            aggregateType: "task",
+            aggregateId: "task-1",
+            expectedVersion: 4,
+            actorId: "system-poller",
+            issuedAt: NOW,
+            reason: "user moved task to waiting_info",
+            parameters: {},
+          }),
+          now: NOW,
+        });
+        return { exitCode: 0, stdout: validOutput(), stderr: "" };
+      },
+    },
+    gitOps: mockGitOps({
+      commitAll: async () => sideEffects.push("commit"),
+      createPullRequest: async () => {
+        sideEffects.push("pull-request");
+        return { url: "https://github.com/x/pull/1" };
+      },
+    }),
+    now: NOW,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /stale develop job/);
+  assert.deepEqual(sideEffects, []);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  const completion = await harness.db
+    .prepare("SELECT id FROM orchestration_events WHERE type = 'task.development_completed'")
+    .first();
+  assert.equal(completion, null);
 });
 
 test("development that cannot reproduce parks the task in waiting_info", async (t) => {

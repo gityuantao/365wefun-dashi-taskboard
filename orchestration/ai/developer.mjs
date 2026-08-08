@@ -114,6 +114,21 @@ async function markDevelopmentNeedsInfo({ db, client, taskId, jobId, now, reason
   }
 }
 
+function staleDevelopmentResult(aggregate) {
+  return {
+    status: "failed",
+    error: `stale develop job: task is in ${aggregate.state} at version ${aggregate.version}`,
+  };
+}
+
+async function currentDevelopment(db, taskId, expectedVersion) {
+  const aggregate = await loadAggregate(db, "task", taskId);
+  return {
+    active: aggregate.state === "developing" && aggregate.version === expectedVersion,
+    aggregate,
+  };
+}
+
 export async function executeDevelopment({
   job,
   db,
@@ -125,34 +140,20 @@ export async function executeDevelopment({
 }) {
   const { taskId, repoPath, worktreesRoot, baseRef, versionBranch, acceptanceCriteria } = job.payload;
   try {
-    const task = await client.getTask(taskId);
-    let commentContext = null;
-    try {
-      commentContext = buildCommentContext(await client.getComments(taskId));
-    } catch {}
-    const feedbackField = task.custom_fields?.find(
-      (field) => field.name === "验收反馈" || field.id === "field-acceptance-feedback",
-    );
-    if (feedbackField?.value) {
-      commentContext = [commentContext, `验收反馈：${feedbackField.value}`]
-        .filter(Boolean)
-        .join("\n");
+    let startAggregate = await loadAggregate(db, "task", taskId);
+    if (startAggregate.state !== "developing" && startAggregate.state !== "ready_for_development") {
+      return staleDevelopmentResult(startAggregate);
     }
-    const worktree = await gitOps.createWorktree({
-      repoPath,
-      taskId,
-      baseRef,
-      worktreesRoot,
-    });
-    const startAggregate = await loadAggregate(db, "task", taskId);
-    if (startAggregate.state !== "developing") {
-      // 任务已被暂停（等待补充信息/已发布等）时，过期作业不得自动重启开发
-      if (startAggregate.state !== "ready_for_development") {
-        return {
-          status: "failed",
-          error: `stale develop job: task is in ${startAggregate.state}, not restarting development`,
-        };
-      }
+    const queuedAtVersion = Number.isInteger(job.payload.aggregateVersion)
+      ? job.payload.aggregateVersion
+      : null;
+    if (queuedAtVersion !== null) {
+      const sameVersion = startAggregate.version === queuedAtVersion;
+      const startedSinceQueue = startAggregate.state === "developing"
+        && startAggregate.version === queuedAtVersion + 1;
+      if (!sameVersion && !startedSinceQueue) return staleDevelopmentResult(startAggregate);
+    }
+    if (startAggregate.state === "ready_for_development") {
       await dispatchCommand({
         db,
         command: parseCommandEnvelope({
@@ -176,12 +177,39 @@ export async function executeDevelopment({
           // 评论失败不影响开发
         }
       }
+      startAggregate = await loadAggregate(db, "task", taskId);
     }
+    const executionVersion = startAggregate.version;
+    const task = await client.getTask(taskId);
+    let commentContext = null;
+    try {
+      commentContext = buildCommentContext(await client.getComments(taskId));
+    } catch {}
+    const feedbackField = task.custom_fields?.find(
+      (field) => field.name === "验收反馈" || field.id === "field-acceptance-feedback",
+    );
+    if (feedbackField?.value) {
+      commentContext = [commentContext, `验收反馈：${feedbackField.value}`]
+        .filter(Boolean)
+        .join("\n");
+    }
+    let activity = await currentDevelopment(db, taskId, executionVersion);
+    if (!activity.active) return staleDevelopmentResult(activity.aggregate);
+    const worktree = await gitOps.createWorktree({
+      repoPath,
+      taskId,
+      baseRef,
+      worktreesRoot,
+    });
+    activity = await currentDevelopment(db, taskId, executionVersion);
+    if (!activity.active) return staleDevelopmentResult(activity.aggregate);
     const run = await codex.run({
       prompt: buildDevelopmentPrompt(task, acceptanceCriteria, commentContext, resolvePlatforms(task)),
       workdir: worktree.worktreePath,
       taskId,
     });
+    activity = await currentDevelopment(db, taskId, executionVersion);
+    if (!activity.active) return staleDevelopmentResult(activity.aggregate);
     if (run.exitCode !== 0) {
       const reason = `codex exited ${run.exitCode}: ${run.stderr}`;
       await rollbackDevelopment({ db, client, taskId, jobId: job.id, now, reason });
@@ -219,7 +247,11 @@ export async function executeDevelopment({
       });
       return { status: "failed", error: "missing change_summary" };
     }
+    activity = await currentDevelopment(db, taskId, executionVersion);
+    if (!activity.active) return staleDevelopmentResult(activity.aggregate);
     await gitOps.commitAll(worktree.worktreePath, `Task ${taskId}: ${parsed.change_summary}`);
+    activity = await currentDevelopment(db, taskId, executionVersion);
+    if (!activity.active) return staleDevelopmentResult(activity.aggregate);
     const pr = await gitOps.createPullRequest({
       repoPath,
       branch: worktree.branch,
@@ -232,9 +264,13 @@ export async function executeDevelopment({
       ].join("\n"),
     });
 
+    activity = await currentDevelopment(db, taskId, executionVersion);
+    if (!activity.active) return staleDevelopmentResult(activity.aggregate);
     await client.updateCustomField(taskId, fieldIds.evidence, pr.url ?? String(pr));
 
-    const aggregate = await loadAggregate(db, "task", taskId);
+    activity = await currentDevelopment(db, taskId, executionVersion);
+    if (!activity.active) return staleDevelopmentResult(activity.aggregate);
+    const aggregate = activity.aggregate;
     const command = parseCommandEnvelope({
       id: `development-${job.id}`,
       type: "development_completed",

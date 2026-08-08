@@ -97,6 +97,52 @@ async function clearOrdinaryDevelopmentFailures(db, taskId) {
     .run();
 }
 
+async function reconcileManualWaitingInfo(env, snapshot, now, commands, config) {
+  if (snapshot.status !== "waiting_info") return;
+  const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  const commandType = {
+    analyzing: "analysis_needs_human",
+    ready_for_development: "manual_pause_for_info",
+    developing: "development_needs_info",
+  }[aggregate.state];
+  if (commandType) {
+    const commandId = `poller-manual-pause-${snapshot.id}-${aggregate.version + 1}`;
+    if (!(await loadCommandResult(env.DB, commandId))) {
+      commands.push(await runCommand(env, parseCommandEnvelope({
+        id: commandId,
+        type: commandType,
+        aggregateType: "task",
+        aggregateId: snapshot.id,
+        expectedVersion: aggregate.version + 1,
+        actorId: "system-poller",
+        issuedAt: now,
+        reason: "user moved task to waiting_info",
+        parameters: {},
+      }), now, config));
+    }
+  }
+
+  // Queued work has not started and is safe to remove. Claimed work remains leased;
+  // executors cooperatively stop when the aggregate state/version changes.
+  await env.DB
+    .prepare(
+      `DELETE FROM runner_jobs
+       WHERE status = 'queued' AND json_extract(payload, '$.taskId') = ?`,
+    )
+    .bind(snapshot.id)
+    .run();
+
+  const waitingStatus = clickupStatusName(config, "task", "waiting_info");
+  await env.DB
+    .prepare(
+      `UPDATE outbox_mutations SET status = 'expired'
+       WHERE object_type = 'task' AND object_id = ? AND field = 'status'
+         AND status = 'pending' AND target <> ?`,
+    )
+    .bind(snapshot.id, JSON.stringify(waitingStatus))
+    .run();
+}
+
 async function ensureStateJob(env, snapshot, now, currentDevVersion) {
   const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   const jobType = jobTypeForState(aggregate.state ?? snapshot.status);
@@ -206,6 +252,7 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
             : undefined)
         : undefined,
       acceptanceCriteria,
+      aggregateVersion: aggregate.version,
     },
     payloadHash: snapshot.fieldsHash,
     expiresAt: addMinutes(now, 90),
@@ -247,6 +294,8 @@ export async function pollClickUpOnce(env, {
       }
       continue;
     }
+
+    await reconcileManualWaitingInfo(env, snapshot, now, commands, config);
 
     if (changes.length === 0) {
       await handleStatusDrivenFlow(env, snapshot, now, commands, config);
