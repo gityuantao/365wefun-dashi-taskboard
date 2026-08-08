@@ -7,5 +7,6 @@ dist/
 cloud-migration-exports/
 .playwright-cli/
 .superpowers/
+.worktrees/
 *.log
 .DS_Store
