@@ -185,6 +185,55 @@ test("manual pause during Codex acceptance prevents writes and completion", asyn
   assert.equal(completion, null);
 });
 
+test("remote waiting_info immediately before acceptance result prevents acceptance_passed", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedToAccepting(harness);
+  const comments = [];
+  let reads = 0;
+  const client = makeClient("version-9", {
+    getTask: async () => {
+      reads += 1;
+      if (reads === 1) {
+        return {
+          id: "task-1",
+          name: "录音回放按钮",
+          description: "修复录音回放",
+          status: { status: "开发中" },
+          custom_fields: [
+            { id: "field-version", name: "目标版本", value: "version-9" },
+          ],
+        };
+      }
+      return {
+        id: "task-1",
+        status: { status: "待补充信息" },
+        custom_fields: [],
+      };
+    },
+    postComment: async (_id, body) => comments.push(body),
+  });
+
+  const result = await executeAcceptance({
+    job: JOB,
+    db: harness.db,
+    client,
+    codex: { run: async () => ({ exitCode: 0, stdout: acceptedOutput(), stderr: "" }) },
+    now: NOW,
+  });
+
+  assert.equal(reads, 2, "acceptance must confirm the remote status immediately before result dispatch");
+  assert.equal(result.status, "failed");
+  assert.equal(result.classification, "paused_waiting_info");
+  assert.equal(comments.some((body) => body.includes("自动验收通过")), false);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  const passed = await harness.db
+    .prepare("SELECT id FROM orchestration_events WHERE type = 'task.acceptance_passed'")
+    .first();
+  assert.equal(passed, null);
+});
+
 test("acceptance rejection returns the task to ready for development", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

@@ -598,6 +598,78 @@ test("manual 待补充信息 pauses acceptance, cancels queued accept, and can r
   assert.equal(aggregate.state, "developing");
 });
 
+test("poller honors waiting_info after acceptance_passed already reached ready_for_test", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 5; index += 1) {
+    const type = [
+      "start_analysis",
+      "analysis_completed",
+      "start_development",
+      "development_completed",
+      "acceptance_passed",
+    ][index];
+    await dispatchTask(harness, `passed-before-pause-${index}`, type, index + 1);
+  }
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "developing",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:00.000Z",
+      fieldsHash: "acceptance-passed-before-pause",
+    },
+    readAt: "2026-08-04T00:00:00.000Z",
+  });
+  await harness.db
+    .prepare(
+      `INSERT INTO runner_jobs (
+        id, command_id, job_type, payload, payload_hash, status, expires_at, created_at
+      ) VALUES ('queued-accept-after-pass', 'auto-accept-task-1', 'accept', ?, 'h', 'queued', ?, ?)`,
+    )
+    .bind(
+      JSON.stringify({ taskId: "task-1", aggregateVersion: 4 }),
+      "2026-08-04T01:00:00.000Z",
+      NOW,
+    )
+    .run();
+  await harness.db
+    .prepare(
+      `INSERT INTO outbox_mutations (
+        id, object_type, object_id, field, expected_before, target, actor,
+        status, expires_at, created_at
+      ) VALUES ('stale-ready-for-test', 'task', 'task-1', 'status', ?, ?,
+        'system-sync', 'pending', ?, ?)`,
+    )
+    .bind(
+      "开发中",
+      JSON.stringify("待测试"),
+      "2026-08-04T01:00:00.000Z",
+      NOW,
+    )
+    .run();
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待补充信息", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.ok(result.commands.some((command) => command.type === "manual_pause_for_info"));
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.state, "waiting_info");
+  const queued = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE id = 'queued-accept-after-pass'")
+    .first();
+  assert.equal(queued, null);
+  const mutation = await harness.db
+    .prepare("SELECT status FROM outbox_mutations WHERE id = 'stale-ready-for-test'")
+    .first();
+  assert.equal(mutation.status, "expired");
+});
+
 test("unrelated ClickUp updates do not resume waiting tasks or delete ordinary failures", async (t) => {
   for (const mode of ["development", "analysis"]) {
     await t.test(mode, async (subtest) => {

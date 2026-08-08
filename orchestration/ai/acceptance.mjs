@@ -63,6 +63,44 @@ async function currentAcceptance(db, taskId, expectedVersion) {
   };
 }
 
+function isRemoteWaitingInfo(task) {
+  const status = task?.status?.status ?? task?.status;
+  return status === "待补充信息" || status === "waiting_info";
+}
+
+async function pauseForRemoteWaitingInfo({ db, client, taskId, jobId }) {
+  if (!isRemoteWaitingInfo(await client.getTask(taskId))) return null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const aggregate = await loadAggregate(db, "task", taskId);
+    if (aggregate.state === "waiting_info") return staleAcceptanceResult(aggregate);
+    if (!new Set(["accepting", "ready_for_test"]).has(aggregate.state)) {
+      return staleAcceptanceResult(aggregate);
+    }
+    try {
+      await dispatchCommand({
+        db,
+        command: parseCommandEnvelope({
+          id: `acceptance-remote-pause-${jobId}-${aggregate.version + 1}`,
+          type: "manual_pause_for_info",
+          aggregateType: "task",
+          aggregateId: taskId,
+          expectedVersion: aggregate.version + 1,
+          actorId: "runner-acceptor",
+          issuedAt: new Date().toISOString(),
+          reason: "remote task moved to waiting_info before acceptance result",
+          parameters: {},
+        }),
+        now: new Date().toISOString(),
+      });
+      return staleAcceptanceResult(await loadAggregate(db, "task", taskId));
+    } catch {
+      // A concurrent acceptance/poller transition may win the version race.
+      // Reload once and apply the ready_for_test fallback if it is still safe.
+    }
+  }
+  return staleAcceptanceResult(await loadAggregate(db, "task", taskId));
+}
+
 export async function executeAcceptance({
   job,
   db,
@@ -118,6 +156,15 @@ export async function executeAcceptance({
       if (!targetVersion) {
         return { status: "failed", error: "task has no target version" };
       }
+      activity = await currentAcceptance(db, taskId, executionVersion);
+      if (!activity.active) return staleAcceptanceResult(activity.aggregate);
+      const remotePause = await pauseForRemoteWaitingInfo({
+        db,
+        client,
+        taskId,
+        jobId: job.id,
+      });
+      if (remotePause) return remotePause;
       activity = await currentAcceptance(db, taskId, executionVersion);
       if (!activity.active) return staleAcceptanceResult(activity.aggregate);
       const aggregate = activity.aggregate;

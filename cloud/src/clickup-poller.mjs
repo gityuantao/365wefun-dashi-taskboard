@@ -109,6 +109,7 @@ async function reconcileManualWaitingInfo(env, snapshot, now, commands, config) 
     ready_for_development: "manual_pause_for_info",
     developing: "development_needs_info",
     accepting: "manual_pause_for_info",
+    ready_for_test: "manual_pause_for_info",
   }[aggregate.state];
   if (commandType) {
     const commandId = `poller-manual-pause-${snapshot.id}-${aggregate.version + 1}`;
