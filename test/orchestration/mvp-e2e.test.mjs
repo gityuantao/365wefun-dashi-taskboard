@@ -333,5 +333,20 @@ test("failed development blocks without advancing the task", async (t) => {
   });
   assert.equal(result.status, "failed");
   const aggregate = await loadAggregate(harness.db, "task", "task-e2e-1");
-  assert.equal(aggregate.version, 0, "failed development must not advance the task");
+  assert.equal(aggregate.state, "ready_for_development");
+  const events = await harness.db
+    .prepare(
+      `SELECT aggregate_version, type
+       FROM orchestration_events
+       WHERE aggregate_type = ? AND aggregate_id = ?
+       ORDER BY aggregate_version`,
+    )
+    .bind("task", "task-e2e-1")
+    .all();
+  assert.deepEqual(events.results, [
+    { aggregate_version: 1, type: "task.analysis_started" },
+    { aggregate_version: 2, type: "task.analysis_completed" },
+    { aggregate_version: 3, type: "task.development_started" },
+    { aggregate_version: 4, type: "task.development_failed" },
+  ]);
 });
