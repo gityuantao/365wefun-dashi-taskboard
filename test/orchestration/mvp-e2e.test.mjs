@@ -170,11 +170,26 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
     commitAll: async () => ({}),
     createPullRequest: async () => ({ url: "https://github.com/x/pull/99" }),
   };
+  let publishedDeployment = null;
   const deployer = {
     preflight: async () => ({ ok: true }),
-    upload: async () => ({ object: "releases/v1/abc/index.html" }),
-    switchEntry: async () => ({ url: "https://e365.example.com" }),
+    upload: async ({ candidateCommit, artifactIdentity }) => ({
+      object: "releases/v1/abc/index.html",
+      candidateCommit,
+      artifactIdentity,
+    }),
+    switchEntry: async ({ candidateCommit, artifactIdentity }) => {
+      publishedDeployment = {
+        confirmed: true,
+        published: true,
+        candidateCommit,
+        artifactIdentity: structuredClone(artifactIdentity),
+        url: "https://e365.example.com",
+      };
+      return { url: publishedDeployment.url };
+    },
     healthCheck: async () => ({ ok: true, status: 200 }),
+    readback: async () => structuredClone(publishedDeployment),
   };
 
   // 1) 纳管收件箱任务 -> 分析作业
@@ -313,15 +328,7 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
     actorId: "release-e2e",
     actorRoles: ["release_manager"],
     now: NOW,
-    adapter: {
-      ...createWebAdapter({ deployer }),
-      readback: async () => ({
-        confirmed: true,
-        published: true,
-        candidateCommit: CANDIDATE_COMMIT,
-        artifactIdentity: CANDIDATE_ARTIFACT,
-      }),
-    },
+    adapter: createWebAdapter({ deployer }),
   });
   assert.equal(release.status, "succeeded");
   assert.equal((await loadAggregate(harness.db, "version", "version-e2e-1")).state, "published");
