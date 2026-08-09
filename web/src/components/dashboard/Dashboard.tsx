@@ -55,22 +55,28 @@ export function Dashboard() {
   });
   const controlTriggerRef = useRef<HTMLButtonElement>(null);
   const controlMenuRef = useRef<HTMLDivElement>(null);
+  const loadGenerationRef = useRef(0);
+  const detailGenerationRef = useRef(0);
 
   const load = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++loadGenerationRef.current;
     setRefreshing(true);
     try {
       const [next, controlValue] = await Promise.all([
         getOrchestrationDashboard(signal),
         getOrchestrationControl(signal),
       ]);
+      if (generation !== loadGenerationRef.current) return;
       setPayload(next);
       setControl(controlValue);
       setError(null);
       setLastUpdated(Date.now());
     } catch (caught) {
       if (caught instanceof Error && caught.name === "AbortError") return;
+      if (generation !== loadGenerationRef.current) return;
       setError(caught instanceof ApiError ? caught.message : "无法加载驾驶舱数据");
     } finally {
+      if (generation !== loadGenerationRef.current) return;
       setRefreshing(false);
     }
   }, []);
@@ -86,7 +92,9 @@ export function Dashboard() {
   }, [load]);
 
   useEffect(() => {
+    const generation = ++detailGenerationRef.current;
     if (!drawer) {
+      if (generation !== detailGenerationRef.current) return;
       setDetail(null);
       return;
     }
@@ -96,9 +104,13 @@ export function Dashboard() {
       ? getOrchestrationTaskDetail(drawer.id, controller.signal)
       : getOrchestrationVersionDetail(drawer.id, controller.signal)
     )
-      .then(setDetail)
+      .then((next) => {
+        if (generation !== detailGenerationRef.current) return;
+        setDetail(next);
+      })
       .catch((caught) => {
         if (caught instanceof Error && caught.name === "AbortError") return;
+        if (generation !== detailGenerationRef.current) return;
         setDetail(null);
       });
     return () => controller.abort();
