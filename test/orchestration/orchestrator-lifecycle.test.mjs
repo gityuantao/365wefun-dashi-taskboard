@@ -135,6 +135,40 @@ test("lifecycle waits for explicit non-cooperative child termination failure bef
   ]);
 });
 
+test("lifecycle does not close resources before a runtime-timed-out Codex child closes", async () => {
+  const events = [];
+  const child = mockChild(events);
+  const lifecycle = createOrchestratorLifecycle({
+    dashboardServer: { close: async () => events.push("dashboard.close") },
+    miniflare: { dispose: async () => events.push("miniflare.dispose") },
+  });
+  const running = lifecycle.runJob({ id: "job-runtime-timeout" }, ({ signal }) => runCodex({
+    workdir: "/tmp",
+    prompt: "runtime timeout",
+    timeoutMinutes: 0.0001,
+    signal,
+    abortGraceMs: 100,
+    spawnImpl: () => child,
+  }));
+
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.deepEqual(events, ["child.kill:SIGTERM"]);
+  const shutdown = lifecycle.shutdown();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["child.kill:SIGTERM"]);
+
+  events.push("child.close");
+  child.emit("close", null);
+  const [result] = await Promise.all([running, shutdown]);
+  assert.equal(result.timedOut, true);
+  assert.deepEqual(events, [
+    "child.kill:SIGTERM",
+    "child.close",
+    "dashboard.close",
+    "miniflare.dispose",
+  ]);
+});
+
 test("durable method guards validate the claim immediately before every boundary", async () => {
   const events = [];
   let active = true;

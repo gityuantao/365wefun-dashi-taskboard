@@ -57,7 +57,7 @@ export function runCodex({
     let timer;
     let abortGraceTimer;
     let abortForceCloseTimer;
-    let abortRequested = false;
+    let terminationMode = null;
     let terminationError = null;
     const cleanup = () => {
       if (timer) clearTimeout(timer);
@@ -77,9 +77,9 @@ export function runCodex({
       cleanup();
       reject(error);
     };
-    const abort = () => {
-      if (settled || abortRequested) return;
-      abortRequested = true;
+    const requestTermination = (mode) => {
+      if (settled || terminationMode) return;
+      terminationMode = mode;
       if (timer) {
         clearTimeout(timer);
         timer = null;
@@ -98,25 +98,24 @@ export function runCodex({
         }, abortForceCloseMs);
       }, abortGraceMs);
     };
+    const abort = () => requestTermination("abort");
     child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
     timer = setTimeout(() => {
-      if (abortRequested) return;
-      child.kill("SIGTERM");
-      finish({ exitCode: null, timedOut: true, aborted: false, stdout, stderr });
+      requestTermination("timeout");
     }, timeoutMinutes * 60_000);
     child.on("close", (code) => {
       finish({
         exitCode: code,
-        timedOut: false,
-        aborted: abortRequested,
+        timedOut: terminationMode === "timeout",
+        aborted: terminationMode === "abort",
         stdout,
         stderr,
         ...(terminationError ? { terminationError: terminationError.message } : {}),
       });
     });
     child.on("error", (error) => {
-      if (abortRequested) {
+      if (terminationMode) {
         terminationError = error;
         return;
       }

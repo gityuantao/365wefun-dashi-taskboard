@@ -72,17 +72,48 @@ test("runCodex rejects a non-abort child error immediately", async () => {
   await assert.rejects(promise, /SPAWN_FAILED.*pipe failed/);
 });
 
-test("runCodex kills and reports timed-out runs", async () => {
+test("runCodex waits for child close before reporting a timed-out run", async () => {
   const child = mockChild();
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    return true;
+  };
+  let settled = false;
   const promise = runCodex({
     workdir: "/tmp",
     prompt: "slow",
     timeoutMinutes: 0.001,
+    abortGraceMs: 100,
     spawnImpl: () => child,
-  });
+  }).finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.equal(settled, false);
+  child.emit("close", null);
   const result = await promise;
   assert.equal(result.timedOut, true);
-  assert.equal(child.killed, true);
+  assert.equal(result.aborted, false);
+});
+
+test("runCodex escalates a timed-out child and does not settle before termination failure", async () => {
+  const child = mockChild();
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    return true;
+  };
+  const promise = runCodex({
+    workdir: "/tmp",
+    prompt: "stuck timeout",
+    timeoutMinutes: 0.0001,
+    abortGraceMs: 5,
+    abortForceCloseMs: 5,
+    spawnImpl: () => child,
+  });
+
+  await assert.rejects(promise, /TERMINATION_TIMEOUT/);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 });
 
 test("runCodex waits for the child close after shutdown sends SIGTERM", async () => {
