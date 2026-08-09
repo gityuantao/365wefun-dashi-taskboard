@@ -1,5 +1,4 @@
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
-import { targetVersionName } from "./version-gate.mjs";
 
 const DEVELOPED_STATES = new Set([
   "ready_for_test",
@@ -11,10 +10,19 @@ const DEVELOPED_STATES = new Set([
 ]);
 
 function targetVersionOf(task) {
-  const value = task.custom_fields?.find(
+  return task.custom_fields?.find(
     (field) => field.name === "目标版本" || field.id === "field-version",
   )?.value ?? null;
-  return Array.isArray(value) ? targetVersionName(value) : value;
+}
+
+function isSameTargetVersion(left, right) {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left)
+      && Array.isArray(right)
+      && left[0]?.id !== undefined
+      && left[0].id === right[0]?.id;
+  }
+  return left === right;
 }
 
 function priorityOf(task) {
@@ -44,7 +52,7 @@ export async function checkDevelopmentOrder({
   }
   const tasks = await client.getTasksByList(listId);
   const siblings = tasks.filter((candidate) => (
-    candidate.id !== taskId && targetVersionOf(candidate) === versionName
+    candidate.id !== taskId && isSameTargetVersion(targetVersionOf(candidate), versionName)
   ));
   for (const sibling of siblings) {
     if (!isEarlier(sibling, task)) continue;

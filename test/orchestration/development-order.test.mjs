@@ -89,6 +89,55 @@ test("development order blocks an unfinished sibling with a separately allocated
   assert.match(gate.reason, /task-a/);
 });
 
+test("development order does not block relationship arrays with matching names but different ids", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const current = task("task-b", {
+    priority: 2,
+    version: [{ id: "version-1", name: "1.0.1" }],
+  });
+  const sibling = task("task-a", {
+    priority: 1,
+    version: [{ id: "version-2", name: "1.0.1" }],
+  });
+  const client = makeClient(current, [sibling, current]);
+
+  const gate = await checkDevelopmentOrder({
+    db: harness.db,
+    taskId: "task-b",
+    client,
+    listId: LIST_ID,
+    now: NOW,
+  });
+
+  assert.equal(gate.blocked, false);
+});
+
+test("development order blocks relationship arrays with the same id despite different names", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const current = task("task-b", {
+    priority: 2,
+    version: [{ id: "version-1", name: "1.0.1" }],
+  });
+  const sibling = task("task-a", {
+    priority: 1,
+    version: [{ id: "version-1", name: "renamed-version" }],
+  });
+  const client = makeClient(current, [sibling, current]);
+
+  const gate = await checkDevelopmentOrder({
+    db: harness.db,
+    taskId: "task-b",
+    client,
+    listId: LIST_ID,
+    now: NOW,
+  });
+
+  assert.equal(gate.blocked, true);
+  assert.match(gate.reason, /task-a/);
+});
+
 test("development order preserves distinct legacy string values", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
