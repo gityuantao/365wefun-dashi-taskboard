@@ -6,6 +6,7 @@ import {
   loadCleanupAttempts,
   recordCleanupAttempt,
 } from "../../orchestration/application/release-commands.mjs";
+import { coordinateReleaseSnapshot } from "../../orchestration/application/release-coordinator.mjs";
 
 const NOW = "2026-08-04T00:08:00.000Z";
 
@@ -329,4 +330,64 @@ test("cleanup persists each ordered attempt and safely resumes without repeating
       ["remove_local_evidence", "succeeded"],
     ],
   );
+});
+
+test("production coordinator wiring blocks stale local and advanced remote PR heads", async () => {
+  const sideEffects = [];
+  const services = {
+    loadManifest: async () => null,
+    loadAggregate: async () => ({ state: "active", version: 1 }),
+    checkVersionGate: async () => ({ pass: true, reasons: [], taskIds: ["task-a"] }),
+    loadTaskPullRequest: async () => "https://github.com/owner/repo/pull/42",
+    freezeManifest: async () => sideEffects.push("freeze"),
+    handleConfirmRelease: async () => sideEffects.push("deploy"),
+    loadCleanupAttempts: async () => [],
+    recordCleanupAttempt: async () => sideEffects.push("record-cleanup"),
+    closeTaskPullRequest: async () => sideEffects.push("close-pr"),
+    deleteRemoteTaskBranch: async () => sideEffects.push("delete-remote"),
+    removeTaskWorktree: async () => sideEffects.push("remove-local"),
+  };
+  const base = {
+    snapshot: { id: "version-1", name: "version-1", status: "releasing" },
+    now: NOW,
+    db: {},
+    adapter: {
+      release: async () => sideEffects.push("adapter-release"),
+      readback: async () => ({ confirmed: true }),
+      collectRegressionEvidence: async () => ({ passed: true }),
+      identifyArtifact: async () => ({ digest: "sha256:artifact" }),
+    },
+    client: {},
+    runtime: { repoPath: "/repo", worktreesRoot: "/worktrees" },
+    repository: "owner/repo",
+    services,
+    log: () => {},
+  };
+
+  const localStale = await coordinateReleaseSnapshot({
+    ...base,
+    releaseGitOps: {
+      integrateTaskPr: async () => ({ merged: false, error: "fetched PR head is stale" }),
+    },
+  });
+  assert.equal(localStale.status, "failed");
+  assert.deepEqual(sideEffects, []);
+
+  const remoteAdvanced = await coordinateReleaseSnapshot({
+    ...base,
+    releaseGitOps: {
+      integrateTaskPr: async () => ({
+        merged: true,
+        taskHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        candidateCommit: "1111111111111111111111111111111111111111",
+        headRefName: "actual-remote-branch",
+        prNumber: 42,
+        repository: "owner/repo",
+      }),
+      persistCandidate: async () => ({ persisted: false, error: "GitHub PR 42 head changed" }),
+    },
+  });
+  assert.equal(remoteAdvanced.status, "failed");
+  assert.equal(remoteAdvanced.stage, "candidate_persistence");
+  assert.deepEqual(sideEffects, []);
 });

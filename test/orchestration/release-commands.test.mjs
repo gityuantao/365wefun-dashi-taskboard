@@ -286,3 +286,88 @@ test("release_failed retries the existing immutable Candidate without recomputin
     .first();
   assert.deepEqual(frozenAfter, frozenBefore);
 });
+
+test("partial task publication retries remaining tasks before publishing the version", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedVersion(harness, "version-1");
+  await seedTaskToRelease(harness, "task-a");
+  await seedTaskToRelease(harness, "task-b");
+  await freezeManifest({
+    db: harness.db,
+    versionId: "version-1",
+    now: NOW,
+    versionBranch: "version/version-1",
+    candidateCommit: CANDIDATE_COMMIT,
+    candidateRef: `refs/heads/release-candidate/version-1/${CANDIDATE_COMMIT}`,
+    taskPrHeads: [
+      {
+        taskId: "task-a",
+        branch: "remote-task-a",
+        headCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        prNumber: 41,
+        repository: "owner/repo",
+      },
+      {
+        taskId: "task-b",
+        branch: "remote-task-b",
+        headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        prNumber: 42,
+        repository: "owner/repo",
+      },
+    ],
+    artifactIdentity: ARTIFACT_IDENTITY,
+    regressionEvidence: { passed: true, command: "node --test", collectedAt: NOW },
+  });
+  const adapter = {
+    release: async () => ({ url: "https://releases.example.com/v1" }),
+    readback: async () => ({
+      confirmed: true,
+      published: true,
+      candidateCommit: CANDIDATE_COMMIT,
+      artifactIdentity: ARTIFACT_IDENTITY,
+    }),
+  };
+  let failTaskB = true;
+  const published = [];
+  const dispatch = async (input) => {
+    if (input.command.type === "publish_task") {
+      published.push(input.command.aggregateId);
+      if (input.command.aggregateId === "task-b" && failTaskB) {
+        throw new Error("task-b publish failed");
+      }
+    }
+    return dispatchCommand(input);
+  };
+
+  const first = await handleConfirmRelease({
+    db: harness.db,
+    versionId: "version-1",
+    actorId: "release-manager",
+    actorRoles: ["release_manager"],
+    now: NOW,
+    adapter,
+    dispatch,
+  });
+  assert.equal(first.status, "failed");
+  assert.match(first.error, /task-b publish failed/);
+  assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "release_failed");
+  assert.equal((await loadAggregate(harness.db, "task", "task-a")).state, "published");
+  assert.equal((await loadAggregate(harness.db, "task", "task-b")).state, "ready_for_release");
+
+  failTaskB = false;
+  const second = await handleConfirmRelease({
+    db: harness.db,
+    versionId: "version-1",
+    actorId: "release-manager",
+    actorRoles: ["release_manager"],
+    now: "2026-08-04T00:09:00.000Z",
+    adapter,
+    dispatch,
+  });
+  assert.equal(second.status, "succeeded");
+  assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "published");
+  assert.equal((await loadAggregate(harness.db, "task", "task-b")).state, "published");
+  assert.equal(published.filter((taskId) => taskId === "task-a").length, 1);
+  assert.equal(published.filter((taskId) => taskId === "task-b").length, 2);
+});

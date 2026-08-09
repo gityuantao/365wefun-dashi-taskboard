@@ -24,19 +24,7 @@ import { enqueueMutation } from "../orchestration/clickup/outbox.mjs";
 import { createDomainEvent } from "../orchestration/domain/events.mjs";
 import { parseCommandEnvelope } from "../orchestration/domain/commands.mjs";
 import { appendCommandResult } from "../orchestration/persistence/d1-event-store.mjs";
-import {
-  checkVersionGate,
-  freezeManifest,
-  loadManifest,
-} from "../orchestration/release/version-aggregator.mjs";
-import {
-  confirmPublishedCandidate,
-  coordinateVersionRelease,
-  handleConfirmRelease,
-  loadCleanupAttempts,
-  loadTaskPullRequest,
-  recordCleanupAttempt,
-} from "../orchestration/application/release-commands.mjs";
+import { coordinateReleaseSnapshot } from "../orchestration/application/release-coordinator.mjs";
 import { correctionText } from "../orchestration/clickup/state-comments.mjs";
 import { checkDevelopmentOrder } from "../orchestration/application/development-order.mjs";
 import { assignTaskVersion } from "../orchestration/application/version-assignment.mjs";
@@ -48,16 +36,14 @@ import {
 import { runCodex } from "../orchestration/runner/codex-runner.mjs";
 import {
   createTaskWorktree,
-  removeTaskWorktree,
   runInWorktree,
 } from "../orchestration/runner/worktree.mjs";
 import { claimJob, completeJob } from "../orchestration/persistence/d1-runner-jobs.mjs";
 import { loadAggregate } from "../orchestration/persistence/d1-aggregate-store.mjs";
+import { applyMigrations } from "../orchestration/persistence/migrations.mjs";
 import { startDashboardServer } from "../orchestration/dashboard/http-server.mjs";
 import {
-  closeTaskPullRequest,
   createPullRequest,
-  deleteRemoteTaskBranch,
   resolveRemoteRepo,
 } from "../orchestration/git/pr.mjs";
 import {
@@ -105,14 +91,13 @@ const db = await miniflare.getD1Database("DB");
 const migrations = readdirSync(MIGRATIONS_DIR)
   .filter((name) => /^\d+.*\.sql$/.test(name))
   .sort();
-const existingTable = await db
-  .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'projects'")
-  .first();
-if (!existingTable) {
-  for (const name of migrations) {
-    await db.exec(readFileSync(path.join(MIGRATIONS_DIR, name), "utf8"));
-  }
-}
+await applyMigrations({
+  db,
+  migrations: migrations.map((name) => ({
+    name,
+    sql: readFileSync(path.join(MIGRATIONS_DIR, name), "utf8"),
+  })),
+});
 
 const clientFactory = async ({ token: clientToken }) => createClickUpClient({
   token: clientToken,
@@ -354,96 +339,17 @@ async function releaseCoordinator(now) {
     await saveSnapshot(db, { type: "version", snapshot, readAt: now });
     // 始终激活版本聚合，确保 syncStatuses 能同步/纠正版本状态
     await ensureVersionActive(snapshot.id, now);
-    const versionId = snapshot.id;
-    const existingManifest = await loadManifest({ db, versionId });
-    const versionAggregate = await loadAggregate(db, "version", versionId);
-    const cleanupRetry = versionAggregate.state === "published" && existingManifest;
-    // 用户触发发布，或已发布版本需要重试未完成的持久化清理。
-    if (snapshot.status !== "releasing" && !cleanupRetry) continue;
-    if (
-      !adapter
-      || typeof adapter.readback !== "function"
-      || (versionAggregate.state !== "published" && typeof adapter.release !== "function")
-      || (!existingManifest && (
-        typeof adapter.collectRegressionEvidence !== "function"
-        || typeof adapter.identifyArtifact !== "function"
-      ))
-    ) {
-      log(`version ${versionId} release rejected: configured deployer and Candidate evidence providers required`);
-      continue;
-    }
-
-    let taskIds = existingManifest?.taskIds ?? [];
-    if (!existingManifest) {
-      const gate = await checkVersionGate({ db, versionId });
-      if (!gate.pass) {
-        log(`version ${versionId} gate: ${gate.reasons.join("; ")}`);
-        continue;
-      }
-      taskIds = gate.taskIds;
-    }
-    const versionBranch = existingManifest?.versionBranch
-      ?? `version/${snapshot.name ?? versionId}`;
-    const result = await coordinateVersionRelease({
-      versionId,
-      versionBranch,
-      taskIds,
+    await coordinateReleaseSnapshot({
+      snapshot,
       now,
-      existingManifest,
-      integrateTaskPr: async ({ taskId }) => releaseGitOps.integrateTaskPr({
-        taskId,
-        pullRequest: await loadTaskPullRequest({ db, taskId }),
-        versionBranch,
-      }),
-      collectRegressionEvidence: (candidate) => adapter.collectRegressionEvidence(candidate),
-      identifyArtifact: (candidate) => adapter.identifyArtifact(candidate),
-      persistCandidate: (candidate) => releaseGitOps.persistCandidate(candidate),
-      freezeCandidate: (candidate) => freezeManifest({ db, ...candidate }),
-      verifyCandidate: (candidate) => releaseGitOps.verifyCandidate(candidate),
-      publishCandidate: async ({ manifest }) => {
-        if (versionAggregate.state === "published") {
-          try {
-            const publication = await confirmPublishedCandidate({ adapter, manifest });
-            return { status: "succeeded", publication };
-          } catch (error) {
-            return { status: "failed", error: error.message };
-          }
-        }
-        return handleConfirmRelease({
-          db,
-          versionId,
-          actorId: "system-poller",
-          actorRoles: ["release_manager"],
-          now,
-          adapter,
-          client,
-        });
-      },
-      cleanupOperations: [
-        {
-          name: "close_pull_request",
-          run: ({ head }) => closeTaskPullRequest({ branch: String(head.prNumber), repo: repository }),
-        },
-        {
-          name: "delete_remote_branch",
-          run: ({ head }) => deleteRemoteTaskBranch({ repoPath: runtime.repoPath, branch: head.branch }),
-        },
-        {
-          name: "remove_local_evidence",
-          run: ({ head }) => removeTaskWorktree({
-            repoPath: runtime.repoPath,
-            taskId: head.taskId,
-            worktreesRoot: runtime.worktreesRoot,
-          }),
-        },
-      ],
-      loadCleanupAttempts: (query) => loadCleanupAttempts({ db, ...query }),
-      recordCleanupAttempt: (attempt) => recordCleanupAttempt({ db, ...attempt }),
+      db,
+      adapter,
+      client,
+      runtime,
+      repository,
+      releaseGitOps,
+      log,
     });
-    log(`version ${versionId} release -> ${result.status}${result.error ? `: ${result.error}` : ""}`);
-    if (result.cleanupResult) {
-      log(`version ${versionId} cleanup result ${JSON.stringify(result.cleanupResult)}`);
-    }
   }
 }
 

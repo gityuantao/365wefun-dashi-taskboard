@@ -121,6 +121,7 @@ export async function handleConfirmRelease({
   now,
   adapter,
   client,
+  dispatch = dispatchCommand,
 }) {
   if (!actorRoles.some((role) => ["release_manager", "admin"].includes(role))) {
     return { status: "rejected", error: "UNAUTHORIZED: release_manager role required" };
@@ -147,7 +148,7 @@ export async function handleConfirmRelease({
   const version = await loadAggregate(db, "version", versionId);
   const attempt = Date.now();
   try {
-    await dispatchCommand({
+    await dispatch({
       db,
       command: parseCommandEnvelope({
         id: `release-start-${versionId}-${attempt}`,
@@ -177,25 +178,10 @@ export async function handleConfirmRelease({
   try {
     const result = await adapter.release({ manifest });
     const publication = await confirmPublishedCandidate({ adapter, manifest, deployment: result });
-    const releasing = await loadAggregate(db, "version", versionId);
-    await dispatchCommand({
-      db,
-      command: parseCommandEnvelope({
-        id: `release-succeeded-${versionId}-${attempt}`,
-        type: "release_succeeded",
-        aggregateType: "version",
-        aggregateId: versionId,
-        expectedVersion: releasing.version + 1,
-        actorId,
-        issuedAt: now,
-        reason: "release succeeded",
-        parameters: {},
-      }),
-      now,
-    });
     for (const taskId of manifest.taskIds) {
       const task = await loadAggregate(db, "task", taskId);
-      await dispatchCommand({
+      if (task.state === "published") continue;
+      await dispatch({
         db,
         command: parseCommandEnvelope({
           id: `publish-task-${taskId}`,
@@ -211,6 +197,22 @@ export async function handleConfirmRelease({
         now,
       });
     }
+    const releasing = await loadAggregate(db, "version", versionId);
+    await dispatch({
+      db,
+      command: parseCommandEnvelope({
+        id: `release-succeeded-${versionId}-${attempt}`,
+        type: "release_succeeded",
+        aggregateType: "version",
+        aggregateId: versionId,
+        expectedVersion: releasing.version + 1,
+        actorId,
+        issuedAt: now,
+        reason: "release succeeded",
+        parameters: {},
+      }),
+      now,
+    });
     const okComment = stateChangeText("version", "releasing", "published");
     if (okComment && client) {
       try {
@@ -223,7 +225,7 @@ export async function handleConfirmRelease({
   } catch (error) {
     const failed = await loadAggregate(db, "version", versionId);
     try {
-      await dispatchCommand({
+      await dispatch({
         db,
         command: parseCommandEnvelope({
           id: `release-failed-${versionId}-${attempt}`,
