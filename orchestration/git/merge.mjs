@@ -99,6 +99,17 @@ export function fetchAndMergeTaskPullRequest({
 }) {
   const pr = githubPullRequest({ repository, pullRequest, versionBranch, run });
   if (!pr.ok) return { merged: false, conflict: false, error: pr.error };
+  const refreshedBase = git(repoPath, [
+    "fetch", "--force", "origin",
+    `refs/heads/${versionBranch}:refs/heads/${versionBranch}`,
+  ], run);
+  if (refreshedBase.status !== 0) {
+    return {
+      merged: false,
+      conflict: false,
+      error: refreshedBase.stderr || "version branch refresh failed",
+    };
+  }
   const fetchedRef = `refs/taskboard/pull/${pr.number}/${pr.headRefOid}`;
   const fetched = git(repoPath, [
     "fetch", "--force", "origin",

@@ -20,6 +20,9 @@ export const TASK_COMMAND_HANDLERS = {
   start_development(state) {
     return decideTaskTransition({ from: state, to: "developing" });
   },
+  retry_staging(state) {
+    return decideTaskTransition({ from: state, to: "accepting" });
+  },
   development_completed(state) {
     return decideTaskTransition({ from: state, to: "accepting" });
   },

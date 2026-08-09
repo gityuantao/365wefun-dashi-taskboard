@@ -23,6 +23,7 @@ const TASK_TRANSITIONS = new Map([
   ["analyzing:waiting_info", { to: "waiting_info", eventType: "task.analysis_needs_human" }],
   ["waiting_info:analyzing", { to: "analyzing", eventType: "task.analysis_restarted" }],
   ["ready_for_development:developing", { to: "developing", eventType: "task.development_started" }],
+  ["ready_for_development:accepting", { to: "accepting", eventType: "task.staging_retried" }],
   [
     "ready_for_development:waiting_info",
     { to: "waiting_info", eventType: "task.development_needs_info" },
