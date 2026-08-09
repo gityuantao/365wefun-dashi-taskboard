@@ -57,8 +57,8 @@ export async function createPullRequest({
     "--repo", repo,
     "--json", "url,state,baseRefName",
   ]);
+  let existing = null;
   if (view.status === 0) {
-    let existing = null;
     try {
       existing = JSON.parse(view.stdout);
     } catch {}
@@ -87,6 +87,14 @@ export async function createPullRequest({
   const match = created.stderr.match(URL_PATTERN);
   if (/already exists/i.test(created.stderr) && match) {
     return { url: match[0].replace(/[),.;]*$/, ""), alreadyExists: true };
+  }
+  if (
+    /No commits between/i.test(created.stderr)
+    && existing?.state === "MERGED"
+    && existing.baseRefName === base
+    && /^https?:/.test(existing.url ?? "")
+  ) {
+    return { url: existing.url, alreadyExists: true };
   }
   throw new Error(created.stderr.trim() || "gh pr create failed");
 }

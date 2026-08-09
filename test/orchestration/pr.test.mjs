@@ -106,6 +106,40 @@ test("creates a new pull request when the previous branch PR is already merged",
   assert.ok(calls.some((args) => args.includes("create")));
 });
 
+test("reuses the merged PR when the branch has no commits beyond the base", async () => {
+  const run = async (_command, args) => {
+    if (args.includes("view")) {
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          url: "https://github.com/gityuantao/365wefun/pull/891",
+          state: "MERGED",
+          baseRefName: "version/v1.0.3",
+        }),
+        stderr: "",
+      };
+    }
+    return {
+      status: 1,
+      stdout: "",
+      stderr: "GraphQL: No commits between version/v1.0.3 and task/86d3xmaw8 (createPullRequest)",
+    };
+  };
+
+  const result = await createPullRequest({
+    branch: "task/86d3xmaw8",
+    base: "version/v1.0.3",
+    title: "部署失败重试",
+    body: "没有新的代码改动",
+    run,
+  });
+
+  assert.deepEqual(result, {
+    url: "https://github.com/gityuantao/365wefun/pull/891",
+    alreadyExists: true,
+  });
+});
+
 test("createPullRequest rechecks fencing after view and before create mutation", async () => {
   let active = true;
   let mutations = 0;
