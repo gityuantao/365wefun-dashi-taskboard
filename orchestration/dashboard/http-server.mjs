@@ -12,11 +12,15 @@ import { buildDashboard, buildTaskDetail, buildVersionDetail } from "./queries.m
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const SECRET_PATTERN = /^[a-f0-9]{64}$/;
 const PROCESS_MUTATION_SECRET = randomBytes(32).toString("hex");
-export const DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH = path.join(
-  PROJECT_ROOT,
-  ".data",
-  "orchestration-mutation.secret",
-);
+
+export function resolveOrchestrationMutationSecretPath(
+  dataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR ?? path.join(PROJECT_ROOT, ".data"),
+) {
+  return path.join(path.resolve(dataDirectory), "orchestration-mutation.secret");
+}
+
+export const DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH =
+  resolveOrchestrationMutationSecretPath();
 
 function validateMutationSecret(value, source) {
   if (typeof value !== "string" || !SECRET_PATTERN.test(value)) {
@@ -43,19 +47,25 @@ async function secureSecretHandle(handle) {
   }
 }
 
-const NO_FOLLOW = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-const READ_SECRET_FLAGS = fsConstants.O_RDONLY | NO_FOLLOW;
-const CREATE_SECRET_FLAGS = fsConstants.O_WRONLY
-  | fsConstants.O_CREAT
-  | fsConstants.O_EXCL
-  | NO_FOLLOW;
+function secretOpenFlags(fileConstants) {
+  if (!Number.isInteger(fileConstants.O_NOFOLLOW) || fileConstants.O_NOFOLLOW === 0) {
+    throw new Error("O_NOFOLLOW is required for orchestration mutation secret files");
+  }
+  return {
+    read: fileConstants.O_RDONLY | fileConstants.O_NOFOLLOW,
+    create: fileConstants.O_WRONLY
+      | fileConstants.O_CREAT
+      | fileConstants.O_EXCL
+      | fileConstants.O_NOFOLLOW,
+  };
+}
 
-async function readSharedMutationSecret(secretPath, openFile) {
+async function readSharedMutationSecret(secretPath, openFile, readFlags) {
   let lastError;
   for (let attempt = 0; attempt < 20; attempt += 1) {
     let handle;
     try {
-      handle = await openFile(secretPath, READ_SECRET_FLAGS);
+      handle = await openFile(secretPath, readFlags);
       await secureSecretHandle(handle);
       const value = await handle.readFile("utf8");
       return validateMutationSecret(value, "Orchestration mutation secret file");
@@ -75,20 +85,25 @@ async function readSharedMutationSecret(secretPath, openFile) {
 
 export async function getProcessOrchestrationMutationSecret({
   secretPath = null,
-  openFile = open,
+  fileConstants = fsConstants,
+  fsOps = { mkdir, open },
+  openFile = fsOps.open,
 } = {}) {
   const envSecret = process.env.CODEX_TASKBOARD_ORCHESTRATION_SECRET;
   if (typeof envSecret === "string" && envSecret.length > 0) {
     return validateMutationSecret(envSecret, "CODEX_TASKBOARD_ORCHESTRATION_SECRET");
   }
+  const flags = secretOpenFlags(fileConstants);
   if (!secretPath) return PROCESS_MUTATION_SECRET;
 
-  await mkdir(path.dirname(secretPath), { recursive: true, mode: 0o700 });
+  await fsOps.mkdir(path.dirname(secretPath), { recursive: true, mode: 0o700 });
   let handle;
   try {
-    handle = await openFile(secretPath, CREATE_SECRET_FLAGS, 0o600);
+    handle = await openFile(secretPath, flags.create, 0o600);
   } catch (error) {
-    if (error?.code === "EEXIST") return readSharedMutationSecret(secretPath, openFile);
+    if (error?.code === "EEXIST") {
+      return readSharedMutationSecret(secretPath, openFile, flags.read);
+    }
     throw error;
   }
 

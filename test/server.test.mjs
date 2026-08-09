@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
 import { access, chmod, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import os from "node:os";
@@ -51,6 +52,58 @@ function resolveSecretInChild(secretPath, envSecret) {
         return;
       }
       resolve(secret);
+    });
+  });
+}
+
+function resolveDefaultSecretInChild(dataDirectory) {
+  const moduleUrl = new URL("../orchestration/dashboard/http-server.mjs", import.meta.url).href;
+  const script = `
+    import {
+      DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH,
+      getProcessOrchestrationMutationSecret,
+    } from ${JSON.stringify(moduleUrl)};
+    const expectedPath = process.env.TEST_EXPECTED_SECRET_PATH;
+    if (DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH !== expectedPath) {
+      process.send({ path: DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH });
+    } else {
+      process.send({
+        path: DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH,
+        secret: await getProcessOrchestrationMutationSecret({
+          secretPath: DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH,
+        }),
+      });
+    }
+  `;
+  const expectedPath = path.join(dataDirectory, "orchestration-mutation.secret");
+  const env = {
+    ...process.env,
+    CODEX_TASKBOARD_DATA_DIR: dataDirectory,
+    TEST_EXPECTED_SECRET_PATH: expectedPath,
+  };
+  delete env.CODEX_TASKBOARD_ORCHESTRATION_SECRET;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", script], {
+      env,
+      stdio: ["ignore", "ignore", "pipe", "ipc"],
+    });
+    let errorOutput = "";
+    let result;
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      errorOutput += chunk;
+    });
+    child.on("message", (value) => {
+      result = value;
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code !== 0) {
+        reject(new Error(`default-secret child exited ${code}: ${errorOutput}`));
+        return;
+      }
+      resolve(result);
     });
   });
 }
@@ -234,6 +287,21 @@ test("independent processes atomically share one file-backed orchestration secre
   assert.notEqual(other, first);
 });
 
+test("independent processes share the non-default taskboard data-directory secret", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestration-data-dir-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const expectedPath = path.join(directory, "orchestration-mutation.secret");
+
+  const [first, second] = await Promise.all([
+    resolveDefaultSecretInChild(directory),
+    resolveDefaultSecretInChild(directory),
+  ]);
+  assert.equal(first.path, expectedPath);
+  assert.equal(second.path, expectedPath);
+  assert.equal(first.secret, second.secret);
+  assert.match(first.secret, /^[a-f0-9]{64}$/);
+});
+
 test("orchestration secret environment override takes priority without creating a file", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestration-secret-env-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -292,6 +360,30 @@ test("orchestration secret resolver fails closed when fd chmod fails", async (t)
     getProcessOrchestrationMutationSecret({ secretPath, openFile }),
     /injected fd chmod failure/,
   );
+});
+
+test("orchestration secret resolver fails closed when O_NOFOLLOW is unavailable", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestration-secret-flags-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const secretPath = path.join(directory, "must-not-exist.secret");
+  const fileConstants = { ...fsConstants };
+  delete fileConstants.O_NOFOLLOW;
+  let fsCalls = 0;
+  const fsOps = {
+    mkdir: async () => {
+      fsCalls += 1;
+    },
+    open: async () => {
+      fsCalls += 1;
+    },
+  };
+
+  await assert.rejects(
+    getProcessOrchestrationMutationSecret({ secretPath, fileConstants, fsOps }),
+    /O_NOFOLLOW.*required/i,
+  );
+  assert.equal(fsCalls, 0);
+  await assert.rejects(access(secretPath), { code: "ENOENT" });
 });
 
 test("workflow workspaces persist centrally with optimistic concurrency", async () => {

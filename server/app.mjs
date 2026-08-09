@@ -18,6 +18,7 @@ import {
 import { normalizeWorkflowSnapshot } from "../shared/workflow-control-flow.mjs";
 import {
   getProcessOrchestrationMutationSecret,
+  resolveOrchestrationMutationSecretPath,
 } from "../orchestration/dashboard/http-server.mjs";
 import { AiChatService } from "./ai-chat.mjs";
 import { createCloudConfigStore } from "./cloud-config.mjs";
@@ -1326,7 +1327,7 @@ export function createTaskboardServer(options = {}) {
         ? Promise.resolve(options.orchestrationMutationSecret)
         : getProcessOrchestrationMutationSecret({
           secretPath: options.orchestrationMutationSecretPath
-            ?? path.join(resolved.dataDirectory, "orchestration-mutation.secret"),
+            ?? resolveOrchestrationMutationSecretPath(resolved.dataDirectory),
         });
     }
     return orchestrationMutationSecretPromise;
