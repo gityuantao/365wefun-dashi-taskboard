@@ -19,3 +19,10 @@ test("dashboard dialog traps focus and returns it to the exact trigger", () => {
   assert.match(source, /event\.key === "Tab"/);
   assert.match(source, /triggerRef\.current\?\.focus\(\)/);
 });
+
+test("busy dialog with no enabled controls keeps focus inside the modal", () => {
+  assert.match(source, /tabIndex=\{-1\}/);
+  assert.match(source, /document\.addEventListener\("keydown", handleDocumentKeyDown, true\)/);
+  assert.match(source, /document\.addEventListener\("focusin", containFocus, true\)/);
+  assert.match(source, /if \(busy \|\| closeDisabled\)[\s\S]*?dialogRef\.current\?\.focus\(\)/);
+});

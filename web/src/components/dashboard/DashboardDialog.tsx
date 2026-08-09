@@ -34,44 +34,70 @@ export function DashboardDialog({
 }: DashboardDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const closeDisabledRef = useRef(closeDisabled);
+  const onCloseRef = useRef(onClose);
+  closeDisabledRef.current = closeDisabled;
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     closeButtonRef.current?.focus();
-    return () => triggerRef.current?.focus();
+
+    function handleDocumentKeyDown(event: KeyboardEvent) {
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (!closeDisabledRef.current) onCloseRef.current();
+        return;
+      }
+      if (event.key === "Tab") {
+        const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+        const first = focusable[0];
+        const last = focusable.at(-1);
+        if (!first || !last) {
+          event.preventDefault();
+          dialog.focus();
+          return;
+        }
+        const focusIsOutside = (
+          document.activeElement === dialog
+          || !dialog.contains(document.activeElement)
+        );
+        if (event.shiftKey && (document.activeElement === first || focusIsOutside)) {
+          event.preventDefault();
+          last.focus();
+        } else if (
+          !event.shiftKey
+          && (document.activeElement === last || focusIsOutside)
+        ) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    }
+
+    function containFocus(event: FocusEvent) {
+      const dialog = dialogRef.current;
+      if (!dialog || (event.target instanceof Node && dialog.contains(event.target))) return;
+      const first = dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)[0];
+      (first ?? dialog).focus();
+    }
+
+    document.addEventListener("keydown", handleDocumentKeyDown, true);
+    document.addEventListener("focusin", containFocus, true);
+    return () => {
+      document.removeEventListener("keydown", handleDocumentKeyDown, true);
+      document.removeEventListener("focusin", containFocus, true);
+      triggerRef.current?.focus();
+    };
   }, []);
+
+  useEffect(() => {
+    if (busy || closeDisabled) dialogRef.current?.focus();
+  }, [busy, closeDisabled]);
 
   function requestClose() {
     if (!closeDisabled) onClose();
-  }
-
-  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      requestClose();
-      return;
-    }
-    if (event.key === "Tab") {
-      const dialog = dialogRef.current;
-      if (!dialog) return;
-      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (!first || !last) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-      }
-      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
-        event.preventDefault();
-        last.focus();
-      } else if (
-        !event.shiftKey
-        && (document.activeElement === last || !dialog.contains(document.activeElement))
-      ) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
   }
 
   return createPortal(
@@ -89,7 +115,6 @@ export function DashboardDialog({
         aria-labelledby={labelledBy}
         aria-busy={busy || undefined}
         tabIndex={-1}
-        onKeyDown={handleKeyDown}
       >
         <header className="dialog-header">
           <div className="dialog-context">
