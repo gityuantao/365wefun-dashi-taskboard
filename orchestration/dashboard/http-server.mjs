@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, open, readFile, unlink } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { mkdir, open } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,36 +20,63 @@ export const DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH = path.join(
 
 function validateMutationSecret(value, source) {
   if (typeof value !== "string" || !SECRET_PATTERN.test(value)) {
-    throw new Error(`${source} must contain exactly 64 lowercase hexadecimal characters`);
+    const error = new Error(
+      `${source} must contain exactly 64 lowercase hexadecimal characters`,
+    );
+    error.code = "INVALID_ORCHESTRATION_MUTATION_SECRET";
+    throw error;
   }
   return value;
 }
 
-async function tightenSecretPermissions(secretPath) {
-  try {
-    await chmod(secretPath, 0o600);
-  } catch {}
+async function secureSecretHandle(handle) {
+  let metadata = await handle.stat();
+  if (!metadata.isFile()) {
+    throw new Error("Orchestration mutation secret must be a regular file");
+  }
+  if ((metadata.mode & 0o777) !== 0o600) {
+    await handle.chmod(0o600);
+    metadata = await handle.stat();
+    if ((metadata.mode & 0o777) !== 0o600) {
+      throw new Error("Orchestration mutation secret file mode must be 0600");
+    }
+  }
 }
 
-async function readSharedMutationSecret(secretPath) {
+const NO_FOLLOW = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+const READ_SECRET_FLAGS = fsConstants.O_RDONLY | NO_FOLLOW;
+const CREATE_SECRET_FLAGS = fsConstants.O_WRONLY
+  | fsConstants.O_CREAT
+  | fsConstants.O_EXCL
+  | NO_FOLLOW;
+
+async function readSharedMutationSecret(secretPath, openFile) {
   let lastError;
   for (let attempt = 0; attempt < 20; attempt += 1) {
+    let handle;
     try {
-      const secret = validateMutationSecret(
-        await readFile(secretPath, "utf8"),
-        "Orchestration mutation secret file",
-      );
-      await tightenSecretPermissions(secretPath);
-      return secret;
+      handle = await openFile(secretPath, READ_SECRET_FLAGS);
+      await secureSecretHandle(handle);
+      const value = await handle.readFile("utf8");
+      return validateMutationSecret(value, "Orchestration mutation secret file");
     } catch (error) {
       lastError = error;
+      const retryable = error?.code === "ENOENT"
+        || (error?.code === "INVALID_ORCHESTRATION_MUTATION_SECRET"
+          && attempt < 19);
+      if (!retryable) throw error;
       if (attempt < 19) await new Promise((resolve) => setTimeout(resolve, 5));
+    } finally {
+      await handle?.close();
     }
   }
   throw lastError;
 }
 
-export async function getProcessOrchestrationMutationSecret({ secretPath = null } = {}) {
+export async function getProcessOrchestrationMutationSecret({
+  secretPath = null,
+  openFile = open,
+} = {}) {
   const envSecret = process.env.CODEX_TASKBOARD_ORCHESTRATION_SECRET;
   if (typeof envSecret === "string" && envSecret.length > 0) {
     return validateMutationSecret(envSecret, "CODEX_TASKBOARD_ORCHESTRATION_SECRET");
@@ -58,25 +86,20 @@ export async function getProcessOrchestrationMutationSecret({ secretPath = null 
   await mkdir(path.dirname(secretPath), { recursive: true, mode: 0o700 });
   let handle;
   try {
-    handle = await open(secretPath, "wx", 0o600);
+    handle = await openFile(secretPath, CREATE_SECRET_FLAGS, 0o600);
   } catch (error) {
-    if (error?.code === "EEXIST") return readSharedMutationSecret(secretPath);
+    if (error?.code === "EEXIST") return readSharedMutationSecret(secretPath, openFile);
     throw error;
   }
 
-  const secret = randomBytes(32).toString("hex");
+  const secret = PROCESS_MUTATION_SECRET;
   try {
     await handle.writeFile(secret, "utf8");
     await handle.sync();
-  } catch (error) {
-    try {
-      await unlink(secretPath);
-    } catch {}
-    throw error;
+    await secureSecretHandle(handle);
   } finally {
     await handle.close();
   }
-  await tightenSecretPermissions(secretPath);
   return secret;
 }
 

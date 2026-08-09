@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -8,7 +8,10 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
 
 import { createTaskboardServer } from "../server/index.mjs";
-import { startDashboardServer } from "../orchestration/dashboard/http-server.mjs";
+import {
+  getProcessOrchestrationMutationSecret,
+  startDashboardServer,
+} from "../orchestration/dashboard/http-server.mjs";
 import { createCloudWorkerHarness } from "./helpers/cloud-worker-harness.mjs";
 import { seedDashboardFixture } from "./helpers/dashboard-fixture.mjs";
 
@@ -136,32 +139,35 @@ test("loopback orchestration proxy authorizes mutations without exposing its sec
   t.after(() => harness.dispose());
   await seedDashboardFixture(harness.db);
 
-  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestration-auth-test-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const controlPath = path.join(directory, "control.json");
-  await writeFile(path.join(directory, "index.html"), "<main>Taskboard</main>", "utf8");
-  const mutationSecret = "main-server-proxy-test-secret";
-  const dashboard = await startDashboardServer({
-    db: harness.db,
-    port: 0,
-    controlPath,
-    mutationSecret,
-    versionStatusMap: {
-      规划中: "planning",
-      进行中: "active",
-      发布中: "releasing",
-      发布失败: "release_failed",
-      已发布: "published",
-      已取消: "canceled",
-    },
+  let dashboard;
+  let mutationSecretPath;
+  const baseUrl = await startServer(async (directory) => {
+    const controlPath = path.join(directory, "control.json");
+    mutationSecretPath = path.join(directory, "orchestration-mutation.secret");
+    await writeFile(mutationSecretPath, "4".repeat(64), { mode: 0o644 });
+    await writeFile(path.join(directory, "index.html"), "<main>Taskboard</main>", "utf8");
+    dashboard = await startDashboardServer({
+      db: harness.db,
+      port: 0,
+      controlPath,
+      mutationSecretPath,
+      versionStatusMap: {
+        规划中: "planning",
+        进行中: "active",
+        发布中: "releasing",
+        发布失败: "release_failed",
+        已发布: "published",
+        已取消: "canceled",
+      },
+    });
+    return {
+      orchestrationPort: dashboard.port,
+      staticDirectory: directory,
+    };
   });
   t.after(() => dashboard.close());
-
-  const baseUrl = await startServer(async () => ({
-    orchestrationPort: dashboard.port,
-    orchestrationMutationSecret: mutationSecret,
-    staticDirectory: directory,
-  }));
+  const mutationSecret = await readFile(mutationSecretPath, "utf8");
+  assert.equal((await stat(mutationSecretPath)).mode & 0o777, 0o600);
 
   const html = await fetch(baseUrl);
   assert.equal(html.status, 200);
@@ -247,6 +253,44 @@ test("orchestration secret resolver rejects malformed existing files", async (t)
   await assert.rejects(
     resolveSecretInChild(secretPath),
     /must contain exactly 64 lowercase hexadecimal characters/,
+  );
+});
+
+test("orchestration secret resolver rejects a final-path symlink without altering its target", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestration-secret-symlink-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const targetPath = path.join(directory, "target.secret");
+  const secretPath = path.join(directory, "linked.secret");
+  const targetSecret = "2".repeat(64);
+  await writeFile(targetPath, targetSecret, { mode: 0o644 });
+  await symlink(targetPath, secretPath);
+
+  await assert.rejects(resolveSecretInChild(secretPath), /ELOOP|symbolic link|regular file/i);
+  assert.equal(await readFile(targetPath, "utf8"), targetSecret);
+  assert.equal((await stat(targetPath)).mode & 0o777, 0o644);
+});
+
+test("orchestration secret resolver fails closed when fd chmod fails", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestration-secret-chmod-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const secretPath = path.join(directory, "existing.secret");
+  await writeFile(secretPath, "3".repeat(64), { mode: 0o644 });
+
+  const openFile = async (...args) => {
+    const handle = await open(...args);
+    return {
+      chmod: async () => {
+        throw new Error("injected fd chmod failure");
+      },
+      close: () => handle.close(),
+      readFile: (...readArgs) => handle.readFile(...readArgs),
+      stat: () => handle.stat(),
+    };
+  };
+
+  await assert.rejects(
+    getProcessOrchestrationMutationSecret({ secretPath, openFile }),
+    /injected fd chmod failure/,
   );
 });
 

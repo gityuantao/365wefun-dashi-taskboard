@@ -17,7 +17,6 @@ import {
 } from "../shared/domain.mjs";
 import { normalizeWorkflowSnapshot } from "../shared/workflow-control-flow.mjs";
 import {
-  DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH,
   getProcessOrchestrationMutationSecret,
 } from "../orchestration/dashboard/http-server.mjs";
 import { AiChatService } from "./ai-chat.mjs";
@@ -1327,9 +1326,7 @@ export function createTaskboardServer(options = {}) {
         ? Promise.resolve(options.orchestrationMutationSecret)
         : getProcessOrchestrationMutationSecret({
           secretPath: options.orchestrationMutationSecretPath
-            ?? (Object.hasOwn(options, "dataDirectory")
-              ? null
-              : DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH),
+            ?? path.join(resolved.dataDirectory, "orchestration-mutation.secret"),
         });
     }
     return orchestrationMutationSecretPromise;
