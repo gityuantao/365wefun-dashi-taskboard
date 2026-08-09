@@ -26,7 +26,7 @@ function githubPullRequest({ repository, pullRequest, versionBranch, run }) {
   const viewed = run("gh", [
     "pr", "view", String(number),
     "--repo", repository,
-    "--json", "number,state,baseRefName,headRefName,headRefOid",
+    "--json", "number,state,baseRefName,headRefName,headRefOid,mergeCommit",
   ]);
   if (viewed.status !== 0) {
     return { ok: false, error: viewed.stderr || "GitHub PR lookup failed" };
@@ -37,8 +37,8 @@ function githubPullRequest({ repository, pullRequest, versionBranch, run }) {
   } catch {
     return { ok: false, error: "GitHub PR lookup returned invalid JSON" };
   }
-  if (pr.number !== number || pr.state !== "OPEN" || pr.baseRefName !== versionBranch) {
-    return { ok: false, error: "GitHub PR is not open against the version branch" };
+  if (pr.number !== number || !["OPEN", "MERGED"].includes(pr.state) || pr.baseRefName !== versionBranch) {
+    return { ok: false, error: "GitHub PR is not open or merged against the version branch" };
   }
   if (!/^[0-9a-f]{40,64}$/i.test(pr.headRefOid ?? "")) {
     return { ok: false, error: "GitHub PR head commit is invalid" };
@@ -115,6 +115,27 @@ export function fetchAndMergeTaskPullRequest({
 }) {
   const pr = githubPullRequest({ repository, pullRequest, versionBranch, run });
   if (!pr.ok) return { merged: false, conflict: false, error: pr.error };
+  if (pr.state === "MERGED") {
+    const candidateCommit = pr.mergeCommit?.oid;
+    if (!/^[0-9a-f]{40,64}$/i.test(candidateCommit ?? "")) {
+      return { merged: false, conflict: false, error: "merged GitHub PR has no valid merge commit" };
+    }
+    const remoteVersion = git(repoPath, ["ls-remote", "origin", `refs/heads/${versionBranch}`], run);
+    if (remoteVersion.status !== 0 || remoteVersion.stdout.trim().split(/\s+/)[0] !== candidateCommit) {
+      return { merged: false, conflict: false, error: "merged PR commit is not the current remote version branch" };
+    }
+    return {
+      merged: true,
+      taskId,
+      repository,
+      prNumber: pr.number,
+      headRefName: pr.headRefName,
+      taskHead: pr.headRefOid,
+      candidateCommit,
+      versionBranch,
+      alreadyMerged: true,
+    };
+  }
   const fetchedBase = `refs/taskboard/base/${versionBranch}`;
   const refreshedBase = git(repoPath, [
     "fetch", "--force", "origin",
