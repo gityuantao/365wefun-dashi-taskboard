@@ -1,17 +1,83 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { chmod, mkdir, open, readFile, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { readControl, writeControl } from "../control.mjs";
 import { enqueueMutation } from "../clickup/outbox.mjs";
 import { buildDashboard, buildTaskDetail, buildVersionDetail } from "./queries.mjs";
 
-const PROCESS_MUTATION_SECRET = typeof process.env.CODEX_TASKBOARD_ORCHESTRATION_SECRET === "string"
-  && process.env.CODEX_TASKBOARD_ORCHESTRATION_SECRET.length > 0
-  ? process.env.CODEX_TASKBOARD_ORCHESTRATION_SECRET
-  : randomBytes(32).toString("base64url");
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const SECRET_PATTERN = /^[a-f0-9]{64}$/;
+const PROCESS_MUTATION_SECRET = randomBytes(32).toString("hex");
+export const DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH = path.join(
+  PROJECT_ROOT,
+  ".data",
+  "orchestration-mutation.secret",
+);
 
-export function getProcessOrchestrationMutationSecret() {
-  return PROCESS_MUTATION_SECRET;
+function validateMutationSecret(value, source) {
+  if (typeof value !== "string" || !SECRET_PATTERN.test(value)) {
+    throw new Error(`${source} must contain exactly 64 lowercase hexadecimal characters`);
+  }
+  return value;
+}
+
+async function tightenSecretPermissions(secretPath) {
+  try {
+    await chmod(secretPath, 0o600);
+  } catch {}
+}
+
+async function readSharedMutationSecret(secretPath) {
+  let lastError;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      const secret = validateMutationSecret(
+        await readFile(secretPath, "utf8"),
+        "Orchestration mutation secret file",
+      );
+      await tightenSecretPermissions(secretPath);
+      return secret;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 19) await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+  throw lastError;
+}
+
+export async function getProcessOrchestrationMutationSecret({ secretPath = null } = {}) {
+  const envSecret = process.env.CODEX_TASKBOARD_ORCHESTRATION_SECRET;
+  if (typeof envSecret === "string" && envSecret.length > 0) {
+    return validateMutationSecret(envSecret, "CODEX_TASKBOARD_ORCHESTRATION_SECRET");
+  }
+  if (!secretPath) return PROCESS_MUTATION_SECRET;
+
+  await mkdir(path.dirname(secretPath), { recursive: true, mode: 0o700 });
+  let handle;
+  try {
+    handle = await open(secretPath, "wx", 0o600);
+  } catch (error) {
+    if (error?.code === "EEXIST") return readSharedMutationSecret(secretPath);
+    throw error;
+  }
+
+  const secret = randomBytes(32).toString("hex");
+  try {
+    await handle.writeFile(secret, "utf8");
+    await handle.sync();
+  } catch (error) {
+    try {
+      await unlink(secretPath);
+    } catch {}
+    throw error;
+  } finally {
+    await handle.close();
+  }
+  await tightenSecretPermissions(secretPath);
+  return secret;
 }
 
 function sendJson(response, status, value, extraHeaders = {}) {
@@ -65,8 +131,12 @@ export async function startDashboardServer({
   versionListUrl = null,
   controlPath = null,
   versionStatusMap = null,
-  mutationSecret = getProcessOrchestrationMutationSecret(),
+  mutationSecret,
+  mutationSecretPath = null,
 }) {
+  const resolvedMutationSecret = mutationSecret === undefined
+    ? await getProcessOrchestrationMutationSecret({ secretPath: mutationSecretPath })
+    : mutationSecret;
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url, "http://127.0.0.1");
@@ -76,7 +146,7 @@ export async function startDashboardServer({
           return sendJson(response, 200, await readControl(controlPath));
         }
         if (request.method === "PUT") {
-          if (!authorizedMutation(request, mutationSecret)) return unauthorized(response);
+          if (!authorizedMutation(request, resolvedMutationSecret)) return unauthorized(response);
           let body;
           try {
             body = JSON.parse(await readRequestBody(request));
@@ -126,7 +196,7 @@ export async function startDashboardServer({
       );
       if (versionPublishMatch) {
         if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
-        if (!authorizedMutation(request, mutationSecret)) return unauthorized(response);
+        if (!authorizedMutation(request, resolvedMutationSecret)) return unauthorized(response);
         let versionId;
         try {
           versionId = decodeURIComponent(versionPublishMatch[1]);

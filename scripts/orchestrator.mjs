@@ -52,6 +52,7 @@ import {
 import { loadAggregate } from "../orchestration/persistence/d1-aggregate-store.mjs";
 import { applyMigrations } from "../orchestration/persistence/migrations.mjs";
 import {
+  DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH,
   getProcessOrchestrationMutationSecret,
   startDashboardServer,
 } from "../orchestration/dashboard/http-server.mjs";
@@ -226,7 +227,9 @@ const dashboardServer = await startDashboardServer({
   versionListUrl: `https://app.clickup.com/${encodeURIComponent(config.spaceId)}/v/l/${encodeURIComponent(config.lists[versionListKey].id)}`,
   controlPath: CONTROL_PATH,
   versionStatusMap: config.versionStatusMap,
-  mutationSecret: getProcessOrchestrationMutationSecret(),
+  mutationSecret: await getProcessOrchestrationMutationSecret({
+    secretPath: DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH,
+  }),
 });
 log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
 

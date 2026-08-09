@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +13,44 @@ import { createCloudWorkerHarness } from "./helpers/cloud-worker-harness.mjs";
 import { seedDashboardFixture } from "./helpers/dashboard-fixture.mjs";
 
 const runningApps = [];
+
+function resolveSecretInChild(secretPath, envSecret) {
+  const moduleUrl = new URL("../orchestration/dashboard/http-server.mjs", import.meta.url).href;
+  const script = `
+    import { getProcessOrchestrationMutationSecret } from ${JSON.stringify(moduleUrl)};
+    const secret = await getProcessOrchestrationMutationSecret({
+      secretPath: process.env.TEST_ORCHESTRATION_SECRET_PATH,
+    });
+    process.send(secret);
+  `;
+  const env = { ...process.env, TEST_ORCHESTRATION_SECRET_PATH: secretPath };
+  delete env.CODEX_TASKBOARD_ORCHESTRATION_SECRET;
+  if (envSecret !== undefined) env.CODEX_TASKBOARD_ORCHESTRATION_SECRET = envSecret;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", script], {
+      env,
+      stdio: ["ignore", "ignore", "pipe", "ipc"],
+    });
+    let errorOutput = "";
+    let secret;
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      errorOutput += chunk;
+    });
+    child.on("message", (value) => {
+      secret = value;
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code !== 0) {
+        reject(new Error(`secret child exited ${code}: ${errorOutput}`));
+        return;
+      }
+      resolve(secret);
+    });
+  });
+}
 
 afterEach(async () => {
   while (runningApps.length > 0) {
@@ -164,6 +203,51 @@ test("loopback orchestration proxy authorizes mutations without exposing its sec
 
   const metadata = await request(baseUrl, "/api/meta");
   assert.equal(JSON.stringify(metadata.body).includes(mutationSecret), false);
+});
+
+test("independent processes atomically share one file-backed orchestration secret", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestration-secret-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sharedPath = path.join(directory, "shared.secret");
+  const otherPath = path.join(directory, "other.secret");
+
+  const [first, second] = await Promise.all([
+    resolveSecretInChild(sharedPath),
+    resolveSecretInChild(sharedPath),
+  ]);
+  assert.equal(first, second);
+  assert.match(first, /^[a-f0-9]{64}$/);
+
+  const file = await readFile(sharedPath, "utf8");
+  assert.equal(file, first);
+  const mode = await stat(sharedPath);
+  assert.equal(mode.mode & 0o777, 0o600);
+
+  const other = await resolveSecretInChild(otherPath);
+  assert.match(other, /^[a-f0-9]{64}$/);
+  assert.notEqual(other, first);
+});
+
+test("orchestration secret environment override takes priority without creating a file", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestration-secret-env-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const secretPath = path.join(directory, "unused.secret");
+  const envSecret = "1".repeat(64);
+
+  assert.equal(await resolveSecretInChild(secretPath, envSecret), envSecret);
+  await assert.rejects(access(secretPath), { code: "ENOENT" });
+});
+
+test("orchestration secret resolver rejects malformed existing files", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestration-secret-invalid-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const secretPath = path.join(directory, "invalid.secret");
+  await writeFile(secretPath, "not-a-valid-secret", { mode: 0o644 });
+
+  await assert.rejects(
+    resolveSecretInChild(secretPath),
+    /must contain exactly 64 lowercase hexadecimal characters/,
+  );
 });
 
 test("workflow workspaces persist centrally with optimistic concurrency", async () => {

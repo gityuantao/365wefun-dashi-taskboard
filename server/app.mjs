@@ -16,7 +16,10 @@ import {
   isTaskStatus,
 } from "../shared/domain.mjs";
 import { normalizeWorkflowSnapshot } from "../shared/workflow-control-flow.mjs";
-import { getProcessOrchestrationMutationSecret } from "../orchestration/dashboard/http-server.mjs";
+import {
+  DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH,
+  getProcessOrchestrationMutationSecret,
+} from "../orchestration/dashboard/http-server.mjs";
 import { AiChatService } from "./ai-chat.mjs";
 import { createCloudConfigStore } from "./cloud-config.mjs";
 import {
@@ -1317,9 +1320,20 @@ export function resolveHost(value = process.env.CODEX_TASKBOARD_HOST ?? "0.0.0.0
 
 export function createTaskboardServer(options = {}) {
   const resolved = resolveServerOptions(options);
-  const orchestrationMutationSecret = Object.hasOwn(options, "orchestrationMutationSecret")
-    ? options.orchestrationMutationSecret
-    : getProcessOrchestrationMutationSecret();
+  let orchestrationMutationSecretPromise;
+  const resolveOrchestrationMutationSecret = () => {
+    if (!orchestrationMutationSecretPromise) {
+      orchestrationMutationSecretPromise = Object.hasOwn(options, "orchestrationMutationSecret")
+        ? Promise.resolve(options.orchestrationMutationSecret)
+        : getProcessOrchestrationMutationSecret({
+          secretPath: options.orchestrationMutationSecretPath
+            ?? (Object.hasOwn(options, "dataDirectory")
+              ? null
+              : DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH),
+        });
+    }
+    return orchestrationMutationSecretPromise;
+  };
   const database = new TaskboardDatabase(resolved.databasePath);
   const events = new EventHub();
   const cloudConfig = options.cloudConfigStore ?? createCloudConfigStore({
@@ -1600,6 +1614,7 @@ export function createTaskboardServer(options = {}) {
           signal: AbortSignal.timeout(5000),
         };
         if (request.method === "POST") {
+          const orchestrationMutationSecret = await resolveOrchestrationMutationSecret();
           if (typeof orchestrationMutationSecret === "string"
             && orchestrationMutationSecret.length > 0) {
             init.headers.authorization = `Bearer ${orchestrationMutationSecret}`;
@@ -1649,6 +1664,7 @@ export function createTaskboardServer(options = {}) {
           signal: AbortSignal.timeout(5000),
         };
         if (request.method === "PUT") {
+          const orchestrationMutationSecret = await resolveOrchestrationMutationSecret();
           if (typeof orchestrationMutationSecret === "string"
             && orchestrationMutationSecret.length > 0) {
             init.headers.authorization = `Bearer ${orchestrationMutationSecret}`;
