@@ -1,0 +1,93 @@
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import test from "node:test";
+
+import {
+  createOrchestratorLifecycle,
+  guardDurableMethods,
+} from "../../orchestration/runner/codex-runner.mjs";
+
+test("SIGTERM stops claims, cancels active runs, drains settlement, and closes resources", async () => {
+  const signals = new EventEmitter();
+  const events = [];
+  let settleJob;
+  const jobSettled = new Promise((resolve) => { settleJob = resolve; });
+  const lifecycle = createOrchestratorLifecycle({
+    dashboardServer: { close: async () => { events.push("dashboard.close"); } },
+    miniflare: { dispose: async () => { events.push("miniflare.dispose"); } },
+    clearIntervalImpl: (handle) => events.push(`interval.clear:${handle}`),
+  });
+  lifecycle.setPollingInterval("poll-1");
+  lifecycle.installSignalHandlers(signals);
+  const running = lifecycle.runJob({ id: "job-1" }, async ({ signal }) => {
+    await new Promise((resolve) => {
+      signal.addEventListener("abort", () => {
+        events.push("codex.abort");
+        resolve();
+      }, { once: true });
+    });
+    await jobSettled;
+    events.push("job.settled");
+  });
+
+  signals.emit("SIGTERM");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(lifecycle.canClaim(), false);
+  assert.deepEqual(events, ["interval.clear:poll-1", "codex.abort"]);
+
+  settleJob();
+  await running;
+  await lifecycle.shutdown();
+  assert.deepEqual(events, [
+    "interval.clear:poll-1",
+    "codex.abort",
+    "job.settled",
+    "dashboard.close",
+    "miniflare.dispose",
+  ]);
+});
+
+test("a claim finishing during shutdown is reconciled and never executed", async () => {
+  let finishClaim;
+  const claimed = new Promise((resolve) => { finishClaim = resolve; });
+  const events = [];
+  const lifecycle = createOrchestratorLifecycle();
+  const claimAttempt = lifecycle.claimAndRun({
+    claim: () => claimed,
+    reconcile: async (job) => events.push(`reconciled:${job.id}`),
+    execute: async (job) => events.push(`executed:${job.id}`),
+  });
+
+  const shutdown = lifecycle.shutdown();
+  finishClaim({ id: "job-race" });
+  await Promise.all([claimAttempt, shutdown]);
+
+  assert.deepEqual(events, ["reconciled:job-race"]);
+});
+
+test("durable method guards validate the claim immediately before every boundary", async () => {
+  const events = [];
+  let active = true;
+  const guarded = guardDurableMethods({
+    postComment: async () => events.push("comment.write"),
+    getTask: async () => events.push("task.read"),
+  }, {
+    methods: ["postComment"],
+    assertActive: async () => {
+      events.push("claim.check");
+      if (!active) throw new Error("CLAIM_MISMATCH");
+    },
+  });
+
+  await guarded.getTask();
+  await guarded.postComment();
+  active = false;
+  await assert.rejects(guarded.postComment(), /CLAIM_MISMATCH/);
+
+  assert.deepEqual(events, [
+    "task.read",
+    "claim.check",
+    "comment.write",
+    "claim.check",
+  ]);
+});

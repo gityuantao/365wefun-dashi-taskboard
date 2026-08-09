@@ -33,12 +33,22 @@ import {
   resolveCurrentDevVersionName,
   targetVersionOfTask,
 } from "../orchestration/application/version-gate.mjs";
-import { runCodex } from "../orchestration/runner/codex-runner.mjs";
+import {
+  createOrchestratorLifecycle,
+  guardDurableMethods,
+  runCodex,
+} from "../orchestration/runner/codex-runner.mjs";
 import {
   createTaskWorktree,
   runInWorktree,
 } from "../orchestration/runner/worktree.mjs";
-import { claimJob, completeJob } from "../orchestration/persistence/d1-runner-jobs.mjs";
+import {
+  assertJobClaim,
+  claimJob,
+  completeJob,
+  reconcileJobClaim,
+  recoverRunnerJobs,
+} from "../orchestration/persistence/d1-runner-jobs.mjs";
 import { loadAggregate } from "../orchestration/persistence/d1-aggregate-store.mjs";
 import { applyMigrations } from "../orchestration/persistence/migrations.mjs";
 import { startDashboardServer } from "../orchestration/dashboard/http-server.mjs";
@@ -122,45 +132,92 @@ const gitOps = {
     baseRef,
     worktreesRoot,
   }),
-  commitAll: (worktreePath, message) => {
-    runInWorktree(worktreePath, ["add", "-A"]);
-    const commit = runInWorktree(worktreePath, ["commit", "-m", message]);
-    const output = `${commit.stdout}\n${commit.stderr}`;
-    if (commit.status !== 0 && !/nothing to commit/.test(output)) {
-      throw new Error(`git commit failed: ${output.trim()}`);
-    }
-  },
-  createPullRequest: ({ repoPath, branch, base, baseRef, title, body }) => {
-    if (base && base !== "main") {
-      const remote = execFileSync(
-        "git",
-        ["-C", repoPath, "ls-remote", "--heads", "origin", `refs/heads/${base}`],
-        { encoding: "utf8" },
-      ).trim();
-      if (!remote) {
-        execFileSync("git", ["-C", repoPath, "branch", base, baseRef ?? "main"], {
-          stdio: "ignore",
-        });
-        execFileSync("git", ["-C", repoPath, "push", "-u", "origin", base], {
-          stdio: "ignore",
-        });
-      }
-    }
-    execFileSync("git", ["-C", repoPath, "push", "-u", "origin", branch], {
-      stdio: "ignore",
-    });
-    return createPullRequest({ branch, base, title, body });
-  },
 };
 
 const codex = {
-  run: async ({ prompt, workdir, taskId }) => runCodex({
+  run: async ({ prompt, workdir, taskId, signal }) => runCodex({
     workdir: workdir ?? runtime.repoPath,
     prompt,
     timeoutMinutes: runtime.codexTimeoutMinutes ?? 20,
     codexBin: runtime.codexBin ?? "codex",
+    signal,
   }),
 };
+
+const CLICKUP_DURABLE_METHODS = [
+  "createTask",
+  "postComment",
+  "updateCustomField",
+  "updateTaskDescription",
+  "updateTaskStatus",
+];
+
+function jobClaimGuard(job) {
+  return () => assertJobClaim(db, {
+    jobId: job.id,
+    deviceId: runtime.deviceId,
+    fencingToken: job.fencingToken,
+    now: new Date().toISOString(),
+  });
+}
+
+async function jobClient(job) {
+  return guardDurableMethods(await clientFactory({ token }), {
+    methods: CLICKUP_DURABLE_METHODS,
+    assertActive: jobClaimGuard(job),
+  });
+}
+
+function jobGitOps(job) {
+  const assertActive = jobClaimGuard(job);
+  return {
+    createWorktree: async (options) => {
+      await assertActive();
+      return gitOps.createWorktree(options);
+    },
+    commitAll: async (worktreePath, message) => {
+      await assertActive();
+      runInWorktree(worktreePath, ["add", "-A"]);
+      await assertActive();
+      const commit = runInWorktree(worktreePath, ["commit", "-m", message]);
+      const output = `${commit.stdout}\n${commit.stderr}`;
+      if (commit.status !== 0 && !/nothing to commit/.test(output)) {
+        throw new Error(`git commit failed: ${output.trim()}`);
+      }
+    },
+    createPullRequest: async ({ repoPath, branch, base, baseRef, title, body }) => {
+      if (base && base !== "main") {
+        const remote = execFileSync(
+          "git",
+          ["-C", repoPath, "ls-remote", "--heads", "origin", `refs/heads/${base}`],
+          { encoding: "utf8" },
+        ).trim();
+        if (!remote) {
+          await assertActive();
+          execFileSync("git", ["-C", repoPath, "branch", base, baseRef ?? "main"], {
+            stdio: "ignore",
+          });
+          await assertActive();
+          execFileSync("git", ["-C", repoPath, "push", "-u", "origin", base], {
+            stdio: "ignore",
+          });
+        }
+      }
+      await assertActive();
+      execFileSync("git", ["-C", repoPath, "push", "-u", "origin", branch], {
+        stdio: "ignore",
+      });
+      await assertActive();
+      return createPullRequest({ branch, base, title, body });
+    },
+  };
+}
+
+function jobCodex(signal) {
+  return {
+    run: (options) => codex.run({ ...options, signal }),
+  };
+}
 
 const taskListKey = (runtime.listSet ?? "sandbox") === "production" ? "task" : "taskSandbox";
 const versionListKey = (runtime.listSet ?? "sandbox") === "production" ? "version" : "versionSandbox";
@@ -174,16 +231,19 @@ const dashboardServer = await startDashboardServer({
 });
 log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
 
+const lifecycle = createOrchestratorLifecycle({ dashboardServer, miniflare, log });
+lifecycle.installSignalHandlers(process);
+
 const handlers = {
-  analyze: async (job) => {
-    const client = await clientFactory({ token });
+  analyze: async (job, { signal } = {}) => {
+    const client = await jobClient(job);
     const assignment = await assignTaskVersion({
       taskId: job.payload.taskId,
       client,
       config,
       taskListKey,
       versionListKey,
-      codex,
+      codex: jobCodex(signal),
       now: new Date().toISOString(),
       log,
     });
@@ -203,7 +263,7 @@ const handlers = {
       job,
       db,
       client,
-      codex,
+      codex: jobCodex(signal),
       now: new Date().toISOString(),
       fieldIds: {
         summary: fieldId(config, taskListKey, "执行摘要"),
@@ -211,8 +271,8 @@ const handlers = {
       },
     });
   },
-  develop: async (job) => {
-    const client = await clientFactory({ token });
+  develop: async (job, { signal } = {}) => {
+    const client = await jobClient(job);
     const gate = await checkDevelopmentOrder({
       db,
       taskId: job.payload.taskId,
@@ -235,16 +295,16 @@ const handlers = {
       job,
       db,
       client,
-      codex,
-      gitOps,
+      codex: jobCodex(signal),
+      gitOps: jobGitOps(job),
       now: new Date().toISOString(),
       fieldIds: {
         evidence: fieldId(config, taskListKey, "证据链接"),
       },
     });
   },
-  accept: async (job) => {
-    const client = await clientFactory({ token });
+  accept: async (job, { signal } = {}) => {
+    const client = await jobClient(job);
     const task = await client.getTask(job.payload.taskId);
     const targetVersion = targetVersionOfTask(task, config, taskListKey);
     const versions = await client.getVersionsByList(config.lists[versionListKey].id);
@@ -263,7 +323,7 @@ const handlers = {
       job,
       db,
       client,
-      codex,
+      codex: jobCodex(signal),
       now: new Date().toISOString(),
       fieldIds: { feedback: acceptanceFeedbackField },
     });
@@ -271,12 +331,8 @@ const handlers = {
 };
 
 async function recoverOrphanedLeases() {
-  // 单进程运行时：启动时把所有 claimed 作业重置为 queued，回收中断进程的租约。
-  await db
-    .prepare(
-      "UPDATE runner_jobs SET status = 'queued', device_id = NULL WHERE status = 'claimed'",
-    )
-    .run();
+  // 启动恢复只回收已过期租约；未过期的 live claim 由持有者继续执行。
+  return recoverRunnerJobs(db, { now: new Date().toISOString() });
 }
 
 async function ensureVersionActive(versionId, now) {
@@ -468,6 +524,7 @@ async function syncStatuses(now) {
 }
 
 async function tick() {
+  if (!lifecycle.canClaim()) return;
   const now = new Date().toISOString();
   const control = await readControl(CONTROL_PATH);
   if (!shouldProcess(control)) {
@@ -502,32 +559,40 @@ async function tick() {
       log(`outbox error: ${error.message}`);
     }
     for (const jobType of ["analyze", "develop", "accept"]) {
-      let job;
+      if (!lifecycle.canClaim()) break;
       try {
-        job = await claimJob(db, {
-          deviceId: runtime.deviceId,
-          jobType,
-          now,
-          leaseMs: 90 * 60_000,
+        await lifecycle.claimAndRun({
+          claim: () => claimJob(db, {
+            deviceId: runtime.deviceId,
+            jobType,
+            now,
+            leaseMs: 90 * 60_000,
+          }),
+          reconcile: (job) => reconcileJobClaim(db, {
+            jobId: job.id,
+            deviceId: runtime.deviceId,
+            fencingToken: job.fencingToken,
+          }),
+          execute: ({ job, signal }) => {
+            log(`claimed ${jobType} job ${job.id}`);
+            return runJob(job, now, signal);
+          },
         });
       } catch (error) {
         log(`claim ${jobType} error: ${error.message}`);
         continue;
       }
-      if (!job) continue;
-      log(`claimed ${jobType} job ${job.id}`);
-      void runJob(job, now);
     }
   } catch (error) {
     log(`tick error: ${error.message}`);
   }
 }
 
-async function runJob(job, now) {
+async function runJob(job, now, signal) {
   const handler = handlers[job.jobType];
   let result;
   try {
-    result = await handler(job);
+    result = await handler(job, { signal });
   } catch (error) {
     result = { status: "failed", error: error.message };
   }
@@ -539,7 +604,7 @@ async function runJob(job, now) {
       fencingToken: job.fencingToken,
       status: finalStatus,
       result,
-      now,
+      now: new Date().toISOString(),
     });
   } catch (error) {
     log(`complete ${job.jobType} job ${job.id} error: ${error.message}`);
@@ -560,4 +625,4 @@ async function runJob(job, now) {
 await recoverOrphanedLeases();
 log(`orchestrator started: device=${runtime.deviceId} repo=${runtime.repoPath} list=${runtime.listSet ?? "sandbox"}`);
 await tick();
-setInterval(tick, runtime.pollIntervalMs ?? 30_000);
+lifecycle.setPollingInterval(setInterval(tick, runtime.pollIntervalMs ?? 30_000));

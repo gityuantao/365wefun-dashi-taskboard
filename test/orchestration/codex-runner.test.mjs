@@ -71,3 +71,22 @@ test("runCodex kills and reports timed-out runs", async () => {
   assert.equal(result.timedOut, true);
   assert.equal(child.killed, true);
 });
+
+test("runCodex aborts an active child when shutdown cancels its signal", async () => {
+  const child = mockChild();
+  const controller = new AbortController();
+  const promise = runCodex({
+    workdir: "/tmp",
+    prompt: "long running task",
+    signal: controller.signal,
+    spawnImpl: () => child,
+  });
+
+  controller.abort(new Error("orchestrator shutdown"));
+
+  const result = await promise;
+  assert.equal(child.killed, true);
+  assert.equal(result.aborted, true);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.exitCode, null);
+});

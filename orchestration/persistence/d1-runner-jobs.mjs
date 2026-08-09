@@ -2,6 +2,12 @@ import { DomainError } from "../domain/errors.mjs";
 
 const DEFAULT_LEASE_MS = 15 * 60_000;
 
+function claimMismatch(jobId, deviceId, fencingToken) {
+  return new DomainError("CLAIM_MISMATCH", [
+    `Runner job "${jobId}" is not claimed by device "${deviceId}" at fencing token ${fencingToken}`,
+  ].join(" "), { jobId, deviceId, fencingToken });
+}
+
 export async function enqueueJob(db, {
   jobId,
   commandId,
@@ -66,6 +72,59 @@ export async function claimJob(db, {
   };
 }
 
+export async function assertJobClaim(db, {
+  jobId,
+  deviceId,
+  fencingToken,
+  now = new Date().toISOString(),
+}) {
+  const row = await db
+    .prepare(
+      `SELECT id FROM runner_jobs
+       WHERE id = ? AND status = 'claimed' AND device_id = ?
+         AND fencing_token = ? AND expires_at > ?`,
+    )
+    .bind(jobId, deviceId, fencingToken, now)
+    .first();
+  if (!row) throw claimMismatch(jobId, deviceId, fencingToken);
+  return true;
+}
+
+export async function reconcileJobClaim(db, {
+  jobId,
+  deviceId,
+  fencingToken,
+}) {
+  const updated = await db
+    .prepare(
+      `UPDATE runner_jobs
+       SET status = 'queued', device_id = NULL, claimed_at = NULL
+       WHERE id = ? AND status = 'claimed' AND device_id = ? AND fencing_token = ?`,
+    )
+    .bind(jobId, deviceId, fencingToken)
+    .run();
+  return { jobId, requeued: (updated.meta?.changes ?? 0) > 0 };
+}
+
+export async function recoverRunnerJobs(db, {
+  now = new Date().toISOString(),
+  reconciledJobIds = [],
+} = {}) {
+  const ids = [...new Set(reconciledJobIds.filter((id) => typeof id === "string" && id !== ""))];
+  const explicit = ids.length > 0
+    ? ` OR id IN (${ids.map(() => "?").join(", ")})`
+    : "";
+  const updated = await db
+    .prepare(
+      `UPDATE runner_jobs
+       SET status = 'queued', device_id = NULL, claimed_at = NULL
+       WHERE status = 'claimed' AND (expires_at <= ?${explicit})`,
+    )
+    .bind(now, ...ids)
+    .run();
+  return { requeued: updated.meta?.changes ?? 0 };
+}
+
 export async function completeJob(db, {
   jobId,
   deviceId,
@@ -74,29 +133,20 @@ export async function completeJob(db, {
   result,
   now,
 }) {
-  const row = await db
-    .prepare("SELECT * FROM runner_jobs WHERE id = ?")
-    .bind(jobId)
-    .first();
+  const row = await db.prepare("SELECT id FROM runner_jobs WHERE id = ?").bind(jobId).first();
   if (!row) {
     throw new DomainError("JOB_NOT_FOUND", `Runner job "${jobId}" not found`, { jobId });
   }
-  if (
-    row.status !== "claimed"
-    || row.device_id !== deviceId
-    || row.fencing_token !== fencingToken
-  ) {
-    throw new DomainError("CLAIM_MISMATCH", [
-      `Runner job "${jobId}" is not claimed by device "${deviceId}" at fencing token ${fencingToken}`,
-    ].join(" "), { jobId, deviceId, fencingToken });
-  }
+  await assertJobClaim(db, { jobId, deviceId, fencingToken, now });
   const finalStatus = status === "failed" ? "failed" : "completed";
-  await db
+  const updated = await db
     .prepare(
       `UPDATE runner_jobs SET status = ?, result = ?, completed_at = ?
-       WHERE id = ? AND status = 'claimed' AND device_id = ? AND fencing_token = ?`,
+       WHERE id = ? AND status = 'claimed' AND device_id = ? AND fencing_token = ?
+         AND expires_at > ?`,
     )
-    .bind(finalStatus, JSON.stringify(result ?? {}), now, jobId, deviceId, fencingToken)
+    .bind(finalStatus, JSON.stringify(result ?? {}), now, jobId, deviceId, fencingToken, now)
     .run();
+  if ((updated.meta?.changes ?? 0) === 0) throw claimMismatch(jobId, deviceId, fencingToken);
   return { jobId, status: finalStatus };
 }

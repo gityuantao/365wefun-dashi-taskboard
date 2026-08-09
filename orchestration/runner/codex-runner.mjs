@@ -10,12 +10,22 @@ export function runCodex({
   timeoutMinutes = DEFAULT_TIMEOUT_MINUTES,
   codexBin = process.env.CODEX_BIN ?? "codex",
   spawnImpl = spawn,
+  signal,
 }) {
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new DomainError("INVALID_PROMPT", "Codex prompt must be a non-empty string");
   }
   if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0) {
     throw new DomainError("INVALID_TIMEOUT", "timeoutMinutes must be a positive number");
+  }
+  if (signal?.aborted) {
+    return Promise.resolve({
+      exitCode: null,
+      timedOut: false,
+      aborted: true,
+      stdout: "",
+      stderr: "",
+    });
   }
   return new Promise((resolve, reject) => {
     const args = ["exec"];
@@ -32,21 +42,167 @@ export function runCodex({
     }
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    let timer;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener?.("abort", abort);
+    };
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const abort = () => {
+      child.kill("SIGTERM");
+      finish({ exitCode: null, timedOut: false, aborted: true, stdout, stderr });
+    };
     child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       child.kill("SIGTERM");
-      resolve({ exitCode: null, timedOut: true, stdout, stderr });
+      finish({ exitCode: null, timedOut: true, aborted: false, stdout, stderr });
     }, timeoutMinutes * 60_000);
     child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ exitCode: code, timedOut: false, stdout, stderr });
+      finish({ exitCode: code, timedOut: false, aborted: false, stdout, stderr });
     });
     child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(new DomainError("SPAWN_FAILED", `Failed to run Codex: ${error.message}`));
+      fail(new DomainError("SPAWN_FAILED", `Failed to run Codex: ${error.message}`));
     });
+    signal?.addEventListener?.("abort", abort, { once: true });
     child.stdin?.write(prompt);
     child.stdin?.end();
   });
+}
+
+export function guardDurableMethods(target, { methods, assertActive }) {
+  const guarded = new Set(methods);
+  return new Proxy(target, {
+    get(object, property, receiver) {
+      const value = Reflect.get(object, property, receiver);
+      if (typeof value !== "function") return value;
+      if (!guarded.has(property)) return value.bind(object);
+      return async (...args) => {
+        await assertActive();
+        return Reflect.apply(value, object, args);
+      };
+    },
+  });
+}
+
+export function createOrchestratorLifecycle({
+  dashboardServer = null,
+  miniflare = null,
+  clearIntervalImpl = clearInterval,
+  log = () => {},
+} = {}) {
+  let acceptingClaims = true;
+  let pollingInterval = null;
+  let shutdownPromise = null;
+  const activeJobs = new Set();
+  const pendingClaims = new Set();
+  const signalHandlers = [];
+
+  function setPollingInterval(handle) {
+    if (!acceptingClaims) {
+      clearIntervalImpl(handle);
+      return;
+    }
+    pollingInterval = handle;
+  }
+
+  function canClaim() {
+    return acceptingClaims;
+  }
+
+  function runJob(job, execute) {
+    if (!acceptingClaims) return Promise.resolve(null);
+    const controller = new AbortController();
+    const active = { job, controller, promise: null };
+    active.promise = (async () => execute({ job, signal: controller.signal }))()
+      .finally(() => activeJobs.delete(active));
+    activeJobs.add(active);
+    return active.promise;
+  }
+
+  async function claimAndRun({ claim, reconcile, execute }) {
+    if (!acceptingClaims) return null;
+    const attempt = (async () => {
+      const job = await claim();
+      if (!job) return null;
+      if (!acceptingClaims) {
+        await reconcile?.(job);
+        return null;
+      }
+      void runJob(job, execute).catch((error) => {
+        log(`job ${job.id} settlement error: ${error.message}`);
+      });
+      return job;
+    })();
+    pendingClaims.add(attempt);
+    try {
+      return await attempt;
+    } finally {
+      pendingClaims.delete(attempt);
+    }
+  }
+
+  function installSignalHandlers(signalTarget = process) {
+    for (const signalName of ["SIGINT", "SIGTERM"]) {
+      const handler = () => {
+        void shutdown().catch((error) => log(`shutdown error: ${error.message}`));
+      };
+      signalTarget.once(signalName, handler);
+      signalHandlers.push({ signalTarget, signalName, handler });
+    }
+  }
+
+  function shutdown() {
+    if (shutdownPromise) return shutdownPromise;
+    acceptingClaims = false;
+    if (pollingInterval !== null) {
+      clearIntervalImpl(pollingInterval);
+      pollingInterval = null;
+    }
+    for (const active of activeJobs) active.controller.abort(new Error("orchestrator shutdown"));
+    shutdownPromise = (async () => {
+      await Promise.allSettled([...pendingClaims]);
+      for (const active of activeJobs) active.controller.abort(new Error("orchestrator shutdown"));
+      await Promise.allSettled([...activeJobs].map((active) => active.promise));
+      const closeErrors = [];
+      try {
+        await dashboardServer?.close?.();
+      } catch (error) {
+        closeErrors.push(error);
+      }
+      try {
+        await miniflare?.dispose?.();
+      } catch (error) {
+        closeErrors.push(error);
+      }
+      for (const { signalTarget, signalName, handler } of signalHandlers) {
+        signalTarget.off?.(signalName, handler);
+      }
+      if (closeErrors.length > 0) {
+        throw new AggregateError(closeErrors, "orchestrator resource shutdown failed");
+      }
+    })();
+    return shutdownPromise;
+  }
+
+  return {
+    canClaim,
+    claimAndRun,
+    installSignalHandlers,
+    runJob,
+    setPollingInterval,
+    shutdown,
+  };
 }

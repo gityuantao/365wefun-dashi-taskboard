@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import {
+  assertJobClaim,
   claimJob,
   completeJob,
   enqueueJob,
+  recoverRunnerJobs,
 } from "../../orchestration/persistence/d1-runner-jobs.mjs";
 
 const NOW = "2026-08-04T00:00:30.000Z";
@@ -47,6 +49,92 @@ test("claimJob does not hand a live claimed job to another device", async (t) =>
   await claimJob(harness.db, { deviceId: "device-1", jobType: "analyze", now: NOW });
   const second = await claimJob(harness.db, { deviceId: "device-2", jobType: "analyze", now: NOW });
   assert.equal(second, null);
+});
+
+test("restart recovery requeues expired claims without resetting a live lease", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedJob(harness);
+  await seedJob(harness, {
+    jobId: "job-expired",
+    commandId: "cmd-expired",
+    expiresAt: "2026-08-04T00:00:20.000Z",
+  });
+  await harness.db.prepare(
+    `UPDATE runner_jobs
+     SET status = 'claimed', device_id = ?, fencing_token = 1, expires_at = ?, claimed_at = ?
+     WHERE id = ?`,
+  ).bind("device-live", "2026-08-04T00:05:00.000Z", NOW, "job-1").run();
+  await harness.db.prepare(
+    `UPDATE runner_jobs
+     SET status = 'claimed', device_id = ?, fencing_token = 1, expires_at = ?, claimed_at = ?
+     WHERE id = ?`,
+  ).bind("device-expired", "2026-08-04T00:00:20.000Z", NOW, "job-expired").run();
+
+  const recovered = await recoverRunnerJobs(harness.db, { now: NOW });
+
+  assert.equal(recovered.requeued, 1);
+  const rows = await harness.db.prepare(
+    "SELECT id, status, device_id FROM runner_jobs ORDER BY id",
+  ).all();
+  assert.deepEqual(rows.results, [
+    { id: "job-1", status: "claimed", device_id: "device-live" },
+    { id: "job-expired", status: "queued", device_id: null },
+  ]);
+});
+
+test("restart recovery may requeue a live claim only when it is explicitly reconciled", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedJob(harness);
+  await claimJob(harness.db, { deviceId: "device-1", jobType: "analyze", now: NOW });
+
+  const recovered = await recoverRunnerJobs(harness.db, {
+    now: NOW,
+    reconciledJobIds: ["job-1"],
+  });
+
+  assert.equal(recovered.requeued, 1);
+  const row = await harness.db.prepare(
+    "SELECT status, device_id FROM runner_jobs WHERE id = ?",
+  ).bind("job-1").first();
+  assert.deepEqual(row, { status: "queued", device_id: null });
+});
+
+test("assertJobClaim rejects an expired or superseded fencing token before a side effect", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedJob(harness);
+  const first = await claimJob(harness.db, {
+    deviceId: "device-1",
+    jobType: "analyze",
+    now: NOW,
+    leaseMs: 1_000,
+  });
+  await assert.rejects(
+    assertJobClaim(harness.db, {
+      jobId: first.id,
+      deviceId: "device-1",
+      fencingToken: first.fencingToken,
+      now: "2026-08-04T00:00:32.000Z",
+    }),
+    /CLAIM_MISMATCH/,
+  );
+  const second = await claimJob(harness.db, {
+    deviceId: "device-2",
+    jobType: "analyze",
+    now: "2026-08-04T00:00:32.000Z",
+  });
+  assert.equal(second.fencingToken, 2);
+  await assert.rejects(
+    assertJobClaim(harness.db, {
+      jobId: first.id,
+      deviceId: "device-1",
+      fencingToken: first.fencingToken,
+      now: "2026-08-04T00:00:32.000Z",
+    }),
+    /CLAIM_MISMATCH/,
+  );
 });
 
 test("claimJob allows a new device to take over an expired lease", async (t) => {
