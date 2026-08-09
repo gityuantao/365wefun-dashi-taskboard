@@ -19,7 +19,7 @@ export function PipelineOverview({ pipeline }: { pipeline: PipelineCounts }) {
       <div className="dashboard-section-heading">
         <h2 id="pipeline-title">流水线总览</h2>
       </div>
-      <ol className="pipeline-grid">
+      <ol className="pipeline-list">
         {PIPELINE_LABELS.map((item) => {
           const count = pipeline[item.key];
           const tone = item.key === "waiting_info" || item.key === "acceptance_rejected"
@@ -29,11 +29,12 @@ export function PipelineOverview({ pipeline }: { pipeline: PipelineCounts }) {
               : "neutral";
           return (
             <li
-              className={`pipeline-cell pipeline-${tone}${count === 0 ? " is-empty" : ""}`}
+              className={`pipeline-row${count === 0 ? " is-empty" : ""}`}
               key={item.key}
             >
-              <span className="pipeline-count">{count}</span>
+              <span className={`pipeline-accent pipeline-${tone}`} aria-hidden="true" />
               <span className="pipeline-label">{item.label}</span>
+              <span className="pipeline-count">{count}</span>
             </li>
           );
         })}

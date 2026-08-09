@@ -32,14 +32,14 @@ export function ActivityFeed({
         <ol className="activity-list">
           {items.map((item, index) => (
             <li key={`${item.objectId}-${item.time}-${index}`}>
-              <button className="activity-item" type="button" onClick={(event) => onOpen(item, event)}>
+              <button className="activity-row" type="button" onClick={(event) => onOpen(item, event)}>
                 <time className="activity-time" title={item.time}>
                   {formatActivityTime(item.time)}
                 </time>
-                <span className={`activity-object activity-${item.objectType}`}>
+                <span className={`activity-object-link activity-${item.objectType}`}>
                   {item.objectType === "version" ? "版本" : "任务"} {item.objectId}
                 </span>
-                <span className="activity-summary">
+                <span className="activity-summary activity-result">
                   {item.summary.replace(/^(任务|版本)\s+/, "")}
                 </span>
               </button>

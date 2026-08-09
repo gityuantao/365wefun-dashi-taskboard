@@ -48,6 +48,35 @@ test("dashboard container polls every 15 seconds and renders all four sections",
   assert.match(dashboardSource, /<DashboardDialog/);
 });
 
+test("dashboard uses the approved two-column information architecture", () => {
+  assert.match(
+    dashboardSource,
+    /className="dashboard-main-column"[\s\S]*?<ReleaseActions[\s\S]*?<ActivityFeed/,
+  );
+  assert.match(
+    dashboardSource,
+    /className="dashboard-side-column"[\s\S]*?<PipelineOverview[\s\S]*?<VersionProgressList/,
+  );
+  assert.match(dashboardSource, /<aside className="dashboard-side-column" aria-label="研发概览">/);
+});
+
+test("dashboard sections use compact flat rows instead of nested cards", () => {
+  assert.match(releaseActionsSource, /className="release-action-row"/);
+  assert.match(pipelineSource, /className="pipeline-list"/);
+  assert.match(pipelineSource, /className={`pipeline-row/);
+  assert.match(pipelineSource, /className={`pipeline-accent pipeline-/);
+  assert.match(versionProgressSource, /className="version-progress-row"/);
+  assert.match(versionProgressSource, /className="version-progress-percent"/);
+  assert.match(versionProgressSource, /className="version-progress-chevron"/);
+  assert.match(activitySource, /className="activity-row"/);
+  assert.match(activitySource, /className={`activity-object-link/);
+  assert.match(activitySource, /className="activity-summary activity-result"/);
+  assert.doesNotMatch(
+    `${releaseActionsSource}\n${pipelineSource}\n${versionProgressSource}\n${activitySource}`,
+    /release-action-card|pipeline-cell|version-progress-card/,
+  );
+});
+
 test("release actions show ready versions and an empty state", () => {
   assert.match(releaseActionsSource, /export function ReleaseActions\(/);
   assert.match(releaseActionsSource, /版本发布（待你操作）/);

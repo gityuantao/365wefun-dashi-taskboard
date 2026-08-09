@@ -198,12 +198,16 @@ export function Dashboard() {
       )}
 
       {payload && (
-        <>
-          <ReleaseActions versions={payload.releasableVersions} onOpen={openRelease} />
-          <PipelineOverview pipeline={payload.pipeline} />
-          <VersionProgressList versions={payload.versions} onOpen={openVersion} />
-          <ActivityFeed items={payload.activity} onOpen={openActivity} />
-        </>
+        <div className="dashboard-workspace">
+          <main className="dashboard-main-column">
+            <ReleaseActions versions={payload.releasableVersions} onOpen={openRelease} />
+            <ActivityFeed items={payload.activity} onOpen={openActivity} />
+          </main>
+          <aside className="dashboard-side-column" aria-label="研发概览">
+            <PipelineOverview pipeline={payload.pipeline} />
+            <VersionProgressList versions={payload.versions} onOpen={openVersion} />
+          </aside>
+        </div>
       )}
 
       {dialog && (

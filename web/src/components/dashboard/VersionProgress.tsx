@@ -34,7 +34,7 @@ export function VersionProgressList({
             return (
               <li key={version.id}>
                 <button
-                  className="version-progress-card"
+                  className="version-progress-row"
                   type="button"
                   onClick={(event) => onOpen(version, event)}
                 >
@@ -50,11 +50,13 @@ export function VersionProgressList({
                       style={{ width: `${percent}%` }}
                     />
                   </span>
+                  <span className="version-progress-percent">{percent}%</span>
                   <span className="version-progress-meta">
                     {version.readyCount}/{version.taskCount} 就绪
                     {version.notReadyCount > 0 && ` · 未就绪 ${version.notReadyCount} 个任务`}
                     {version.hasOpenBlockers && " · 存在阻塞任务"}
                   </span>
+                  <span className="version-progress-chevron" aria-hidden="true">›</span>
                 </button>
               </li>
             );

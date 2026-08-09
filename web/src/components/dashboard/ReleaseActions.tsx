@@ -19,7 +19,7 @@ export function ReleaseActions({
       ) : (
         <ul className="release-action-list">
           {versions.map((version) => (
-            <li className="release-action-card" key={version.id}>
+            <li className="release-action-row" key={version.id}>
               <div className="release-action-copy">
                 <strong>{version.name}</strong>
                 <span>{version.readyCount}/{version.taskCount} 个任务已就绪</span>
