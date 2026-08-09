@@ -45,6 +45,7 @@ export function buildDevelopmentPrompt(task, acceptanceCriteria = [], commentCon
     "约束：无法复现或信息不足时禁止强行改动代码或为了出 PR 而凑改动，一律输出 needs_info。",
     "约束：改动必须覆盖「影响平台」字段列出的全部平台（web/iOS/安卓/小程序）；字段为空时按任务描述与验收标准推断。",
     "约束：只修改当前 Worktree，不推进状态、不读取凭据、不部署生产。",
+    "若评论区包含最近一次测试环境部署失败，必须优先修复该失败原因，并在 change_summary 中明确说明处理结果。",
     "约束：不要执行 pnpm install / npm install；不要运行完整 typecheck、构建或测试套件（Worktree 无依赖，会卡住）；改为用文件检查和代码阅读验证改动正确性。",
     ...(commentContext
       ? [

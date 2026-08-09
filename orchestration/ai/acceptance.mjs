@@ -167,21 +167,8 @@ export async function executeAcceptance({
       if (remotePause) return remotePause;
       activity = await currentAcceptance(db, taskId, executionVersion);
       if (!activity.active) return staleAcceptanceResult(activity.aggregate);
-      const aggregate = activity.aggregate;
-      const command = parseCommandEnvelope({
-        id: `acceptance-${job.id}`,
-        type: "acceptance_passed",
-        aggregateType: "task",
-        aggregateId: taskId,
-        expectedVersion: aggregate.version + 1,
-        actorId: "runner-acceptor",
-        issuedAt: new Date().toISOString(),
-        reason: "acceptance passed",
-        parameters: { targetVersion },
-      });
-      const result = await dispatchCommand({ db, command, now: new Date().toISOString() });
       try {
-        await client.postComment(taskId, "✅ 开发完成（自动验收通过），进入待测试");
+        await client.postComment(taskId, "✅ 代码自动验收通过，正在合并并部署测试环境");
       } catch {
         // 评论失败不影响验收结果
       }
@@ -192,8 +179,9 @@ export async function executeAcceptance({
       }
       return {
         status: "completed",
-        commandId: result.commandId,
         result: "accepted",
+        commitSha,
+        targetVersion,
         findings: [],
       };
     }

@@ -151,7 +151,24 @@ async function reconcileManualWaitingInfo(env, snapshot, now, commands, config) 
 
 async function ensureStateJob(env, snapshot, now, currentDevVersion) {
   const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
-  const jobType = jobTypeForState(aggregate.state ?? snapshot.status);
+  let jobType = jobTypeForState(aggregate.state ?? snapshot.status);
+  let acceptedResult = null;
+  if (aggregate.state === "accepting") {
+    const accepted = await env.DB
+      .prepare(
+        `SELECT result FROM runner_jobs
+         WHERE job_type = 'accept' AND status = 'completed'
+           AND json_extract(payload, '$.taskId') = ?
+           AND json_extract(result, '$.result') = 'accepted'
+         ORDER BY completed_at DESC LIMIT 1`,
+      )
+      .bind(snapshot.id)
+      .first();
+    if (accepted?.result) {
+      acceptedResult = JSON.parse(accepted.result);
+      jobType = "stage_task";
+    }
+  }
   if (!jobType) return;
   if (jobType === "develop") {
     const paused = await env.DB.prepare("SELECT id FROM runner_jobs WHERE id = ?").bind("acceptance-paused-" + snapshot.id).first();
@@ -239,6 +256,19 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
       }
     }
   }
+  let developmentResult = null;
+  if (jobType === "accept" || jobType === "stage_task") {
+    const developed = await env.DB
+      .prepare(
+        `SELECT result FROM runner_jobs
+         WHERE job_type = 'develop' AND status = 'completed'
+           AND json_extract(payload, '$.taskId') = ?
+         ORDER BY completed_at DESC LIMIT 1`,
+      )
+      .bind(snapshot.id)
+      .first();
+    if (developed?.result) developmentResult = JSON.parse(developed.result);
+  }
   await enqueueJob(env.DB, {
     jobId,
     commandId: `auto-${jobType}-${snapshot.id}`,
@@ -258,6 +288,9 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
             : undefined)
         : undefined,
       acceptanceCriteria,
+      commitSha: acceptedResult?.commitSha ?? developmentResult?.commitSha ?? null,
+      pr: developmentResult?.pr ?? null,
+      targetVersion: snapshot.targetVersion ?? acceptedResult?.targetVersion ?? null,
       aggregateVersion: aggregate.version,
     },
     payloadHash: snapshot.fieldsHash,

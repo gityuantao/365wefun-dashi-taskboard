@@ -251,7 +251,10 @@ export async function executeDevelopment({
     }
     activity = await currentDevelopment(db, taskId, executionVersion);
     if (!activity.active) return staleDevelopmentResult(activity.aggregate);
-    await gitOps.commitAll(worktree.worktreePath, `Task ${taskId}: ${parsed.change_summary}`);
+    const commitSha = await gitOps.commitAll(
+      worktree.worktreePath,
+      `Task ${taskId}: ${parsed.change_summary}`,
+    );
     activity = await currentDevelopment(db, taskId, executionVersion);
     if (!activity.active) return staleDevelopmentResult(activity.aggregate);
     const pr = await gitOps.createPullRequest({
@@ -289,6 +292,7 @@ export async function executeDevelopment({
       status: "completed",
       commandId: result.commandId,
       pr,
+      commitSha,
       changeSummary: parsed.change_summary,
     };
   } catch (error) {

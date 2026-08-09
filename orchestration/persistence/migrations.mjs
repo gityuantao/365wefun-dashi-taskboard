@@ -7,6 +7,7 @@ const LEGACY_SENTINELS = new Map([
   ["0006_failure_tracking.sql", "task_rework"],
   ["0007_release_manifests.sql", "release_manifests"],
   ["0008_release_cleanup_attempts.sql", "release_cleanup_attempts"],
+  ["0009_staging_deployments.sql", "staging_deployments"],
 ]);
 
 export async function applyMigrations({ db, migrations, now = new Date().toISOString() }) {

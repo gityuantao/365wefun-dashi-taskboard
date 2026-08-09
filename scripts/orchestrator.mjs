@@ -15,6 +15,7 @@ import { flushOutbox } from "../orchestration/clickup/outbox.mjs";
 import { executeAcceptance } from "../orchestration/ai/acceptance.mjs";
 import { executeAnalysis } from "../orchestration/ai/analyzer.mjs";
 import { executeDevelopment } from "../orchestration/ai/developer.mjs";
+import { executeStagingGate } from "../orchestration/application/staging-coordinator.mjs";
 import {
   loadLastConfirmed,
   normalizeVersion,
@@ -184,6 +185,7 @@ function jobGitOps(job) {
       if (commit.status !== 0 && !/nothing to commit/.test(output)) {
         throw new Error(`git commit failed: ${output.trim()}`);
       }
+      return runInWorktree(worktreePath, ["rev-parse", "HEAD"]).stdout.trim();
     },
     createPullRequest: async ({ repoPath, branch, base, baseRef, title, body }) => {
       if (base && base !== "main") {
@@ -335,6 +337,43 @@ const handlers = {
       fieldIds: { feedback: acceptanceFeedbackField },
     });
   },
+  stage_task: async (job) => {
+    const client = await jobClient(job);
+    const modulePath = runtime.stagingAdapterModule
+      ? path.resolve(PROJECT_ROOT, runtime.stagingAdapterModule)
+      : null;
+    const module = modulePath ? await import(pathToFileURL(modulePath).href) : null;
+    const adapter = typeof module?.createStagingAdapter === "function"
+      ? module.createStagingAdapter({ runtime, projectRoot: PROJECT_ROOT })
+      : null;
+    const releaseGitOps = createReleaseGitOps({
+      repoPath: runtime.repoPath,
+      repository: resolveRemoteRepo(runtime.repoPath),
+    });
+    const assertActive = jobClaimGuard(job);
+    const guardedGitOps = {
+      integrateTaskPr: async (options) => {
+        await assertActive();
+        const result = releaseGitOps.integrateTaskPr(options);
+        await assertActive();
+        return result;
+      },
+      persistCandidate: async (options) => {
+        await assertActive();
+        const result = releaseGitOps.persistCandidate(options);
+        await assertActive();
+        return result;
+      },
+    };
+    return executeStagingGate({
+      job,
+      db,
+      client,
+      gitOps: guardedGitOps,
+      adapter,
+      now: new Date().toISOString(),
+    });
+  },
 };
 
 async function recoverOrphanedLeases() {
@@ -477,7 +516,7 @@ async function syncStatuses(now) {
         ? await db
             .prepare(`
               SELECT completed_at FROM runner_jobs
-              WHERE job_type IN ('analyze', 'develop', 'accept')
+              WHERE job_type IN ('analyze', 'develop', 'accept', 'stage_task')
                 AND json_extract(payload, '$.taskId') = ?
                 AND status = 'completed'
               ORDER BY completed_at DESC LIMIT 1
@@ -565,7 +604,7 @@ async function tick() {
     } catch (error) {
       log(`outbox error: ${error.message}`);
     }
-    for (const jobType of ["assign_version", "analyze", "develop", "accept"]) {
+    for (const jobType of ["assign_version", "analyze", "develop", "accept", "stage_task"]) {
       if (!lifecycle.canClaim()) break;
       try {
         await lifecycle.claimAndRun({

@@ -100,7 +100,7 @@ function rejectedOutput() {
   });
 }
 
-test("acceptance passes and advances to ready for release with a target version", async (t) => {
+test("acceptance passes and waits for staging with a target version", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedToAccepting(harness);
@@ -117,9 +117,9 @@ test("acceptance passes and advances to ready for release with a target version"
   assert.equal(result.status, "completed");
   assert.equal(result.result, "accepted");
   assert.deepEqual(result.findings, []);
-  assert.ok(posts.some((body) => body.includes("开发完成（自动验收通过）")));
+  assert.ok(posts.some((body) => body.includes("代码自动验收通过，正在合并并部署测试环境")));
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.state, "ready_for_test");
+  assert.equal(aggregate.state, "accepting");
 });
 
 test("acceptance refuses to advance without a target version", async (t) => {

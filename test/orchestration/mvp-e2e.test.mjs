@@ -7,6 +7,7 @@ import { executeAnalysis } from "../../orchestration/ai/analyzer.mjs";
 import { executeDevelopment } from "../../orchestration/ai/developer.mjs";
 import { executeAcceptance } from "../../orchestration/ai/acceptance.mjs";
 import { handleTestDecision } from "../../orchestration/application/test-gate.mjs";
+import { executeStagingGate } from "../../orchestration/application/staging-coordinator.mjs";
 import { freezeManifest } from "../../orchestration/release/version-aggregator.mjs";
 import { handleConfirmRelease } from "../../orchestration/application/release-commands.mjs";
 import { createWebAdapter } from "../../orchestration/release/adapters/web.mjs";
@@ -250,7 +251,7 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
   assert.equal(devResult.status, "completed");
   assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "accepting");
 
-  // 4) 系统自动验收通过 -> 待测试
+  // 4) 系统自动验收通过 -> 部署测试环境 -> 待测试
   await pollClickUpOnce(env, { now: NOW });
   const acceptClaim = await claimFromQueue(harness, "accept");
   const acceptResult = await executeAcceptance({
@@ -261,6 +262,42 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
     now: NOW,
   });
   assert.equal(acceptResult.status, "completed");
+  assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "accepting");
+  const stageResult = await executeStagingGate({
+    job: {
+      id: "task-e2e-1-stage-1",
+      payload: {
+        taskId: "task-e2e-1",
+        pr: { url: "https://github.com/x/pull/99" },
+        commitSha: "2222222222222222222222222222222222222222",
+        versionBranch: "version/version-e2e-1",
+        targetVersion: "version-e2e-1",
+      },
+    },
+    db: harness.db,
+    client: await env.clientFactory({}),
+    gitOps: {
+      integrateTaskPr: async () => ({
+        merged: true,
+        candidateCommit: CANDIDATE_COMMIT,
+        taskHead: "2222222222222222222222222222222222222222",
+        prNumber: 99,
+      }),
+      persistCandidate: async () => ({ persisted: true }),
+    },
+    adapter: {
+      deploy: async () => ({ releaseId: "staging-e2e", url: "https://test.example" }),
+      readback: async () => ({
+        confirmed: true,
+        releaseId: "staging-e2e",
+        gitSha: CANDIDATE_COMMIT,
+        urls: ["https://test.example"],
+        deployedAt: NOW,
+      }),
+    },
+    now: NOW,
+  });
+  assert.equal(stageResult.status, "completed");
   assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "ready_for_test");
 
   // 5) 人工测试通过 -> 待发布
