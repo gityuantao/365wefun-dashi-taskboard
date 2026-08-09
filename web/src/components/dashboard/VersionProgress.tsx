@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import type { VersionProgress } from "../../types";
 
 const VERSION_STATUS_LABELS: Record<string, string> = {
@@ -14,7 +15,7 @@ export function VersionProgressList({
   onOpen,
 }: {
   versions: VersionProgress[];
-  onOpen: (version: VersionProgress) => void;
+  onOpen: (version: VersionProgress, event: MouseEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <section className="dashboard-section version-progress" aria-labelledby="version-progress-title">
@@ -35,7 +36,7 @@ export function VersionProgressList({
                 <button
                   className="version-progress-card"
                   type="button"
-                  onClick={() => onOpen(version)}
+                  onClick={(event) => onOpen(version, event)}
                 >
                   <span className="version-progress-name">{version.name}</span>
                   {version.releasable && <span className="badge badge-releasable">可发布</span>}

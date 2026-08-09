@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import type { ActivityItem } from "../../types";
 
 function formatActivityTime(value: string): string {
@@ -17,7 +18,7 @@ export function ActivityFeed({
   onOpen,
 }: {
   items: ActivityItem[];
-  onOpen: (item: ActivityItem) => void;
+  onOpen: (item: ActivityItem, event: MouseEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <section className="dashboard-section activity-feed" aria-labelledby="activity-title">
@@ -31,7 +32,7 @@ export function ActivityFeed({
         <ol className="activity-list">
           {items.map((item, index) => (
             <li key={`${item.objectId}-${item.time}-${index}`}>
-              <button className="activity-item" type="button" onClick={() => onOpen(item)}>
+              <button className="activity-item" type="button" onClick={(event) => onOpen(item, event)}>
                 <time className="activity-time" title={item.time}>
                   {formatActivityTime(item.time)}
                 </time>

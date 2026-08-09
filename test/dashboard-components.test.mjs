@@ -26,6 +26,10 @@ const drawerSource = await readFile(
   new URL("../web/src/components/dashboard/DetailDrawer.tsx", import.meta.url),
   "utf8",
 );
+const dialogSource = await readFile(
+  new URL("../web/src/components/dashboard/DashboardDialog.tsx", import.meta.url),
+  "utf8",
+);
 const styles = await readFile(
   new URL("../web/src/components/dashboard/dashboard.css", import.meta.url),
   "utf8",
@@ -41,6 +45,7 @@ test("dashboard container polls every 15 seconds and renders all four sections",
   assert.match(dashboardSource, /<VersionProgressList/);
   assert.match(dashboardSource, /<ActivityFeed/);
   assert.match(dashboardSource, /<DetailDrawer/);
+  assert.match(dashboardSource, /<DashboardDialog/);
 });
 
 test("release actions show ready versions and an empty state", () => {
@@ -50,6 +55,8 @@ test("release actions show ready versions and an empty state", () => {
   assert.match(releaseActionsSource, /{version\.id}/);
   assert.match(releaseActionsSource, /target="_blank"/);
   assert.match(releaseActionsSource, /可重试/);
+  assert.match(releaseActionsSource, /onOpen/);
+  assert.match(releaseActionsSource, /onOpen\(version, event\)/);
 });
 
 test("pipeline overview maps canonical states to Chinese labels", () => {
@@ -75,8 +82,7 @@ test("activity feed renders time, object type and summary", () => {
 
 test("detail drawer supports task and version bodies", () => {
   assert.match(drawerSource, /export function DetailDrawer\(/);
-  assert.match(drawerSource, /任务详情/);
-  assert.match(drawerSource, /版本详情/);
+  assert.match(drawerSource, /kind: "task" \| "version"/);
   assert.match(drawerSource, /TaskDetailBody/);
   assert.match(drawerSource, /VersionDetailBody/);
   assert.match(drawerSource, /状态时间线/);
@@ -109,8 +115,8 @@ test("dashboard renders the orchestration master switch", () => {
   assert.match(dashboardSource, /运行中|已暂停/);
   assert.match(dashboardSource, /project-automation-trigger/);
   assert.match(dashboardSource, /编排运行中|编排已暂停/);
-  assert.match(dashboardSource, /createPortal/);
-  assert.match(dashboardSource, /project-automation-menu/);
+  assert.match(dashboardSource, /<DashboardDialog/);
+  assert.match(dashboardSource, /dashboard-control-panel/);
 });
 
 test("polish states and interactions are present", () => {
@@ -118,7 +124,7 @@ test("polish states and interactions are present", () => {
   assert.match(versionProgressSource, /未就绪/);
   assert.match(versionProgressSource, /存在阻塞任务/);
   assert.match(activitySource, /刚刚|分钟前|toLocaleTimeString/);
-  assert.match(drawerSource, /onCancel|Esc/);
+  assert.match(dialogSource, /event\.key === "Escape"/);
   assert.match(dashboardSource, /更新中/);
   assert.match(styles, /\.version-progress-fill\.is-complete/);
   assert.match(styles, /\.detail-dialog/);
@@ -130,15 +136,20 @@ test("activity feed shows object ids", () => {
   assert.match(activitySource, /replace\(\/\^\(任务\|版本\)/);
 });
 
-test("detail dialogs reuse the new-issue dialog shell", () => {
-  assert.match(drawerSource, /<dialog/);
-  assert.match(drawerSource, /task-dialog/);
-  assert.match(drawerSource, /dialog-header/);
-  assert.match(drawerSource, /showModal/);
-  assert.match(drawerSource, /onCancel/);
+test("detail drawer renders inside the shared dashboard dialog shell", () => {
+  assert.doesNotMatch(drawerSource, /<dialog/);
+  assert.doesNotMatch(drawerSource, /showModal/);
   assert.match(drawerSource, /detail-dialog-body/);
   assert.match(drawerSource, /detail-info-grid/);
   assert.match(drawerSource, /detail-section/);
+});
+
+test("dashboard routes task, version, release, and control triggers through one dialog state", () => {
+  for (const kind of ["task", "version", "release", "control"]) {
+    assert.match(dashboardSource, new RegExp(`kind: "${kind}"`));
+  }
+  assert.match(dashboardSource, /event\.currentTarget/);
+  assert.match(dashboardSource, /<ReleaseActions[^>]*onOpen=/s);
 });
 
 test("detail dialog header links and no footer", () => {

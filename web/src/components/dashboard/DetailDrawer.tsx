@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { LinearIcon } from "../LinearIcon";
 import { ApiError, getOrchestrationVersionDetail, publishOrchestrationVersion } from "../../api";
 import type { TaskDetail, VersionDetail } from "../../types";
 
 interface DetailDrawerProps {
   kind: "task" | "version";
   detail: TaskDetail | VersionDetail | null;
-  onClose: () => void;
   onChanged?: () => void;
 }
 
@@ -32,74 +30,9 @@ const VERSION_STATUS_LABELS: Record<string, string> = {
   canceled: "已取消",
 };
 
-export function DetailDrawer({ kind, detail, onClose, onChanged }: DetailDrawerProps) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (!dialog.open) dialog.showModal();
-    return () => {
-      if (dialog.open) dialog.close();
-    };
-  }, []);
-
-  function closeFromBackdrop(event: React.MouseEvent<HTMLDialogElement>) {
-    if (event.target === dialogRef.current) onClose();
-  }
-
+export function DetailDrawer({ kind, detail, onChanged }: DetailDrawerProps) {
   return (
-    <dialog
-      ref={dialogRef}
-      className="task-dialog detail-dialog"
-      aria-label={kind === "task" ? "任务详情" : "版本详情"}
-      onCancel={(event) => {
-        event.preventDefault();
-        onClose();
-      }}
-      onClick={closeFromBackdrop}
-    >
-      <header className="dialog-header">
-        <div className="dialog-context">
-          <LinearIcon name={kind === "task" ? "myIssues" : "project"} />
-          <strong>{kind === "task" ? "任务详情" : "版本详情"}</strong>
-        </div>
-        <div className="dialog-header-actions">
-          {detail && (
-            <>
-              <a
-                className="detail-external-link"
-                href={`https://app.clickup.com/t/${detail.id}`}
-                target="_blank"
-                rel="noreferrer"
-                title="在 ClickUp 打开"
-              >
-                {detail.id}
-              </a>
-              {kind === "task" && (detail as TaskDetail).prUrl && (
-                <a
-                  className="detail-external-link"
-                  href={(detail as TaskDetail).prUrl!}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  查看 PR
-                </a>
-              )}
-            </>
-          )}
-          <button
-            className="icon-button dialog-close"
-            type="button"
-            aria-label="关闭详情"
-            title="关闭 (Esc)"
-            onClick={onClose}
-          >
-            <LinearIcon name="close" />
-          </button>
-        </div>
-      </header>
-
+    <>
       {detail && (kind === "task"
         ? <TaskHero detail={detail as TaskDetail} />
         : <VersionHero detail={detail as VersionDetail} />)}
@@ -113,8 +46,7 @@ export function DetailDrawer({ kind, detail, onClose, onChanged }: DetailDrawerP
       ) : (
         <VersionDetailBody detail={detail as VersionDetail} onChanged={onChanged} />
       )}
-
-    </dialog>
+    </>
   );
 }
 
@@ -124,7 +56,7 @@ function TaskHero({ detail }: { detail: TaskDetail }) {
     <header className="detail-dialog-hero">
       <div className="detail-dialog-title">
         <h3>{detail.name}</h3>
-        <span className="detail-id">{detail.id}</span>
+        <DetailLinks kind="task" detail={detail} />
       </div>
       <span className="badge badge-status">{statusLabel}</span>
     </header>
@@ -137,12 +69,44 @@ function VersionHero({ detail }: { detail: VersionDetail }) {
     <header className="detail-dialog-hero">
       <div className="detail-dialog-title">
         <h3>{detail.name}</h3>
-        <span className="detail-id">{detail.id}</span>
+        <DetailLinks kind="version" detail={detail} />
       </div>
       <span className={`badge badge-status badge-status-${detail.status ?? "unknown"}`}>
         {statusLabel}
       </span>
     </header>
+  );
+}
+
+function DetailLinks({
+  kind,
+  detail,
+}: {
+  kind: "task" | "version";
+  detail: TaskDetail | VersionDetail;
+}) {
+  return (
+    <span className="detail-dialog-links">
+      <a
+        className="detail-external-link"
+        href={`https://app.clickup.com/t/${detail.id}`}
+        target="_blank"
+        rel="noreferrer"
+        title="在 ClickUp 打开"
+      >
+        {detail.id}
+      </a>
+      {kind === "task" && (detail as TaskDetail).prUrl && (
+        <a
+          className="detail-external-link"
+          href={(detail as TaskDetail).prUrl!}
+          target="_blank"
+          rel="noreferrer"
+        >
+          查看 PR
+        </a>
+      )}
+    </span>
   );
 }
 

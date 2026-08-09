@@ -78,6 +78,34 @@
   width: min(304px, calc(100vw - 16px));
 }
 
+.dashboard-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(13, 14, 16, 0.32);
+  backdrop-filter: blur(1px);
+}
+
+.dashboard-dialog {
+  margin: 0;
+}
+
+.dashboard-control-panel {
+  gap: 8px;
+  padding: 18px 20px 22px;
+}
+
+.dashboard-control-panel .is-active {
+  color: var(--success);
+}
+
+.dashboard-control-panel .is-paused {
+  color: var(--text-tertiary);
+}
+
 /* 嵌入 Codex 侧边栏时顶部留出标题栏拖拽区，避免内容顶到标题栏 */
 .app-shell.embedded .dashboard {
   padding-top: 40px;
@@ -275,6 +303,11 @@
 
 .release-action-link {
   margin-left: auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.release-action-detail {
   flex: 0 0 auto;
   white-space: nowrap;
 }
@@ -961,6 +994,12 @@
 
 .detail-external-link:hover {
   color: var(--accent-hover);
+}
+
+.detail-dialog-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .detail-section {

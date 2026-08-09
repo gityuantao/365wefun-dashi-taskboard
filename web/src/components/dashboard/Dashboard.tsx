@@ -1,11 +1,10 @@
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
+  type MouseEvent,
 } from "react";
-import { createPortal } from "react-dom";
 import { LinearIcon } from "../LinearIcon";
 import {
   ApiError,
@@ -19,11 +18,13 @@ import type {
   ActivityItem,
   DashboardPayload,
   OrchestrationControl,
+  ReleasableVersion,
   TaskDetail,
   VersionDetail,
   VersionProgress,
 } from "../../types";
 import { ActivityFeed } from "./ActivityFeed";
+import { DashboardDialog } from "./DashboardDialog";
 import { DetailDrawer } from "./DetailDrawer";
 import { PipelineOverview } from "./PipelineOverview";
 import { ReleaseActions } from "./ReleaseActions";
@@ -32,29 +33,23 @@ import "./dashboard.css";
 
 const REFRESH_INTERVAL_MS = 15_000;
 
-type DrawerState =
-  | { kind: "task"; id: string }
-  | { kind: "version"; id: string }
+type DialogState =
+  | { kind: "task"; id: string; trigger: HTMLElement }
+  | { kind: "version"; id: string; trigger: HTMLElement }
+  | { kind: "release"; id: string; trigger: HTMLElement }
+  | { kind: "control"; trigger: HTMLElement }
   | null;
 
 export function Dashboard() {
   const [payload, setPayload] = useState<DashboardPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
-  const [drawer, setDrawer] = useState<DrawerState>(null);
+  const [dialog, setDialog] = useState<DialogState>(null);
   const [detail, setDetail] = useState<TaskDetail | VersionDetail | null>(null);
   const [control, setControl] = useState<OrchestrationControl | null>(null);
   const [controlPending, setControlPending] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [controlMenuOpen, setControlMenuOpen] = useState(false);
-  const [controlMenuPosition, setControlMenuPosition] = useState({
-    left: 0,
-    top: 0,
-    ready: false,
-  });
-  const controlTriggerRef = useRef<HTMLButtonElement>(null);
-  const controlMenuRef = useRef<HTMLDivElement>(null);
   const loadGenerationRef = useRef(0);
   const detailGenerationRef = useRef(0);
 
@@ -93,16 +88,16 @@ export function Dashboard() {
 
   useEffect(() => {
     const generation = ++detailGenerationRef.current;
-    if (!drawer) {
+    if (!dialog || dialog.kind === "control") {
       if (generation !== detailGenerationRef.current) return;
       setDetail(null);
       return;
     }
     const controller = new AbortController();
     setDetail(null);
-    void (drawer.kind === "task"
-      ? getOrchestrationTaskDetail(drawer.id, controller.signal)
-      : getOrchestrationVersionDetail(drawer.id, controller.signal)
+    void (dialog.kind === "task"
+      ? getOrchestrationTaskDetail(dialog.id, controller.signal)
+      : getOrchestrationVersionDetail(dialog.id, controller.signal)
     )
       .then((next) => {
         if (generation !== detailGenerationRef.current) return;
@@ -114,52 +109,7 @@ export function Dashboard() {
         setDetail(null);
       });
     return () => controller.abort();
-  }, [drawer]);
-
-  useLayoutEffect(() => {
-    if (!controlMenuOpen || !controlTriggerRef.current || !controlMenuRef.current) return;
-    const trigger = controlTriggerRef.current.getBoundingClientRect();
-    const menu = controlMenuRef.current.getBoundingClientRect();
-    const left = Math.max(
-      8,
-      Math.min(trigger.right - menu.width, window.innerWidth - menu.width - 8),
-    );
-    const top = trigger.bottom + 8 + menu.height <= window.innerHeight
-      ? trigger.bottom + 8
-      : Math.max(8, trigger.top - menu.height - 8);
-    setControlMenuPosition({ left, top, ready: true });
-  }, [controlMenuOpen]);
-
-  useEffect(() => {
-    if (!controlMenuOpen) return;
-    function closeFromOutside(event: PointerEvent) {
-      if (
-        !controlMenuRef.current?.contains(event.target as Node)
-        && !controlTriggerRef.current?.contains(event.target as Node)
-      ) {
-        setControlMenuOpen(false);
-      }
-    }
-    function closeFromEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setControlMenuOpen(false);
-        controlTriggerRef.current?.focus();
-      }
-    }
-    document.addEventListener("pointerdown", closeFromOutside);
-    document.addEventListener("keydown", closeFromEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeFromOutside);
-      document.removeEventListener("keydown", closeFromEscape);
-    };
-  }, [controlMenuOpen]);
-
-  function toggleControlMenu() {
-    if (!controlMenuOpen) {
-      setControlMenuPosition({ left: 0, top: 0, ready: false });
-    }
-    setControlMenuOpen((open) => !open);
-  }
+  }, [dialog]);
 
   async function toggleControl() {
     if (!control || controlPending) return;
@@ -175,12 +125,20 @@ export function Dashboard() {
     }
   }
 
-  function openActivity(item: ActivityItem) {
-    setDrawer({ kind: item.objectType, id: item.objectId });
+  function openActivity(item: ActivityItem, event: MouseEvent<HTMLButtonElement>) {
+    setDialog({ kind: item.objectType, id: item.objectId, trigger: event.currentTarget });
   }
 
-  function openVersion(version: VersionProgress) {
-    setDrawer({ kind: "version", id: version.id });
+  function openVersion(version: VersionProgress, event: MouseEvent<HTMLButtonElement>) {
+    setDialog({ kind: "version", id: version.id, trigger: event.currentTarget });
+  }
+
+  function openRelease(version: ReleasableVersion, event: MouseEvent<HTMLButtonElement>) {
+    setDialog({ kind: "release", id: version.id, trigger: event.currentTarget });
+  }
+
+  function openControl(event: MouseEvent<HTMLButtonElement>) {
+    setDialog({ kind: "control", trigger: event.currentTarget });
   }
 
   return (
@@ -203,15 +161,14 @@ export function Dashboard() {
 
         <div className="dashboard-header-actions">
           <button
-            ref={controlTriggerRef}
             type="button"
             className={`project-automation-trigger no-drag${control?.enabled ? " is-active" : " is-paused"}`}
             aria-label={control?.enabled ? "编排运行中" : "编排已暂停"}
             aria-haspopup="dialog"
-            aria-expanded={controlMenuOpen}
+            aria-expanded={dialog?.kind === "control"}
             title={control?.enabled ? "编排运行中" : "编排已暂停"}
             disabled={!control}
-            onClick={toggleControlMenu}
+            onClick={openControl}
           >
             <LinearIcon name={control?.enabled ? "play" : "pause"} />
             <span>{control?.enabled ? "编排运行中" : "编排已暂停"}</span>
@@ -242,61 +199,60 @@ export function Dashboard() {
 
       {payload && (
         <>
-          <ReleaseActions versions={payload.releasableVersions} />
+          <ReleaseActions versions={payload.releasableVersions} onOpen={openRelease} />
           <PipelineOverview pipeline={payload.pipeline} />
           <VersionProgressList versions={payload.versions} onOpen={openVersion} />
           <ActivityFeed items={payload.activity} onOpen={openActivity} />
         </>
       )}
 
-      {drawer && (
-        <DetailDrawer
-          kind={drawer.kind}
-          detail={detail}
-          onClose={() => setDrawer(null)}
-          onChanged={() => setDrawer((current) => (current ? { ...current } : current))}
-        />
-      )}
-
-      {controlMenuOpen && createPortal(
-        <div
-          ref={controlMenuRef}
-          className="project-automation-menu dashboard-control-menu"
-          role="dialog"
-          aria-label="编排总开关"
-          style={{
-            left: controlMenuPosition.left,
-            top: controlMenuPosition.top,
-            visibility: controlMenuPosition.ready ? "visible" : "hidden",
-          }}
+      {dialog && (
+        <DashboardDialog
+          title={dialog.kind === "task" ? "任务详情" : dialog.kind === "control" ? "编排总开关" : "版本详情"}
+          labelledBy="dashboard-dialog-title"
+          triggerRef={{ current: dialog.trigger }}
+          busy={dialog.kind === "control" && controlPending}
+          closeDisabled={dialog.kind === "control" && controlPending}
+          onClose={() => setDialog(null)}
         >
-          <div className="project-automation-menu-heading">
-            <strong>编排总开关</strong>
-            <span className={control?.enabled ? "is-active" : "is-paused"}>
-              {control?.enabled ? "运行中" : "已暂停"}
-            </span>
-          </div>
-          <div className="project-automation-switch">
-            <span>编排处理</span>
-            <button
-              type="button"
-              className={`board-setting-switch${control?.enabled ? " is-on" : ""}`}
-              role="switch"
-              aria-checked={control?.enabled ?? false}
-              disabled={controlPending || !control}
-              onClick={() => void toggleControl()}
-            >
-              <span aria-hidden="true" />
-            </button>
-          </div>
-          <p className="project-automation-note">
-            关闭后停止轮询与处理，驾驶舱仍可查看最后一次数据。
-          </p>
-          {controlError && (
-            <p className="project-automation-error" role="alert">{controlError}</p>
+          {dialog.kind === "control" ? (
+            <div className="form-body dashboard-control-panel">
+              <div className="project-automation-menu-heading">
+                <strong>编排总开关</strong>
+                <span className={control?.enabled ? "is-active" : "is-paused"}>
+                  {control?.enabled ? "运行中" : "已暂停"}
+                </span>
+              </div>
+              <div className="project-automation-switch">
+                <span>编排处理</span>
+                <button
+                  type="button"
+                  className={`board-setting-switch${control?.enabled ? " is-on" : ""}`}
+                  role="switch"
+                  aria-checked={control?.enabled ?? false}
+                  disabled={controlPending || !control}
+                  onClick={() => void toggleControl()}
+                >
+                  <span aria-hidden="true" />
+                </button>
+              </div>
+              <p className="project-automation-note">
+                关闭后停止轮询与处理，驾驶舱仍可查看最后一次数据。
+              </p>
+              {controlError && (
+                <p className="project-automation-error" role="alert">{controlError}</p>
+              )}
+            </div>
+          ) : (
+            <DetailDrawer
+              kind={dialog.kind === "task" ? "task" : "version"}
+              detail={detail}
+              onChanged={() => setDialog((current) => (
+                current && current.kind !== "control" ? { ...current } : current
+              ))}
+            />
           )}
-        </div>,
-        document.body,
+        </DashboardDialog>
       )}
     </div>
   );

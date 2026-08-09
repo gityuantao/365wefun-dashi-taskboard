@@ -1,6 +1,13 @@
+import type { MouseEvent } from "react";
 import type { ReleasableVersion } from "../../types";
 
-export function ReleaseActions({ versions }: { versions: ReleasableVersion[] }) {
+export function ReleaseActions({
+  versions,
+  onOpen,
+}: {
+  versions: ReleasableVersion[];
+  onOpen: (version: ReleasableVersion, event: MouseEvent<HTMLButtonElement>) => void;
+}) {
   return (
     <section className="dashboard-section release-actions" aria-labelledby="release-actions-title">
       <div className="dashboard-section-heading">
@@ -31,6 +38,13 @@ export function ReleaseActions({ versions }: { versions: ReleasableVersion[] }) 
               >
                 {version.id}
               </a>
+              <button
+                className="button secondary release-action-detail"
+                type="button"
+                onClick={(event) => onOpen(version, event)}
+              >
+                查看详情
+              </button>
             </li>
           ))}
         </ul>
