@@ -8,6 +8,20 @@ import {
 import { dispatchCommand } from "./dispatch-command.mjs";
 import { stateChangeText } from "../clickup/state-comments.mjs";
 
+function deepFreeze(value) {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const nested of Object.values(value)) {
+    deepFreeze(nested);
+  }
+  return Object.freeze(value);
+}
+
+function immutableManifestSnapshot(manifest) {
+  return deepFreeze(structuredClone(manifest));
+}
+
 export async function loadCleanupAttempts({ db, versionId, candidateCommit, taskId }) {
   const rows = await db
     .prepare(
@@ -126,10 +140,11 @@ export async function handleConfirmRelease({
   if (!actorRoles.some((role) => ["release_manager", "admin"].includes(role))) {
     return { status: "rejected", error: "UNAUTHORIZED: release_manager role required" };
   }
-  const manifest = await loadManifest({ db, versionId });
-  if (!manifest) {
+  const storedManifest = await loadManifest({ db, versionId });
+  if (!storedManifest) {
     return { status: "rejected", error: "version has no frozen manifest" };
   }
+  const manifest = immutableManifestSnapshot(storedManifest);
   const manifestReasons = validateFrozenManifest(manifest);
   if (manifestReasons.length > 0) {
     return {

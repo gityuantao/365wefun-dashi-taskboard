@@ -9,6 +9,7 @@ import { appendCommandResult } from "../../orchestration/persistence/d1-event-st
 import { freezeManifest } from "../../orchestration/release/version-aggregator.mjs";
 import { saveSnapshot } from "../../orchestration/clickup/snapshot.mjs";
 import { handleConfirmRelease } from "../../orchestration/application/release-commands.mjs";
+import { createWebAdapter } from "../../orchestration/release/adapters/web.mjs";
 
 const NOW = "2026-08-04T00:07:00.000Z";
 const CANDIDATE_COMMIT = "1111111111111111111111111111111111111111";
@@ -189,6 +190,103 @@ test("confirm release fails without exact remote Candidate readback and preserve
   assert.match(result.error, /Candidate readback/i);
   assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "release_failed");
   assert.equal((await loadAggregate(harness.db, "task", "task-a")).state, "ready_for_release");
+});
+
+test("confirm release rejects Candidate mutations from every web deployer stage", async (t) => {
+  const tamperedCommit = "2222222222222222222222222222222222222222";
+  const tamperedArtifactIdentity = {
+    digest: "sha256:tampered-artifact",
+    object: "releases/version-1/sha256:tampered-artifact",
+  };
+
+  for (const mutationStage of ["preflight", "upload", "switchEntry"]) {
+    await t.test(mutationStage, async (t) => {
+      const harness = await createCloudWorkerHarness();
+      t.after(() => harness.dispose());
+      await prepareVersion(harness);
+      const frozenBefore = await harness.db
+        .prepare("SELECT manifest, created_at FROM release_manifests WHERE version_id = ?")
+        .bind("version-1")
+        .first();
+      let publishedState = null;
+
+      const attemptMutation = (stage, mutate) => {
+        if (mutationStage !== stage) return;
+        try {
+          mutate();
+        } catch {
+          // A frozen release snapshot rejects the deployer's mutation attempt.
+        }
+      };
+      const deployer = {
+        preflight: async ({ manifest }) => {
+          attemptMutation("preflight", () => {
+            manifest.candidateCommit = tamperedCommit;
+          });
+          attemptMutation("preflight", () => {
+            manifest.artifactIdentity.digest = tamperedArtifactIdentity.digest;
+          });
+          attemptMutation("preflight", () => {
+            manifest.artifactIdentity.object = tamperedArtifactIdentity.object;
+          });
+          attemptMutation("preflight", () => {
+            manifest.taskPrHeads[0].headCommit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+          });
+          return { ok: true };
+        },
+        upload: async ({ versionId, candidateCommit, artifactIdentity }) => {
+          attemptMutation("upload", () => {
+            artifactIdentity.digest = tamperedArtifactIdentity.digest;
+          });
+          attemptMutation("upload", () => {
+            artifactIdentity.object = tamperedArtifactIdentity.object;
+          });
+          return {
+            object: `releases/${versionId}/${artifactIdentity.digest}/index.html`,
+            candidateCommit,
+            artifactIdentity,
+          };
+        },
+        switchEntry: async ({ candidateCommit, artifactIdentity }) => {
+          attemptMutation("switchEntry", () => {
+            artifactIdentity.digest = tamperedArtifactIdentity.digest;
+          });
+          attemptMutation("switchEntry", () => {
+            artifactIdentity.object = tamperedArtifactIdentity.object;
+          });
+          publishedState = {
+            confirmed: true,
+            published: true,
+            candidateCommit: mutationStage === "preflight" ? tamperedCommit : CANDIDATE_COMMIT,
+            artifactIdentity: structuredClone(tamperedArtifactIdentity),
+            url: "https://releases.example.com/v1",
+          };
+          return { url: publishedState.url };
+        },
+        healthCheck: async () => ({ ok: true, status: 200 }),
+        readback: async () => structuredClone(publishedState),
+      };
+
+      const result = await handleConfirmRelease({
+        db: harness.db,
+        versionId: "version-1",
+        actorId: "release-manager",
+        actorRoles: ["release_manager"],
+        now: NOW,
+        adapter: createWebAdapter({ deployer }),
+      });
+
+      assert.equal(result.status, "failed");
+      assert.match(result.error, /Candidate readback/i);
+      assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "release_failed");
+      assert.equal((await loadAggregate(harness.db, "task", "task-a")).state, "ready_for_release");
+      const frozenAfter = await harness.db
+        .prepare("SELECT manifest, created_at FROM release_manifests WHERE version_id = ?")
+        .bind("version-1")
+        .first();
+      assert.deepEqual(frozenAfter, frozenBefore);
+    });
+  }
 });
 
 test("confirm release rejects missing manifests", async (t) => {
