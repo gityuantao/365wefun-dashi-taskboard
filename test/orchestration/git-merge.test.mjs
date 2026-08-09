@@ -42,11 +42,11 @@ test("mergeTaskPrToVersionBranch merges with history preserved", async (t) => {
   });
   assert.equal(result.merged, true);
   assert.equal(result.taskHead, taskSha);
-  const mergedSha = git(root, ["rev-parse", "HEAD"]).trim();
+  const mergedSha = git(root, ["rev-parse", "version/v-1"]).trim();
   assert.equal(result.candidateCommit, mergedSha);
   assert.equal(result.versionBranch, "version/v-1");
   assert.notEqual(mergedSha, taskSha);
-  const parents = git(root, ["log", "--format=%P", "-1"]).trim().split(/\s+/);
+  const parents = git(root, ["log", "--format=%P", "-1", mergedSha]).trim().split(/\s+/);
   assert.equal(parents.length, 2, "merge commit must preserve both parents");
   assert.equal(verifyCandidateIntegration({
     repoPath: root,

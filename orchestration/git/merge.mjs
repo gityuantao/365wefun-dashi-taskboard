@@ -49,6 +49,7 @@ function githubPullRequest({ repository, pullRequest, versionBranch, run }) {
 export function mergeTaskPrToVersionBranch({
   repoPath,
   versionBranch,
+  baseRef = versionBranch,
   prRef,
   run = runCommand,
 }) {
@@ -57,7 +58,9 @@ export function mergeTaskPrToVersionBranch({
     return { merged: false, conflict: false, error: head.stderr };
   }
   const taskHead = head.stdout.trim();
-  const checkout = git(repoPath, ["checkout", versionBranch], run);
+  const original = git(repoPath, ["symbolic-ref", "--short", "-q", "HEAD"], run);
+  const originalRef = original.status === 0 ? original.stdout.trim() : null;
+  const checkout = git(repoPath, ["checkout", "--detach", baseRef], run);
   if (checkout.status !== 0) {
     return { merged: false, conflict: false, error: checkout.stderr };
   }
@@ -70,6 +73,7 @@ export function mergeTaskPrToVersionBranch({
   ], run);
   if (merge.status !== 0) {
     git(repoPath, ["merge", "--abort"], run);
+    if (originalRef) git(repoPath, ["checkout", originalRef], run);
     return {
       merged: false,
       conflict: true,
@@ -81,11 +85,23 @@ export function mergeTaskPrToVersionBranch({
   if (candidate.status !== 0) {
     return { merged: false, conflict: false, taskHead, error: candidate.stderr };
   }
+  const candidateCommit = candidate.stdout.trim();
+  const updateBranch = git(repoPath, ["branch", "--force", versionBranch, candidateCommit], run);
+  if (updateBranch.status !== 0) {
+    if (originalRef) git(repoPath, ["checkout", originalRef], run);
+    return { merged: false, conflict: false, taskHead, error: updateBranch.stderr };
+  }
+  if (originalRef) {
+    const restore = git(repoPath, ["checkout", originalRef], run);
+    if (restore.status !== 0) {
+      return { merged: false, conflict: false, taskHead, error: restore.stderr };
+    }
+  }
   return {
     merged: true,
     versionBranch,
     taskHead,
-    candidateCommit: candidate.stdout.trim(),
+    candidateCommit,
   };
 }
 
@@ -99,9 +115,10 @@ export function fetchAndMergeTaskPullRequest({
 }) {
   const pr = githubPullRequest({ repository, pullRequest, versionBranch, run });
   if (!pr.ok) return { merged: false, conflict: false, error: pr.error };
+  const fetchedBase = `refs/taskboard/base/${versionBranch}`;
   const refreshedBase = git(repoPath, [
     "fetch", "--force", "origin",
-    `refs/heads/${versionBranch}:refs/heads/${versionBranch}`,
+    `refs/heads/${versionBranch}:${fetchedBase}`,
   ], run);
   if (refreshedBase.status !== 0) {
     return {
@@ -125,6 +142,7 @@ export function fetchAndMergeTaskPullRequest({
   const merged = mergeTaskPrToVersionBranch({
     repoPath,
     versionBranch,
+    baseRef: fetchedBase,
     prRef: fetchedRef,
     run,
   });
