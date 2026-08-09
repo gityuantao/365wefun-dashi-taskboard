@@ -79,3 +79,14 @@ node --test \
 
 25 passed, 0 failed
 ```
+
+## Fix round 2
+
+The remaining abort races were covered RED → GREEN:
+
+- Starting abort now clears and disables the normal runtime timeout before sending SIGTERM, so the timeout cannot send a second SIGTERM or resolve `timedOut` during the abort grace period.
+- A child `error` emitted after abort begins is retained as termination context but does not settle the run before `close`.
+- If the child never closes after SIGTERM and SIGKILL, `TERMINATION_TIMEOUT` includes the retained child-error context.
+- Normal non-abort child-error and runtime-timeout behavior remains covered and unchanged; every settlement path clears runtime/grace/force-close timers and removes the abort listener.
+
+Focused runner verification after the fix: 9 passed, 0 failed.

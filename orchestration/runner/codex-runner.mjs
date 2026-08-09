@@ -58,6 +58,7 @@ export function runCodex({
     let abortGraceTimer;
     let abortForceCloseTimer;
     let abortRequested = false;
+    let terminationError = null;
     const cleanup = () => {
       if (timer) clearTimeout(timer);
       if (abortGraceTimer) clearTimeout(abortGraceTimer);
@@ -79,6 +80,10 @@ export function runCodex({
     const abort = () => {
       if (settled || abortRequested) return;
       abortRequested = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
       child.kill("SIGTERM");
       if (settled) return;
       abortGraceTimer = setTimeout(() => {
@@ -88,6 +93,7 @@ export function runCodex({
           fail(new DomainError(
             "TERMINATION_TIMEOUT",
             "Codex child did not close after SIGTERM and SIGKILL",
+            { childError: terminationError?.message ?? null },
           ));
         }, abortForceCloseMs);
       }, abortGraceMs);
@@ -95,13 +101,25 @@ export function runCodex({
     child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
     timer = setTimeout(() => {
+      if (abortRequested) return;
       child.kill("SIGTERM");
       finish({ exitCode: null, timedOut: true, aborted: false, stdout, stderr });
     }, timeoutMinutes * 60_000);
     child.on("close", (code) => {
-      finish({ exitCode: code, timedOut: false, aborted: abortRequested, stdout, stderr });
+      finish({
+        exitCode: code,
+        timedOut: false,
+        aborted: abortRequested,
+        stdout,
+        stderr,
+        ...(terminationError ? { terminationError: terminationError.message } : {}),
+      });
     });
     child.on("error", (error) => {
+      if (abortRequested) {
+        terminationError = error;
+        return;
+      }
       fail(new DomainError("SPAWN_FAILED", `Failed to run Codex: ${error.message}`));
     });
     signal?.addEventListener?.("abort", abort, { once: true });

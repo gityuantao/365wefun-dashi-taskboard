@@ -59,6 +59,19 @@ test("runCodex preserves non-zero exits", async () => {
   assert.match(result.stderr, /boom/);
 });
 
+test("runCodex rejects a non-abort child error immediately", async () => {
+  const child = mockChild();
+  const promise = runCodex({
+    workdir: "/tmp",
+    prompt: "fails normally",
+    spawnImpl: () => child,
+  });
+
+  child.emit("error", new Error("pipe failed"));
+
+  await assert.rejects(promise, /SPAWN_FAILED.*pipe failed/);
+});
+
 test("runCodex kills and reports timed-out runs", async () => {
   const child = mockChild();
   const promise = runCodex({
@@ -101,6 +114,58 @@ test("runCodex waits for the child close after shutdown sends SIGTERM", async ()
   assert.equal(result.exitCode, null);
 });
 
+test("abort disables an imminent runtime timeout and does not settle before close", async () => {
+  const child = mockChild();
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    return true;
+  };
+  const controller = new AbortController();
+  let settled = false;
+  const promise = runCodex({
+    workdir: "/tmp",
+    prompt: "timeout race",
+    timeoutMinutes: 0.0001,
+    signal: controller.signal,
+    abortGraceMs: 100,
+    spawnImpl: () => child,
+  }).finally(() => { settled = true; });
+
+  controller.abort(new Error("orchestrator shutdown"));
+  await new Promise((resolve) => setTimeout(resolve, 15));
+
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.equal(settled, false);
+  child.emit("close", null);
+  const result = await promise;
+  assert.equal(result.aborted, true);
+  assert.equal(result.timedOut, false);
+});
+
+test("an abort-time child error is recorded but does not settle before close", async () => {
+  const child = mockChild();
+  const controller = new AbortController();
+  let settled = false;
+  const promise = runCodex({
+    workdir: "/tmp",
+    prompt: "error race",
+    signal: controller.signal,
+    abortGraceMs: 100,
+    spawnImpl: () => child,
+  }).finally(() => { settled = true; });
+
+  controller.abort(new Error("orchestrator shutdown"));
+  child.emit("error", new Error("EPIPE during termination"));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(settled, false);
+  child.emit("close", null);
+  const result = await promise;
+  assert.equal(result.aborted, true);
+  assert.equal(result.terminationError, "EPIPE during termination");
+});
+
 test("runCodex escalates an uncooperative child to SIGKILL then fails explicitly", async () => {
   const child = mockChild();
   const signals = [];
@@ -119,7 +184,12 @@ test("runCodex escalates an uncooperative child to SIGKILL then fails explicitly
   });
 
   controller.abort(new Error("orchestrator shutdown"));
+  child.emit("error", new Error("EPIPE while killing"));
 
-  await assert.rejects(promise, /TERMINATION_TIMEOUT/);
+  await assert.rejects(promise, (error) => {
+    assert.equal(error.code, "TERMINATION_TIMEOUT");
+    assert.equal(error.details.childError, "EPIPE while killing");
+    return true;
+  });
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 });
