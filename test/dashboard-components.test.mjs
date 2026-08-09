@@ -120,20 +120,39 @@ test("detail drawer supports task and version bodies", () => {
   assert.match(drawerSource, /publishOrchestrationVersion/);
 });
 
-test("dashboard styles define layout, badges and drawer classes", () => {
+test("dashboard styles define the approved desktop grid and responsive fallbacks", () => {
+  assert.match(
+    styles,
+    /\.dashboard-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+320px/s,
+  );
+  assert.match(styles, /@media\s*\(max-width:\s*880px\)/);
+  assert.match(styles, /@media\s*\(max-width:\s*620px\)/);
+  assert.match(styles, /\.dashboard-dialog-backdrop/);
+  assert.match(styles, /var\(--dialog-shadow\)/);
+  assert.doesNotMatch(styles, /#[0-9a-fA-F]{6}/);
+
   for (const selector of [
     ".dashboard",
+    ".dashboard-workspace",
+    ".dashboard-main-column",
+    ".dashboard-side-column",
     ".dashboard-section",
     ".release-actions",
-    ".pipeline-grid",
+    ".pipeline-list",
     ".version-progress",
     ".activity-feed",
-    ".detail-drawer",
     ".badge-releasable",
     ".badge-failed",
   ]) {
     assert.match(styles, new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+});
+
+test("dashboard styling stays flat and token driven", () => {
+  assert.doesNotMatch(styles, /linear-gradient/);
+  assert.doesNotMatch(styles, /var\(--card-shadow\)/);
+  assert.doesNotMatch(styles, /\.dashboard-section-heading h2::before/);
+  assert.doesNotMatch(styles, /\.detail-drawer/);
 });
 
 test("dashboard renders the orchestration master switch", () => {
