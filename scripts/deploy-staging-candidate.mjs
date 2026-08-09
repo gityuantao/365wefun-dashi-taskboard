@@ -46,9 +46,16 @@ const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
 const releaseId = `${stamp}-${candidateCommit.slice(0, 8)}`;
 const releasePath = `${base}/releases/${releaseId}`;
 let previousRelease = null;
+let previousReleaseId = "local";
+let previousGitSha = "local";
 let switched = false;
 
 try {
+  try {
+    const previousVersion = JSON.parse((await run("curl", ["--fail", "--silent", "--show-error", "--max-time", "20", `${publicUrl}/version`])).stdout);
+    previousReleaseId = String(previousVersion.releaseId ?? "local");
+    previousGitSha = String(previousVersion.gitSha ?? "local");
+  } catch {}
   await run("git", ["-C", repoPath, "worktree", "add", "--detach", worktree, candidateCommit]);
   await run("pnpm", ["install", "--frozen-lockfile"], { cwd: worktree, timeout: 10 * 60_000 });
   await run("pnpm", ["--filter", "@e365/db", "exec", "prisma", "generate"], {
@@ -93,11 +100,21 @@ pm2 restart e365-api e365-worker --update-env
 `, [releasePath, releaseId, candidateCommit]);
   switched = true;
 
-  await run("curl", ["--fail", "--silent", "--show-error", "--max-time", "20", `${publicUrl}/health/ready`]);
-  const version = JSON.parse((await run("curl", ["--fail", "--silent", "--show-error", "--max-time", "20", `${publicUrl}/version`])).stdout);
-  if (version.gitSha !== candidateCommit || version.releaseId !== releaseId) {
-    throw new Error(`staging readback mismatch after restart: ${version.gitSha ?? "missing"}`);
+  let version = null;
+  let lastHealthError = null;
+  for (let attempt = 1; attempt <= 30; attempt += 1) {
+    try {
+      await run("curl", ["--fail", "--silent", "--show-error", "--max-time", "10", `${publicUrl}/health/ready`]);
+      version = JSON.parse((await run("curl", ["--fail", "--silent", "--show-error", "--max-time", "10", `${publicUrl}/version`])).stdout);
+      if (version.gitSha === candidateCommit && version.releaseId === releaseId) break;
+      lastHealthError = new Error(`staging readback mismatch after restart: ${version.gitSha ?? "missing"}`);
+    } catch (error) {
+      lastHealthError = error;
+    }
+    version = null;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
+  if (!version) throw lastHealthError ?? new Error("staging health did not become ready");
   console.log(JSON.stringify({ releaseId, url: publicUrl, startedAt: version.startedAt, candidateCommit, versionBranch, taskId, targetVersion }));
 } catch (error) {
   if (switched && previousRelease) {
@@ -105,8 +122,9 @@ pm2 restart e365-api e365-worker --update-env
       await ssh(`
 ln -sfn "$1" "${base}/current"
 export PATH=/root/.nvm/versions/node/v20.20.2/bin:$PATH
+export RELEASE_ID="$2" GIT_SHA="$3"
 pm2 restart e365-api e365-worker --update-env
-`, [previousRelease]);
+`, [previousRelease, previousReleaseId, previousGitSha]);
     } catch {}
   }
   throw error;
