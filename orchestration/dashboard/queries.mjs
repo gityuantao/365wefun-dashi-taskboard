@@ -50,6 +50,7 @@ async function loadTasks(db) {
       return {
         ...parseSnapshot(row),
         status: state === "accepting" ? "developing" : state,
+        aggregateStatus: row.aggregate_state ?? null,
       };
     })
     .filter((task) => task?.id);
@@ -232,8 +233,26 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
       url: versionListUrl ?? `https://app.clickup.com/v/l/${version.id}`,
     }));
 
+  const acceptanceRejectedTasks = tasks
+    .filter(
+      (task) => task.status === "acceptance_rejected"
+        || task.aggregateStatus === "acceptance_rejected",
+    )
+    .map((task) => ({
+      id: task.id,
+      name: task.name ?? task.id,
+      status: "acceptance_rejected",
+      targetVersion: task.targetVersion ?? null,
+    }));
+
   const activity = await loadActivity(db, 20, tasks, versions);
-  return { releasableVersions, pipeline, versions: versionProgress, activity };
+  return {
+    releasableVersions,
+    acceptanceRejectedTasks,
+    pipeline,
+    versions: versionProgress,
+    activity,
+  };
 }
 
 async function loadTimeline(db, taskId) {

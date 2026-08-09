@@ -35,6 +35,7 @@ test("dashboard routes return aggregated payload when enabled", async (t) => {
   });
   assert.equal(response.response.status, 200);
   assert.equal(response.body.versions[0].name, "1.0.1");
+  assert.equal(response.body.acceptanceRejectedTasks[0].id, "task-5");
   assert.equal(
     response.body.releasableVersions[0].url,
     "https://app.clickup.com/space-1/v/l/version-list",

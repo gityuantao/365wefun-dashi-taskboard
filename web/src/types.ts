@@ -290,6 +290,13 @@ export interface ReleasableVersion {
   url: string;
 }
 
+export interface AcceptanceRejectedTask {
+  id: string;
+  name: string;
+  status: "acceptance_rejected";
+  targetVersion: string | null;
+}
+
 export interface PipelineCounts {
   inbox: number;
   analyzing: number;
@@ -327,6 +334,7 @@ export interface ActivityItem {
 
 export interface DashboardPayload {
   releasableVersions: ReleasableVersion[];
+  acceptanceRejectedTasks: AcceptanceRejectedTask[];
   pipeline: PipelineCounts;
   versions: VersionProgress[];
   activity: ActivityItem[];

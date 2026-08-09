@@ -22,6 +22,10 @@ const activitySource = await readFile(
   new URL("../web/src/components/dashboard/ActivityFeed.tsx", import.meta.url),
   "utf8",
 );
+const acceptanceRejectedSource = await readFile(
+  new URL("../web/src/components/dashboard/AcceptanceRejectedTasks.tsx", import.meta.url),
+  "utf8",
+).catch(() => "");
 const drawerSource = await readFile(
   new URL("../web/src/components/dashboard/DetailDrawer.tsx", import.meta.url),
   "utf8",
@@ -41,6 +45,7 @@ test("dashboard container polls every 15 seconds and renders all four sections",
   assert.match(dashboardSource, /setInterval\(/);
   assert.match(dashboardSource, /getOrchestrationDashboard/);
   assert.match(dashboardSource, /<ReleaseActions/);
+  assert.match(dashboardSource, /<AcceptanceRejectedTasks/);
   assert.match(dashboardSource, /<PipelineOverview/);
   assert.match(dashboardSource, /<VersionProgressList/);
   assert.match(dashboardSource, /<ActivityFeed/);
@@ -51,13 +56,23 @@ test("dashboard container polls every 15 seconds and renders all four sections",
 test("dashboard uses the approved two-column information architecture", () => {
   assert.match(
     dashboardSource,
-    /className="dashboard-main-column"[\s\S]*?<ReleaseActions[\s\S]*?<ActivityFeed/,
+    /className="dashboard-main-column"[\s\S]*?<ReleaseActions[\s\S]*?<AcceptanceRejectedTasks[\s\S]*?<ActivityFeed/,
   );
   assert.match(
     dashboardSource,
     /className="dashboard-side-column"[\s\S]*?<PipelineOverview[\s\S]*?<VersionProgressList/,
   );
   assert.match(dashboardSource, /<aside className="dashboard-side-column" aria-label="研发概览">/);
+});
+
+test("acceptance rejected tasks render compact whole-row task detail triggers", () => {
+  assert.match(acceptanceRejectedSource, /export function AcceptanceRejectedTasks\(/);
+  assert.match(acceptanceRejectedSource, /验收不通过/);
+  assert.match(acceptanceRejectedSource, /if \(tasks\.length === 0\) return null/);
+  assert.match(acceptanceRejectedSource, /className="acceptance-rejected-row"/);
+  assert.match(acceptanceRejectedSource, /<button[\s\S]*?onOpen\(task, event\)/);
+  assert.match(acceptanceRejectedSource, /task\.targetVersion/);
+  assert.match(acceptanceRejectedSource, /task\.name/);
 });
 
 test("dashboard sections use compact flat rows instead of nested cards", () => {
@@ -141,6 +156,8 @@ test("dashboard styles define the approved desktop grid and responsive fallbacks
     ".pipeline-list",
     ".version-progress",
     ".activity-feed",
+    ".acceptance-rejected-list",
+    ".acceptance-rejected-row",
     ".badge-releasable",
     ".badge-failed",
   ]) {
