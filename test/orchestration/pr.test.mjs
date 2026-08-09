@@ -57,6 +57,34 @@ test("creates a pull request when none exists", async (t) => {
   assert.ok(calls.some(([command, args]) => command === "gh" && args.includes("pr") && args.includes("create")));
 });
 
+test("createPullRequest rechecks fencing after view and before create mutation", async () => {
+  let active = true;
+  let mutations = 0;
+  const run = async (_command, args) => {
+    if (args.includes("view")) {
+      active = false;
+      return { status: 1, stdout: "", stderr: "not found" };
+    }
+    if (args.includes("create")) mutations += 1;
+    return { status: 0, stdout: "https://example.test/pull/1", stderr: "" };
+  };
+
+  await assert.rejects(
+    createPullRequest({
+      branch: "task/fenced",
+      base: "main",
+      title: "fenced",
+      body: "fenced",
+      run,
+      beforeMutation: async () => {
+        if (!active) throw new Error("CLAIM_MISMATCH");
+      },
+    }),
+    /CLAIM_MISMATCH/,
+  );
+  assert.equal(mutations, 0);
+});
+
 test("recovers the existing PR url from a create failure", async (t) => {
   const run = async (command, args) => {
     if (args.includes("view")) {

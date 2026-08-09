@@ -72,21 +72,54 @@ test("runCodex kills and reports timed-out runs", async () => {
   assert.equal(child.killed, true);
 });
 
-test("runCodex aborts an active child when shutdown cancels its signal", async () => {
+test("runCodex waits for the child close after shutdown sends SIGTERM", async () => {
   const child = mockChild();
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    return true;
+  };
   const controller = new AbortController();
+  let settled = false;
   const promise = runCodex({
     workdir: "/tmp",
     prompt: "long running task",
     signal: controller.signal,
     spawnImpl: () => child,
+  }).finally(() => { settled = true; });
+
+  controller.abort(new Error("orchestrator shutdown"));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.equal(settled, false);
+  child.emit("close", null);
+
+  const result = await promise;
+  assert.equal(result.aborted, true);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.exitCode, null);
+});
+
+test("runCodex escalates an uncooperative child to SIGKILL then fails explicitly", async () => {
+  const child = mockChild();
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    return true;
+  };
+  const controller = new AbortController();
+  const promise = runCodex({
+    workdir: "/tmp",
+    prompt: "ignores shutdown",
+    signal: controller.signal,
+    abortGraceMs: 5,
+    abortForceCloseMs: 5,
+    spawnImpl: () => child,
   });
 
   controller.abort(new Error("orchestrator shutdown"));
 
-  const result = await promise;
-  assert.equal(child.killed, true);
-  assert.equal(result.aborted, true);
-  assert.equal(result.timedOut, false);
-  assert.equal(result.exitCode, null);
+  await assert.rejects(promise, /TERMINATION_TIMEOUT/);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 });

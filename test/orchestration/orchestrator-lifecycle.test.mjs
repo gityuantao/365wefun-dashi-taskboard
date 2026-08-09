@@ -5,7 +5,20 @@ import test from "node:test";
 import {
   createOrchestratorLifecycle,
   guardDurableMethods,
+  runCodex,
 } from "../../orchestration/runner/codex-runner.mjs";
+
+function mockChild(events) {
+  const child = new EventEmitter();
+  child.stdin = { write: () => {}, end: () => {} };
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = (signal) => {
+    events.push(`child.kill:${signal}`);
+    return true;
+  };
+  return child;
+}
 
 test("SIGTERM stops claims, cancels active runs, drains settlement, and closes resources", async () => {
   const signals = new EventEmitter();
@@ -63,6 +76,63 @@ test("a claim finishing during shutdown is reconciled and never executed", async
   await Promise.all([claimAttempt, shutdown]);
 
   assert.deepEqual(events, ["reconciled:job-race"]);
+});
+
+test("lifecycle closes resources only after a SIGTERM-delayed Codex child closes", async () => {
+  const events = [];
+  const child = mockChild(events);
+  const lifecycle = createOrchestratorLifecycle({
+    dashboardServer: { close: async () => events.push("dashboard.close") },
+    miniflare: { dispose: async () => events.push("miniflare.dispose") },
+  });
+  const running = lifecycle.runJob({ id: "job-codex" }, ({ signal }) => runCodex({
+    workdir: "/tmp",
+    prompt: "long running task",
+    signal,
+    abortGraceMs: 1_000,
+    spawnImpl: () => child,
+  }));
+
+  const shutdown = lifecycle.shutdown();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["child.kill:SIGTERM"]);
+
+  events.push("child.close");
+  child.emit("close", null);
+  await Promise.all([running, shutdown]);
+  assert.deepEqual(events, [
+    "child.kill:SIGTERM",
+    "child.close",
+    "dashboard.close",
+    "miniflare.dispose",
+  ]);
+});
+
+test("lifecycle waits for explicit non-cooperative child termination failure before closing", async () => {
+  const events = [];
+  const child = mockChild(events);
+  const lifecycle = createOrchestratorLifecycle({
+    dashboardServer: { close: async () => events.push("dashboard.close") },
+    miniflare: { dispose: async () => events.push("miniflare.dispose") },
+  });
+  const running = lifecycle.runJob({ id: "job-stuck" }, ({ signal }) => runCodex({
+    workdir: "/tmp",
+    prompt: "ignores every signal",
+    signal,
+    abortGraceMs: 5,
+    abortForceCloseMs: 5,
+    spawnImpl: () => child,
+  }));
+  const observed = assert.rejects(running, /TERMINATION_TIMEOUT/);
+
+  await lifecycle.shutdown();
+  await observed;
+  assert.deepEqual(events, [
+    "child.kill:SIGTERM",
+    "child.kill:SIGKILL",
+    "dashboard.close",
+    "miniflare.dispose",
+  ]);
 });
 
 test("durable method guards validate the claim immediately before every boundary", async () => {

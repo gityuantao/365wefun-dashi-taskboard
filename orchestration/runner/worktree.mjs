@@ -15,15 +15,21 @@ function assertSafeTaskId(taskId) {
   }
 }
 
-function git(repoPath, args) {
-  return spawnSync("git", ["-C", repoPath, ...args], { encoding: "utf8" });
+function runCommand(command, args) {
+  return spawnSync(command, args, { encoding: "utf8" });
 }
 
-export function createTaskWorktree({
+function git(repoPath, args, run = runCommand) {
+  return run("git", ["-C", repoPath, ...args]);
+}
+
+export async function createTaskWorktree({
   repoPath,
   taskId,
   baseRef = "main",
   worktreesRoot,
+  run = runCommand,
+  beforeMutation = async () => {},
 }) {
   assertSafeTaskId(taskId);
   const branch = `task/${taskId}`;
@@ -31,15 +37,20 @@ export function createTaskWorktree({
     worktreesRoot ?? path.join(repoPath, ".worktrees"),
     `task-${taskId}`,
   );
-  const existingBranch = git(repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
-  const existingWorktree = git(repoPath, ["worktree", "list", "--porcelain"]);
+  const existingBranch = await git(
+    repoPath,
+    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
+    run,
+  );
+  const existingWorktree = await git(repoPath, ["worktree", "list", "--porcelain"], run);
   if (existingWorktree.stdout.includes(`worktree ${worktreePath}`)) {
     return { worktreePath, branch, reused: true };
   }
   const result = existingBranch.status === 0
     ? ["worktree", "add", worktreePath, branch]
     : ["worktree", "add", "-b", branch, worktreePath, baseRef];
-  const finalResult = git(repoPath, result);
+  await beforeMutation();
+  const finalResult = await git(repoPath, result, run);
   if (finalResult.status !== 0) {
     throw new DomainError(
       "WORKTREE_CREATE_FAILED",

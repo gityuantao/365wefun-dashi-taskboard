@@ -126,12 +126,7 @@ function pollEnv() {
 }
 
 const gitOps = {
-  createWorktree: ({ repoPath, taskId, baseRef, worktreesRoot }) => createTaskWorktree({
-    repoPath,
-    taskId,
-    baseRef,
-    worktreesRoot,
-  }),
+  createWorktree: (options) => createTaskWorktree(options),
 };
 
 const codex = {
@@ -141,6 +136,8 @@ const codex = {
     timeoutMinutes: runtime.codexTimeoutMinutes ?? 20,
     codexBin: runtime.codexBin ?? "codex",
     signal,
+    abortGraceMs: runtime.codexAbortGraceMs ?? 2_000,
+    abortForceCloseMs: runtime.codexAbortForceCloseMs ?? 1_000,
   }),
 };
 
@@ -172,8 +169,7 @@ function jobGitOps(job) {
   const assertActive = jobClaimGuard(job);
   return {
     createWorktree: async (options) => {
-      await assertActive();
-      return gitOps.createWorktree(options);
+      return gitOps.createWorktree({ ...options, beforeMutation: assertActive });
     },
     commitAll: async (worktreePath, message) => {
       await assertActive();
@@ -207,8 +203,7 @@ function jobGitOps(job) {
       execFileSync("git", ["-C", repoPath, "push", "-u", "origin", branch], {
         stdio: "ignore",
       });
-      await assertActive();
-      return createPullRequest({ branch, base, title, body });
+      return createPullRequest({ branch, base, title, body, beforeMutation: assertActive });
     },
   };
 }

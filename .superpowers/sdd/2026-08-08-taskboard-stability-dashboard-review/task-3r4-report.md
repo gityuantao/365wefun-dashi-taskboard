@@ -58,5 +58,24 @@ Syntax and patch checks:
 
 ## Concerns
 
-- Shutdown uses SIGTERM for cooperative Codex cancellation and drains the runner settlement path. A child process that ignores SIGTERM still relies on operating-system/process behavior; no SIGKILL escalation was added because it was outside this task's contract.
 - Fencing is validated immediately before each exposed durable boundary. Atomicity across a remote API request itself remains governed by that remote system; the local lease cannot be atomically committed with GitHub or ClickUp.
+
+## Fix round 1
+
+Two review findings were addressed with focused RED → GREEN coverage:
+
+- Codex abort now sends SIGTERM and remains unsettled until the child emits `close`. After the configurable short grace period it escalates to SIGKILL, then either observes `close` or rejects with `TERMINATION_TIMEOUT`. Lifecycle tests prove Dashboard and Miniflare close only after that settlement.
+- Fencing guards are injected inside compound helpers. `createTaskWorktree` checks after its branch/worktree reads and immediately before `git worktree add`; `createPullRequest` checks after `gh pr view` and immediately before `gh pr create`. Tests invalidate the lease during the read and prove the mutation count stays zero.
+- The runtime supplies `codexAbortGraceMs` / `codexAbortForceCloseMs` configuration and passes the job claim guard into both helpers.
+
+Fix-round focused verification:
+
+```text
+node --test \
+  test/orchestration/codex-runner.test.mjs \
+  test/orchestration/orchestrator-lifecycle.test.mjs \
+  test/orchestration/worktree-runner.test.mjs \
+  test/orchestration/pr.test.mjs
+
+25 passed, 0 failed
+```

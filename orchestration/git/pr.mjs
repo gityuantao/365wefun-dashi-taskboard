@@ -49,6 +49,7 @@ export async function createPullRequest({
   body,
   repo = "gityuantao/365wefun",
   run = runCommand,
+  beforeMutation = async () => {},
 }) {
   const view = await run("gh", [
     "pr", "view",
@@ -61,6 +62,7 @@ export async function createPullRequest({
     return { url: view.stdout.trim(), alreadyExists: true };
   }
 
+  await beforeMutation();
   const created = await run("gh", [
     "pr", "create",
     "--repo", repo,

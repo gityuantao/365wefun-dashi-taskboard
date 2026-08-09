@@ -25,7 +25,7 @@ async function makeRepo() {
 
 test("createTaskWorktree rejects unsafe task ids", async () => {
   for (const taskId of ["../escape", "a/b", "a b", ""]) {
-    assert.throws(
+    await assert.rejects(
       () => createTaskWorktree({ repoPath: "/tmp", taskId }),
       /INVALID_TASK_ID/,
     );
@@ -37,7 +37,7 @@ test("createTaskWorktree creates a branch and isolated worktree", async (t) => {
   t.after(() => rm(root, { recursive: true, force: true }));
   const worktreesRoot = path.join(root, ".wt");
   await mkdir(worktreesRoot);
-  const result = createTaskWorktree({
+  const result = await createTaskWorktree({
     repoPath: root,
     taskId: "task-abc-1",
     baseRef: "main",
@@ -52,12 +52,40 @@ test("createTaskWorktree creates a branch and isolated worktree", async (t) => {
   assert.equal(status.stdout, "");
 });
 
+test("createTaskWorktree rechecks fencing after reads and before worktree mutation", async () => {
+  let active = true;
+  let mutations = 0;
+  const run = async (_command, args) => {
+    if (args.includes("rev-parse")) return { status: 1, stdout: "", stderr: "" };
+    if (args.includes("list")) {
+      active = false;
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (args.includes("add")) mutations += 1;
+    return { status: 0, stdout: "", stderr: "" };
+  };
+
+  await assert.rejects(
+    createTaskWorktree({
+      repoPath: "/repo",
+      taskId: "task-fenced",
+      worktreesRoot: "/worktrees",
+      run,
+      beforeMutation: async () => {
+        if (!active) throw new Error("CLAIM_MISMATCH");
+      },
+    }),
+    /CLAIM_MISMATCH/,
+  );
+  assert.equal(mutations, 0);
+});
+
 test("removeTaskWorktree removes the worktree and branch", async (t) => {
   const root = await makeRepo();
   t.after(() => rm(root, { recursive: true, force: true }));
   const worktreesRoot = path.join(root, ".wt");
   await mkdir(worktreesRoot);
-  const { worktreePath, branch } = createTaskWorktree({
+  const { worktreePath, branch } = await createTaskWorktree({
     repoPath: root,
     taskId: "task-remove-1",
     baseRef: "main",
@@ -80,7 +108,7 @@ test("assertClean detects dirty worktrees", async (t) => {
   t.after(() => rm(root, { recursive: true, force: true }));
   const worktreesRoot = path.join(root, ".wt");
   await mkdir(worktreesRoot);
-  const { worktreePath } = createTaskWorktree({
+  const { worktreePath } = await createTaskWorktree({
     repoPath: root,
     taskId: "task-clean-1",
     baseRef: "main",
@@ -96,7 +124,7 @@ test("runInWorktree reports non-zero exits", async (t) => {
   t.after(() => rm(root, { recursive: true, force: true }));
   const worktreesRoot = path.join(root, ".wt");
   await mkdir(worktreesRoot);
-  const { worktreePath } = createTaskWorktree({
+  const { worktreePath } = await createTaskWorktree({
     repoPath: root,
     taskId: "task-fail-1",
     baseRef: "main",
