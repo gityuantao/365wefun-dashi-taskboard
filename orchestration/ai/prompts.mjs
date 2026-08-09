@@ -1,7 +1,10 @@
 export function buildCommentContext(comments, limit = 12) {
   if (!Array.isArray(comments) || comments.length === 0) return null;
-  const lines = comments
-    .slice(-limit)
+  const allHaveDates = comments.every((comment) => Number.isFinite(Number(comment.date)));
+  const recent = allHaveDates
+    ? [...comments].sort((left, right) => Number(right.date) - Number(left.date)).slice(0, limit)
+    : comments.slice(-limit);
+  const lines = recent
     .map((comment) => `- ${String(comment.comment_text ?? comment.text ?? "")}`)
     .filter((line) => line.trim() !== "-")
     .join("\n");

@@ -39,6 +39,7 @@ import {
   guardDurableMethods,
   runCodex,
 } from "../orchestration/runner/codex-runner.mjs";
+import { recoverExpiredRunnerJobsOnTick } from "../orchestration/runner/tick-recovery.mjs";
 import {
   createTaskWorktree,
   runInWorktree,
@@ -578,6 +579,8 @@ async function tick() {
     return;
   }
   try {
+    const recovered = await recoverExpiredRunnerJobsOnTick(db, { now });
+    if (recovered.requeued > 0) log(`recovered ${recovered.requeued} expired runner job(s)`);
     try {
       const poll = await pollClickUpOnce(pollEnv(), { now, clientFactory });
       if (poll.processed > 0) {

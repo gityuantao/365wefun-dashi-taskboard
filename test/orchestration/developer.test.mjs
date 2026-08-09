@@ -538,3 +538,35 @@ test("development reads comments and includes acceptance feedback in the prompt"
   assert.match(prompt, /需求补充：点击后需要跳转/);
   assert.match(prompt, /完整验收失败详情：按钮无法点击/);
 });
+
+test("development keeps the newest ClickUp feedback when comments are newest-first", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  let prompt = "";
+  const comments = Array.from({ length: 15 }, (_, index) => ({
+    id: `c-${index}`,
+    date: String(1_000_000 - index),
+    comment_text: index === 0
+      ? "最新人工验收：测试环境仍然不是95折"
+      : `历史评论 ${index}`,
+  }));
+
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({ getComments: async () => comments }),
+    codex: {
+      run: async ({ prompt: value }) => {
+        prompt = value;
+        return { exitCode: 0, stdout: validOutput(), stderr: "" };
+      },
+    },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.match(prompt, /最新人工验收：测试环境仍然不是95折/);
+  assert.doesNotMatch(prompt, /历史评论 14/);
+});
