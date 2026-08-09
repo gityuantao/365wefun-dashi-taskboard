@@ -4,6 +4,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import {
+  stagingProbeUrls,
+  stagingRsyncArgs,
+} from "../orchestration/release/staging-deployment-layout.mjs";
 
 const runFile = promisify(execFile);
 const host = process.env.STAGING_SSH_HOST ?? "root@47.103.25.142";
@@ -81,11 +85,7 @@ printf '%s' "$previous"
 `, [releasePath]);
   previousRelease = prepared.stdout.trim();
 
-  await run("rsync", [
-    "-az", "--delete", "--exclude", "node_modules", "--exclude", ".git", "--exclude", "apps/ios",
-    "--exclude", "apps/mp", "--exclude", "apps/android", "--exclude", "apps/android-web-wrapper",
-    "--exclude", ".env*", `${worktree}/`, `${host}:${releasePath}/`,
-  ], { timeout: 10 * 60_000 });
+  await run("rsync", stagingRsyncArgs({ worktree, host, releasePath }), { timeout: 10 * 60_000 });
 
   await ssh(`
 release="$1"
@@ -104,7 +104,9 @@ pm2 restart e365-api e365-worker --update-env
   let lastHealthError = null;
   for (let attempt = 1; attempt <= 30; attempt += 1) {
     try {
-      await run("curl", ["--fail", "--silent", "--show-error", "--max-time", "10", `${publicUrl}/health/ready`]);
+      for (const probeUrl of stagingProbeUrls()) {
+        await run("curl", ["--fail", "--silent", "--show-error", "--max-time", "10", probeUrl]);
+      }
       version = JSON.parse((await run("curl", ["--fail", "--silent", "--show-error", "--max-time", "10", `${publicUrl}/version`])).stdout);
       if (version.gitSha === candidateCommit && version.releaseId === releaseId) break;
       lastHealthError = new Error(`staging readback mismatch after restart: ${version.gitSha ?? "missing"}`);
