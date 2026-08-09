@@ -35,7 +35,8 @@ export function createClickUpClient({
 
   async function request(pathname, { method = "GET", body } = {}) {
     let lastError = null;
-    for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const requestRetries = method === "GET" ? retries : 0;
+    for (let attempt = 0; attempt <= requestRetries; attempt += 1) {
       try {
         const response = await withTimeout(
           fetchImpl(`${baseUrl}${pathname}`, {
@@ -52,7 +53,7 @@ export function createClickUpClient({
             `ClickUp API returned ${response.status}`,
             { status: response.status },
           );
-          if (attempt < retries) {
+          if (attempt < requestRetries) {
             await sleep(retryDelayMs * 2 ** attempt);
             continue;
           }
@@ -70,7 +71,7 @@ export function createClickUpClient({
       } catch (error) {
         if (error instanceof DomainError) throw error;
         lastError = error;
-        if (attempt < retries) {
+        if (attempt < requestRetries) {
           await sleep(retryDelayMs * 2 ** attempt);
           continue;
         }

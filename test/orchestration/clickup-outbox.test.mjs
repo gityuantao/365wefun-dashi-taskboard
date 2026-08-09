@@ -59,7 +59,12 @@ test("flushOutbox executes pending status mutations and confirms them", async (t
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const calls = [];
+  const remoteStatuses = ["测试中", "待发布"];
   const client = {
+    getTask: async () => ({
+      id: "task-1",
+      status: { status: remoteStatuses.shift() },
+    }),
     updateTaskStatus: async (id, status) => calls.push(["status", id, status]),
     updateCustomField: async (id, fieldId, value) => calls.push(["field", id, fieldId, value]),
   };
@@ -79,7 +84,12 @@ test("flushOutbox skips already confirmed mutations", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   let calls = 0;
+  const remoteStatuses = ["测试中", "待发布"];
   const client = {
+    getTask: async () => ({
+      id: "task-1",
+      status: { status: remoteStatuses.shift() },
+    }),
     updateTaskStatus: async () => { calls += 1; },
     updateCustomField: async () => { calls += 1; },
   };
@@ -186,20 +196,164 @@ test("flushOutbox trusts remote 待补充信息 over a stale local developing sn
   assert.equal(writes, 0);
 });
 
+test("flushOutbox expires a status mutation when normalized remote state changed", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  let writes = 0;
+  const client = {
+    getTask: async () => ({ id: "task-1", status: { status: "开发中" } }),
+    updateTaskStatus: async () => { writes += 1; },
+    updateCustomField: async () => { writes += 1; },
+  };
+  await enqueueMutation(harness.db, mutationBase());
+
+  const result = await flushOutbox(harness.db, client, { now: NOW, config: CONFIG });
+
+  assert.deepEqual(result.flushed, []);
+  assert.deepEqual(result.expired, ["mut-1"]);
+  assert.equal(writes, 0);
+  const row = await harness.db
+    .prepare("SELECT status FROM outbox_mutations WHERE id = ?")
+    .bind("mut-1")
+    .first();
+  assert.equal(row.status, "expired");
+});
+
+test("flushOutbox fails closed when authoritative remote state is unavailable", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  let writes = 0;
+  const client = {
+    updateTaskStatus: async () => { writes += 1; },
+    updateCustomField: async () => { writes += 1; },
+  };
+  await enqueueMutation(harness.db, mutationBase());
+
+  await assert.rejects(
+    () => flushOutbox(harness.db, client, { now: NOW, config: CONFIG }),
+    /REMOTE_STATE_UNAVAILABLE/,
+  );
+
+  assert.equal(writes, 0);
+  const row = await harness.db
+    .prepare("SELECT status FROM outbox_mutations WHERE id = ?")
+    .bind("mut-1")
+    .first();
+  assert.equal(row.status, "pending");
+});
+
+test("flushOutbox leaves a successful status write pending until target readback", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  let writes = 0;
+  const client = {
+    getTask: async () => ({ id: "task-1", status: { status: "测试中" } }),
+    updateTaskStatus: async () => { writes += 1; },
+    updateCustomField: async () => {},
+  };
+  await enqueueMutation(harness.db, mutationBase());
+
+  await assert.rejects(
+    () => flushOutbox(harness.db, client, { now: NOW, config: CONFIG }),
+    /REMOTE_CONFIRMATION_FAILED/,
+  );
+
+  assert.equal(writes, 1);
+  const row = await harness.db
+    .prepare("SELECT status, confirmed_at FROM outbox_mutations WHERE id = ?")
+    .bind("mut-1")
+    .first();
+  assert.equal(row.status, "pending");
+  assert.equal(row.confirmed_at, null);
+});
+
+test("flushOutbox reconciles an unknown write outcome before any retry", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const remoteStatuses = ["测试中", "待发布"];
+  let writes = 0;
+  let reads = 0;
+  const client = {
+    getTask: async () => {
+      reads += 1;
+      return { id: "task-1", status: { status: remoteStatuses.shift() } };
+    },
+    updateTaskStatus: async () => {
+      writes += 1;
+      throw new Error("socket closed after upload");
+    },
+    updateCustomField: async () => {},
+  };
+  await enqueueMutation(harness.db, mutationBase());
+
+  const result = await flushOutbox(harness.db, client, { now: NOW, config: CONFIG });
+
+  assert.deepEqual(result.flushed, ["mut-1"]);
+  assert.equal(reads, 2);
+  assert.equal(writes, 1);
+  const row = await harness.db
+    .prepare("SELECT status FROM outbox_mutations WHERE id = ?")
+    .bind("mut-1")
+    .first();
+  assert.equal(row.status, "confirmed");
+});
+
 test("flushOutbox writes custom fields through the field id mapping", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const calls = [];
+  const remoteValues = ["旧摘要", "测试摘要内容"];
   const client = {
+    getTask: async () => ({
+      id: "task-1",
+      custom_fields: [{
+        id: "field-summary",
+        name: "执行摘要",
+        type: "text",
+        value: remoteValues.shift(),
+      }],
+    }),
     updateTaskStatus: async () => {},
     updateCustomField: async (id, fieldId, value) => calls.push([id, fieldId, value]),
   };
   await enqueueMutation(harness.db, mutationBase({
     field: "执行摘要",
+    expectedBefore: "旧摘要",
     target: "测试摘要内容",
   }));
-  await flushOutbox(harness.db, client, { now: NOW, config: CONFIG });
+  const result = await flushOutbox(harness.db, client, { now: NOW, config: CONFIG });
   assert.deepEqual(calls, [["task-1", "field-summary", "测试摘要内容"]]);
+  assert.deepEqual(result.flushed, ["mut-1"]);
+});
+
+test("flushOutbox does not overwrite a normalized custom-field value changed remotely", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  let writes = 0;
+  const client = {
+    getTask: async () => ({
+      id: "task-1",
+      custom_fields: [{
+        id: "field-summary",
+        name: "执行摘要",
+        type: "text",
+        value: { value: "人工修改" },
+      }],
+    }),
+    updateTaskStatus: async () => {},
+    updateCustomField: async () => { writes += 1; },
+  };
+  await enqueueMutation(harness.db, mutationBase({
+    field: "执行摘要",
+    expectedBefore: { value: "旧摘要" },
+    target: "测试摘要内容",
+  }));
+
+  const result = await flushOutbox(harness.db, client, { now: NOW, config: CONFIG });
+
+  assert.deepEqual(result.flushed, []);
+  assert.deepEqual(result.expired, ["mut-1"]);
+  assert.equal(writes, 0);
 });
 
 test("confirmMutation idempotently confirms a mutation", async (t) => {

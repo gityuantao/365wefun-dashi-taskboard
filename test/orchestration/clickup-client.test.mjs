@@ -95,6 +95,25 @@ test("updateTaskStatus posts the status to the task", async () => {
   assert.deepEqual(JSON.parse(calls[0].init.body), { status: "待发布" });
 });
 
+test("updateTaskStatus does not blindly retry an unknown transport outcome", async () => {
+  let attempts = 0;
+  const client = createClickUpClient({
+    token: "pk_test",
+    retries: 3,
+    retryDelayMs: 0,
+    fetchImpl: async () => {
+      attempts += 1;
+      throw new Error("socket closed after upload");
+    },
+  });
+
+  await assert.rejects(
+    () => client.updateTaskStatus("t1", "待发布"),
+    /NETWORK_ERROR/,
+  );
+  assert.equal(attempts, 1);
+});
+
 test("updateTaskDescription posts the description to the task", async () => {
   const calls = [];
   const client = createClickUpClient({
