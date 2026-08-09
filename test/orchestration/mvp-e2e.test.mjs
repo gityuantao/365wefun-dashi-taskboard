@@ -18,6 +18,11 @@ import { appendCommandResult } from "../../orchestration/persistence/d1-event-st
 import { saveSnapshot } from "../../orchestration/clickup/snapshot.mjs";
 
 const NOW = "2026-08-04T00:10:00.000Z";
+const CANDIDATE_COMMIT = "1111111111111111111111111111111111111111";
+const CANDIDATE_ARTIFACT = {
+  digest: "sha256:e2e-candidate-v1",
+  object: "releases/version-e2e-1/sha256:e2e-candidate-v1",
+};
 
 const CONFIG = {
   teamId: "90161712199",
@@ -277,7 +282,27 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
     },
     readAt: NOW,
   });
-  const frozen = await freezeManifest({ db: harness.db, versionId: "version-e2e-1", now: NOW });
+  const frozen = await freezeManifest({
+    db: harness.db,
+    versionId: "version-e2e-1",
+    now: NOW,
+    versionBranch: "version/version-e2e-1",
+    candidateCommit: CANDIDATE_COMMIT,
+    candidateRef: `refs/heads/release-candidate/version-e2e-1/${CANDIDATE_COMMIT}`,
+    taskPrHeads: [{
+      taskId: "task-e2e-1",
+      branch: "task/task-e2e-1",
+      headCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      prNumber: 99,
+      repository: "x/repo",
+    }],
+    artifactIdentity: CANDIDATE_ARTIFACT,
+    regressionEvidence: {
+      passed: true,
+      command: "node --test test/orchestration/*.test.mjs",
+      collectedAt: NOW,
+    },
+  });
   assert.equal(frozen.status, "frozen");
   const manifest = await loadManifest({ db: harness.db, versionId: "version-e2e-1" });
   assert.deepEqual(manifest.taskIds, ["task-e2e-1"]);
@@ -288,7 +313,15 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
     actorId: "release-e2e",
     actorRoles: ["release_manager"],
     now: NOW,
-    adapter: createWebAdapter({ deployer }),
+    adapter: {
+      ...createWebAdapter({ deployer }),
+      readback: async () => ({
+        confirmed: true,
+        published: true,
+        candidateCommit: CANDIDATE_COMMIT,
+        artifactIdentity: CANDIDATE_ARTIFACT,
+      }),
+    },
   });
   assert.equal(release.status, "succeeded");
   assert.equal((await loadAggregate(harness.db, "version", "version-e2e-1")).state, "published");
