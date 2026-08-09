@@ -1,4 +1,5 @@
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
+import { targetVersionName } from "./version-gate.mjs";
 
 const DEVELOPED_STATES = new Set([
   "ready_for_test",
@@ -10,9 +11,10 @@ const DEVELOPED_STATES = new Set([
 ]);
 
 function targetVersionOf(task) {
-  return task.custom_fields?.find(
+  const value = task.custom_fields?.find(
     (field) => field.name === "目标版本" || field.id === "field-version",
   )?.value ?? null;
+  return Array.isArray(value) ? targetVersionName(value) : value;
 }
 
 function priorityOf(task) {
