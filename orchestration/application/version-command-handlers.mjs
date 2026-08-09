@@ -5,8 +5,12 @@ function evidence(parameters) {
 }
 
 export const VERSION_COMMAND_HANDLERS = {
-  start_release(state) {
-    return decideVersionTransition({ from: state, to: "releasing" });
+  start_release(state, parameters) {
+    return decideVersionTransition({
+      from: state,
+      to: "releasing",
+      evidenceId: evidence(parameters),
+    });
   },
   release_succeeded(state) {
     return decideVersionTransition({ from: state, to: "published" });

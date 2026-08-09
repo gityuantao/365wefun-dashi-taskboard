@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { coordinateVersionRelease } from "../../orchestration/application/release-commands.mjs";
+import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
+import {
+  coordinateVersionRelease,
+  loadCleanupAttempts,
+  recordCleanupAttempt,
+} from "../../orchestration/application/release-commands.mjs";
 
 const NOW = "2026-08-04T00:08:00.000Z";
 
@@ -12,12 +17,18 @@ test("coordinator integrates task PRs, freezes one Candidate, publishes it, then
       versionBranch: "version/version-1",
       taskHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       candidateCommit: "1111111111111111111111111111111111111111",
+      headRefName: "task/task-a",
+      prNumber: 41,
+      repository: "owner/repo",
     },
     {
       merged: true,
       versionBranch: "version/version-1",
       taskHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       candidateCommit: "2222222222222222222222222222222222222222",
+      headRefName: "task/task-b",
+      prNumber: 42,
+      repository: "owner/repo",
     },
   ];
   let frozenManifest;
@@ -38,6 +49,13 @@ test("coordinator integrates task PRs, freezes one Candidate, publishes it, then
     identifyArtifact: async ({ candidateCommit }) => {
       calls.push(`artifact:${candidateCommit}`);
       return { digest: `sha256:${candidateCommit}`, object: `releases/${candidateCommit}` };
+    },
+    persistCandidate: async ({ candidateCommit }) => {
+      calls.push(`persist:${candidateCommit}`);
+      return {
+        persisted: true,
+        candidateRef: `refs/heads/release-candidate/version-1/${candidateCommit}`,
+      };
     },
     freezeCandidate: async (candidate) => {
       calls.push(`freeze:${candidate.candidateCommit}`);
@@ -70,16 +88,24 @@ test("coordinator integrates task PRs, freezes one Candidate, publishes it, then
 
   assert.equal(result.status, "succeeded");
   assert.equal(frozenManifest.candidateCommit, "2222222222222222222222222222222222222222");
+  assert.equal(
+    frozenManifest.candidateRef,
+    "refs/heads/release-candidate/version-1/2222222222222222222222222222222222222222",
+  );
   assert.deepEqual(frozenManifest.taskPrHeads, [
     {
       taskId: "task-a",
       branch: "task/task-a",
       headCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      prNumber: 41,
+      repository: "owner/repo",
     },
     {
       taskId: "task-b",
       branch: "task/task-b",
       headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      prNumber: 42,
+      repository: "owner/repo",
     },
   ]);
   assert.equal(result.cleanupResult.candidateCommit, frozenManifest.candidateCommit);
@@ -100,9 +126,16 @@ test("coordinator preserves PRs and refs when publication is not confirmed", asy
       versionBranch: "version/version-1",
       taskHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       candidateCommit: "1111111111111111111111111111111111111111",
+      headRefName: "task/task-a",
+      prNumber: 42,
+      repository: "owner/repo",
     }),
     collectRegressionEvidence: async () => ({ passed: true, command: "node --test" }),
     identifyArtifact: async () => ({ digest: "sha256:artifact-v1" }),
+    persistCandidate: async ({ candidateCommit }) => ({
+      persisted: true,
+      candidateRef: `refs/heads/release-candidate/version-1/${candidateCommit}`,
+    }),
     freezeCandidate: async (candidate) => ({
       status: "frozen",
       manifest: { ...candidate, checksum: "manifest-checksum" },
@@ -128,6 +161,7 @@ test("coordinator stops before freezing or cleanup when task integration fails",
     integrateTaskPr: async () => ({ merged: false, conflict: true, error: "conflict" }),
     collectRegressionEvidence: async () => calls.push("regression"),
     identifyArtifact: async () => calls.push("artifact"),
+    persistCandidate: async () => calls.push("persist"),
     freezeCandidate: async () => calls.push("freeze"),
     verifyCandidate: async () => calls.push("verify"),
     publishCandidate: async () => calls.push("publish"),
@@ -136,6 +170,36 @@ test("coordinator stops before freezing or cleanup when task integration fails",
 
   assert.equal(result.status, "failed");
   assert.match(result.error, /integrat/i);
+  assert.deepEqual(calls, []);
+});
+
+test("coordinator does not freeze when remote PR heads changed before Candidate persistence", async () => {
+  const calls = [];
+  const result = await coordinateVersionRelease({
+    versionId: "version-1",
+    versionBranch: "version/version-1",
+    taskIds: ["task-a"],
+    now: NOW,
+    integrateTaskPr: async () => ({
+      merged: true,
+      taskHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      candidateCommit: "1111111111111111111111111111111111111111",
+      headRefName: "actual-remote-branch",
+      prNumber: 42,
+      repository: "owner/repo",
+    }),
+    collectRegressionEvidence: async () => ({ passed: true, command: "node --test" }),
+    identifyArtifact: async () => ({ digest: "sha256:artifact-v1" }),
+    persistCandidate: async () => ({ persisted: false, error: "GitHub PR 42 head changed" }),
+    freezeCandidate: async () => calls.push("freeze"),
+    verifyCandidate: async () => calls.push("verify"),
+    publishCandidate: async () => calls.push("publish"),
+    cleanupTask: async () => calls.push("cleanup"),
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.stage, "candidate_persistence");
+  assert.match(result.error, /head changed/i);
   assert.deepEqual(calls, []);
 });
 
@@ -166,4 +230,103 @@ test("coordinator does not publish or cleanup an unverified frozen Candidate", a
   assert.equal(result.status, "failed");
   assert.match(result.error, /not integrated/i);
   assert.deepEqual(calls, []);
+});
+
+test("cleanup persists each ordered attempt and safely resumes without repeating successes", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const manifest = {
+    versionId: "version-1",
+    versionBranch: "version/version-1",
+    candidateCommit: "1111111111111111111111111111111111111111",
+    candidateRef: "refs/heads/release-candidate/version-1/1111111111111111111111111111111111111111",
+    taskIds: ["task-a"],
+    taskPrHeads: [{
+      taskId: "task-a",
+      branch: "actual-remote-branch",
+      headCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      prNumber: 42,
+      repository: "owner/repo",
+    }],
+  };
+  const calls = [];
+  let remoteAttempts = 0;
+  const cleanupOperations = [
+    {
+      name: "close_pull_request",
+      run: async () => {
+        calls.push("close_pull_request");
+        return { closed: true };
+      },
+    },
+    {
+      name: "delete_remote_branch",
+      run: async () => {
+        calls.push("delete_remote_branch");
+        remoteAttempts += 1;
+        if (remoteAttempts === 1) throw new Error("remote delete failed");
+        return { deleted: true };
+      },
+    },
+    {
+      name: "remove_local_evidence",
+      run: async () => {
+        calls.push("remove_local_evidence");
+        return { removed: true };
+      },
+    },
+  ];
+  const common = {
+    versionId: "version-1",
+    versionBranch: manifest.versionBranch,
+    taskIds: manifest.taskIds,
+    now: NOW,
+    existingManifest: manifest,
+    verifyCandidate: async () => ({ verified: true }),
+    publishCandidate: async () => ({
+      status: "succeeded",
+      publication: { candidateCommit: manifest.candidateCommit },
+    }),
+    cleanupOperations,
+    loadCleanupAttempts: (query) => loadCleanupAttempts({ db: harness.db, ...query }),
+    recordCleanupAttempt: (attempt) => recordCleanupAttempt({ db: harness.db, ...attempt }),
+  };
+
+  const first = await coordinateVersionRelease(common);
+  assert.equal(first.cleanupResult.status, "partial");
+  assert.deepEqual(calls, ["close_pull_request", "delete_remote_branch"]);
+  let persisted = await loadCleanupAttempts({
+    db: harness.db,
+    versionId: "version-1",
+    candidateCommit: manifest.candidateCommit,
+    taskId: "task-a",
+  });
+  assert.deepEqual(
+    persisted.map(({ step, status }) => [step, status]),
+    [["close_pull_request", "succeeded"], ["delete_remote_branch", "failed"]],
+  );
+
+  const second = await coordinateVersionRelease({ ...common, now: "2026-08-04T00:09:00.000Z" });
+  assert.equal(second.cleanupResult.status, "completed");
+  assert.deepEqual(calls, [
+    "close_pull_request",
+    "delete_remote_branch",
+    "delete_remote_branch",
+    "remove_local_evidence",
+  ]);
+  persisted = await loadCleanupAttempts({
+    db: harness.db,
+    versionId: "version-1",
+    candidateCommit: manifest.candidateCommit,
+    taskId: "task-a",
+  });
+  assert.deepEqual(
+    persisted.map(({ step, status }) => [step, status]),
+    [
+      ["close_pull_request", "succeeded"],
+      ["delete_remote_branch", "failed"],
+      ["delete_remote_branch", "succeeded"],
+      ["remove_local_evidence", "succeeded"],
+    ],
+  );
 });

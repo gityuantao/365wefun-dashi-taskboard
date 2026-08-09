@@ -96,10 +96,13 @@ async function prepareVersion(harness) {
     now: NOW,
     versionBranch: "version/version-1",
     candidateCommit: CANDIDATE_COMMIT,
+    candidateRef: `refs/heads/release-candidate/version-1/${CANDIDATE_COMMIT}`,
     taskPrHeads: [{
       taskId: "task-a",
       branch: "task/task-a",
       headCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      prNumber: 42,
+      repository: "owner/repo",
     }],
     artifactIdentity: ARTIFACT_IDENTITY,
     regressionEvidence: {
@@ -228,4 +231,58 @@ test("confirm release failure leaves tasks ready for release", async (t) => {
   assert.equal(version.state, "release_failed");
   const task = await loadAggregate(harness.db, "task", "task-a");
   assert.equal(task.state, "ready_for_release");
+});
+
+test("release_failed retries the existing immutable Candidate without recomputing it", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await prepareVersion(harness);
+  const frozenBefore = await harness.db
+    .prepare("SELECT manifest, created_at FROM release_manifests WHERE version_id = ?")
+    .bind("version-1")
+    .first();
+
+  const first = await handleConfirmRelease({
+    db: harness.db,
+    versionId: "version-1",
+    actorId: "release-manager",
+    actorRoles: ["release_manager"],
+    now: NOW,
+    adapter: {
+      release: async () => { throw new Error("first deployment failed"); },
+      readback: async () => { throw new Error("unreachable"); },
+    },
+  });
+  assert.equal(first.status, "failed");
+  assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "release_failed");
+
+  let deployedManifest;
+  const second = await handleConfirmRelease({
+    db: harness.db,
+    versionId: "version-1",
+    actorId: "release-manager",
+    actorRoles: ["release_manager"],
+    now: "2026-08-04T00:08:00.000Z",
+    adapter: {
+      release: async ({ manifest }) => {
+        deployedManifest = manifest;
+        return { url: "https://releases.example.com/v1" };
+      },
+      readback: async () => ({
+        confirmed: true,
+        published: true,
+        candidateCommit: CANDIDATE_COMMIT,
+        artifactIdentity: ARTIFACT_IDENTITY,
+      }),
+    },
+  });
+
+  assert.equal(second.status, "succeeded");
+  assert.equal(deployedManifest.candidateCommit, CANDIDATE_COMMIT);
+  assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "published");
+  const frozenAfter = await harness.db
+    .prepare("SELECT manifest, created_at FROM release_manifests WHERE version_id = ?")
+    .bind("version-1")
+    .first();
+  assert.deepEqual(frozenAfter, frozenBefore);
 });

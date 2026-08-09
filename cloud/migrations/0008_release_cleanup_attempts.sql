@@ -1,0 +1,2 @@
+CREATE TABLE release_cleanup_attempts (id TEXT PRIMARY KEY, version_id TEXT NOT NULL, candidate_commit TEXT NOT NULL, task_id TEXT NOT NULL, branch TEXT NOT NULL, step TEXT NOT NULL, attempt INTEGER NOT NULL CHECK (attempt > 0), status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed')), result TEXT NOT NULL CHECK (json_valid(result)), error TEXT, attempted_at TEXT NOT NULL, UNIQUE (version_id, candidate_commit, task_id, step, attempt));
+CREATE INDEX release_cleanup_attempts_candidate ON release_cleanup_attempts (version_id, candidate_commit, task_id, step, attempt);

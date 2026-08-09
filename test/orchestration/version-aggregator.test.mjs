@@ -16,16 +16,21 @@ const NOW = "2026-08-04T00:06:00.000Z";
 const CANDIDATE = {
   versionBranch: "version/version-1",
   candidateCommit: "1111111111111111111111111111111111111111",
+  candidateRef: "refs/heads/release-candidate/version-1/1111111111111111111111111111111111111111",
   taskPrHeads: [
     {
       taskId: "task-a",
       branch: "task/task-a",
       headCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      prNumber: 41,
+      repository: "owner/repo",
     },
     {
       taskId: "task-b",
       branch: "task/task-b",
       headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      prNumber: 42,
+      repository: "owner/repo",
     },
   ],
   artifactIdentity: {
@@ -142,6 +147,7 @@ test("freezeManifest records the exact immutable Candidate without advancing ver
   assert.deepEqual(result.manifest.taskIds.sort(), ["task-a", "task-b"]);
   assert.equal(result.manifest.versionBranch, CANDIDATE.versionBranch);
   assert.equal(result.manifest.candidateCommit, CANDIDATE.candidateCommit);
+  assert.equal(result.manifest.candidateRef, CANDIDATE.candidateRef);
   assert.deepEqual(result.manifest.taskPrHeads, CANDIDATE.taskPrHeads);
   assert.deepEqual(result.manifest.artifactIdentity, CANDIDATE.artifactIdentity);
   assert.deepEqual(result.manifest.regressionEvidence, CANDIDATE.regressionEvidence);

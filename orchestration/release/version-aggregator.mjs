@@ -77,6 +77,9 @@ export function validateFrozenManifest(manifest) {
   if (!/^[0-9a-f]{40,64}$/i.test(manifest.candidateCommit ?? "")) {
     reasons.push("Candidate commit is missing or invalid");
   }
+  if (!/^refs\/heads\/release-candidate\/[A-Za-z0-9._/-]+$/.test(manifest.candidateRef ?? "")) {
+    reasons.push("immutable remote Candidate ref is missing or invalid");
+  }
   if (!Array.isArray(manifest.taskIds) || manifest.taskIds.length === 0) {
     reasons.push("Candidate has no task ids");
   }
@@ -87,7 +90,10 @@ export function validateFrozenManifest(manifest) {
     && new Set(headTaskIds).size === taskIds.length
     && taskIds.every((taskId) => headTaskIds.includes(taskId))
     && heads.every((head) => nonEmptyString(head?.branch)
-      && /^[0-9a-f]{40,64}$/i.test(head?.headCommit ?? ""));
+      && /^[0-9a-f]{40,64}$/i.test(head?.headCommit ?? "")
+      && Number.isInteger(head?.prNumber)
+      && head.prNumber > 0
+      && nonEmptyString(head?.repository));
   if (!exactHeads) {
     reasons.push("exact task PR heads are missing");
   }
@@ -106,6 +112,7 @@ export async function freezeManifest({
   now,
   versionBranch,
   candidateCommit,
+  candidateRef,
   taskPrHeads,
   artifactIdentity,
   regressionEvidence,
@@ -122,6 +129,7 @@ export async function freezeManifest({
     versionId,
     versionBranch,
     candidateCommit,
+    candidateRef,
     taskIds: gate.taskIds,
     taskPrHeads,
     artifactIdentity,

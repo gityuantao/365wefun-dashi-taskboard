@@ -30,8 +30,12 @@ import {
   loadManifest,
 } from "../orchestration/release/version-aggregator.mjs";
 import {
+  confirmPublishedCandidate,
   coordinateVersionRelease,
   handleConfirmRelease,
+  loadCleanupAttempts,
+  loadTaskPullRequest,
+  recordCleanupAttempt,
 } from "../orchestration/application/release-commands.mjs";
 import { correctionText } from "../orchestration/clickup/state-comments.mjs";
 import { checkDevelopmentOrder } from "../orchestration/application/development-order.mjs";
@@ -57,8 +61,7 @@ import {
   resolveRemoteRepo,
 } from "../orchestration/git/pr.mjs";
 import {
-  mergeTaskPrToVersionBranch,
-  verifyCandidateIntegration,
+  createReleaseGitOps,
 } from "../orchestration/git/merge.mjs";
 import { readControl, shouldProcess } from "../orchestration/control.mjs";
 
@@ -340,22 +343,27 @@ async function loadConfiguredReleaseAdapter() {
 async function releaseCoordinator(now) {
   const client = await clientFactory({ token });
   const adapter = await loadConfiguredReleaseAdapter();
+  const repository = resolveRemoteRepo(runtime.repoPath);
+  const releaseGitOps = createReleaseGitOps({
+    repoPath: runtime.repoPath,
+    repository,
+  });
   const versions = await client.getVersionsByList(config.lists[versionListKey].id);
   for (const payload of versions) {
     const snapshot = normalizeVersion(payload, config, versionListKey);
     await saveSnapshot(db, { type: "version", snapshot, readAt: now });
     // 始终激活版本聚合，确保 syncStatuses 能同步/纠正版本状态
     await ensureVersionActive(snapshot.id, now);
-    // 状态驱动：用户把版本状态改为「发布中」即触发发布
-    if (snapshot.status !== "releasing") continue;
     const versionId = snapshot.id;
     const existingManifest = await loadManifest({ db, versionId });
     const versionAggregate = await loadAggregate(db, "version", versionId);
-    if (versionAggregate.state === "published") continue;
+    const cleanupRetry = versionAggregate.state === "published" && existingManifest;
+    // 用户触发发布，或已发布版本需要重试未完成的持久化清理。
+    if (snapshot.status !== "releasing" && !cleanupRetry) continue;
     if (
       !adapter
-      || typeof adapter.release !== "function"
       || typeof adapter.readback !== "function"
+      || (versionAggregate.state !== "published" && typeof adapter.release !== "function")
       || (!existingManifest && (
         typeof adapter.collectRegressionEvidence !== "function"
         || typeof adapter.identifyArtifact !== "function"
@@ -382,47 +390,55 @@ async function releaseCoordinator(now) {
       taskIds,
       now,
       existingManifest,
-      integrateTaskPr: async ({ taskBranch }) => mergeTaskPrToVersionBranch({
-        repoPath: runtime.repoPath,
+      integrateTaskPr: async ({ taskId }) => releaseGitOps.integrateTaskPr({
+        taskId,
+        pullRequest: await loadTaskPullRequest({ db, taskId }),
         versionBranch,
-        prRef: taskBranch,
       }),
       collectRegressionEvidence: (candidate) => adapter.collectRegressionEvidence(candidate),
       identifyArtifact: (candidate) => adapter.identifyArtifact(candidate),
+      persistCandidate: (candidate) => releaseGitOps.persistCandidate(candidate),
       freezeCandidate: (candidate) => freezeManifest({ db, ...candidate }),
-      verifyCandidate: ({ manifest }) => verifyCandidateIntegration({
-        repoPath: runtime.repoPath,
-        versionBranch: manifest.versionBranch,
-        candidateCommit: manifest.candidateCommit,
-        taskPrHeads: manifest.taskPrHeads,
-      }),
-      publishCandidate: ({ manifest }) => handleConfirmRelease({
-        db,
-        versionId,
-        actorId: "system-poller",
-        actorRoles: ["release_manager"],
-        now,
-        adapter,
-        client,
-      }),
-      cleanupTask: async ({ taskId, branch }) => {
-        const worktree = removeTaskWorktree({
-          repoPath: runtime.repoPath,
-          taskId,
-          worktreesRoot: runtime.worktreesRoot,
+      verifyCandidate: (candidate) => releaseGitOps.verifyCandidate(candidate),
+      publishCandidate: async ({ manifest }) => {
+        if (versionAggregate.state === "published") {
+          try {
+            const publication = await confirmPublishedCandidate({ adapter, manifest });
+            return { status: "succeeded", publication };
+          } catch (error) {
+            return { status: "failed", error: error.message };
+          }
+        }
+        return handleConfirmRelease({
+          db,
+          versionId,
+          actorId: "system-poller",
+          actorRoles: ["release_manager"],
+          now,
+          adapter,
+          client,
         });
-        const repo = resolveRemoteRepo(runtime.repoPath);
-        const pullRequestClosed = await closeTaskPullRequest({ branch, repo });
-        const remoteBranchRemoved = deleteRemoteTaskBranch({ repoPath: runtime.repoPath, branch });
-        return {
-          taskId,
-          branch,
-          worktreePath: worktree.worktreePath,
-          localBranchRemoved: true,
-          pullRequestClosed,
-          remoteBranchRemoved,
-        };
       },
+      cleanupOperations: [
+        {
+          name: "close_pull_request",
+          run: ({ head }) => closeTaskPullRequest({ branch: String(head.prNumber), repo: repository }),
+        },
+        {
+          name: "delete_remote_branch",
+          run: ({ head }) => deleteRemoteTaskBranch({ repoPath: runtime.repoPath, branch: head.branch }),
+        },
+        {
+          name: "remove_local_evidence",
+          run: ({ head }) => removeTaskWorktree({
+            repoPath: runtime.repoPath,
+            taskId: head.taskId,
+            worktreesRoot: runtime.worktreesRoot,
+          }),
+        },
+      ],
+      loadCleanupAttempts: (query) => loadCleanupAttempts({ db, ...query }),
+      recordCleanupAttempt: (attempt) => recordCleanupAttempt({ db, ...attempt }),
     });
     log(`version ${versionId} release -> ${result.status}${result.error ? `: ${result.error}` : ""}`);
     if (result.cleanupResult) {
