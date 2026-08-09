@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   stagingProbeUrls,
+  stagingReleaseRootMode,
   stagingRsyncArgs,
 } from "../orchestration/release/staging-deployment-layout.mjs";
 
@@ -89,6 +90,7 @@ printf '%s' "$previous"
 
   await ssh(`
 release="$1"
+chmod "$4" "$release"
 ln -s "${base}/shared/.env" "$release/.env"
 export PATH=/root/.nvm/versions/node/v20.20.2/bin:$PATH
 cd "$release"
@@ -97,7 +99,7 @@ node node_modules/.pnpm/prisma@6.19.3_typescript@5.9.3/node_modules/prisma/build
 ln -sfn "$release" "${base}/current"
 export RELEASE_ID="$2" GIT_SHA="$3"
 pm2 restart e365-api e365-worker --update-env
-`, [releasePath, releaseId, candidateCommit]);
+`, [releasePath, releaseId, candidateCommit, stagingReleaseRootMode()]);
   switched = true;
 
   let version = null;

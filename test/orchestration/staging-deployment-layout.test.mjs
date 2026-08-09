@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   stagingProbeUrls,
+  stagingReleaseRootMode,
   stagingRsyncArgs,
 } from "../../orchestration/release/staging-deployment-layout.mjs";
 
@@ -14,6 +15,10 @@ test("staging rsync keeps release directories traversable by nginx", () => {
   });
 
   assert.ok(args.includes("--chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r"));
+});
+
+test("staging explicitly fixes the pre-created release root mode", () => {
+  assert.equal(stagingReleaseRootMode(), "0755");
 });
 
 test("staging readiness covers API, public web, and admin web", () => {

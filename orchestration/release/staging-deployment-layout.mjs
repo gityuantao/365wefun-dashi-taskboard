@@ -15,6 +15,10 @@ export function stagingRsyncArgs({ worktree, host, releasePath }) {
   ];
 }
 
+export function stagingReleaseRootMode() {
+  return "0755";
+}
+
 export function stagingProbeUrls() {
   return [
     "https://test-api.365english.online/health/ready",
