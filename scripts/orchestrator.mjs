@@ -51,7 +51,10 @@ import {
 } from "../orchestration/persistence/d1-runner-jobs.mjs";
 import { loadAggregate } from "../orchestration/persistence/d1-aggregate-store.mjs";
 import { applyMigrations } from "../orchestration/persistence/migrations.mjs";
-import { startDashboardServer } from "../orchestration/dashboard/http-server.mjs";
+import {
+  getProcessOrchestrationMutationSecret,
+  startDashboardServer,
+} from "../orchestration/dashboard/http-server.mjs";
 import {
   createPullRequest,
   resolveRemoteRepo,
@@ -223,6 +226,7 @@ const dashboardServer = await startDashboardServer({
   versionListUrl: `https://app.clickup.com/${encodeURIComponent(config.spaceId)}/v/l/${encodeURIComponent(config.lists[versionListKey].id)}`,
   controlPath: CONTROL_PATH,
   versionStatusMap: config.versionStatusMap,
+  mutationSecret: getProcessOrchestrationMutationSecret(),
 });
 log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
 

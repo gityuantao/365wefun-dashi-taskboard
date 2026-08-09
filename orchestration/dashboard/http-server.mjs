@@ -1,8 +1,18 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 
 import { readControl, writeControl } from "../control.mjs";
 import { enqueueMutation } from "../clickup/outbox.mjs";
 import { buildDashboard, buildTaskDetail, buildVersionDetail } from "./queries.mjs";
+
+const PROCESS_MUTATION_SECRET = typeof process.env.CODEX_TASKBOARD_ORCHESTRATION_SECRET === "string"
+  && process.env.CODEX_TASKBOARD_ORCHESTRATION_SECRET.length > 0
+  ? process.env.CODEX_TASKBOARD_ORCHESTRATION_SECRET
+  : randomBytes(32).toString("base64url");
+
+export function getProcessOrchestrationMutationSecret() {
+  return PROCESS_MUTATION_SECRET;
+}
 
 function sendJson(response, status, value, extraHeaders = {}) {
   const body = JSON.stringify(value);
@@ -27,6 +37,22 @@ function methodNotAllowed(response, allowed) {
   );
 }
 
+function authorizedMutation(request, mutationSecret) {
+  if (typeof mutationSecret !== "string" || mutationSecret.length === 0) return false;
+  const authorization = typeof request.headers.authorization === "string"
+    ? request.headers.authorization
+    : "";
+  const actual = createHash("sha256").update(authorization).digest();
+  const expected = createHash("sha256").update(`Bearer ${mutationSecret}`).digest();
+  return timingSafeEqual(actual, expected);
+}
+
+function unauthorized(response) {
+  sendJson(response, 401, {
+    error: { code: "UNAUTHORIZED", message: "Mutation authorization required" },
+  });
+}
+
 async function readRequestBody(request) {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
@@ -39,6 +65,7 @@ export async function startDashboardServer({
   versionListUrl = null,
   controlPath = null,
   versionStatusMap = null,
+  mutationSecret = getProcessOrchestrationMutationSecret(),
 }) {
   const server = createServer(async (request, response) => {
     try {
@@ -49,6 +76,7 @@ export async function startDashboardServer({
           return sendJson(response, 200, await readControl(controlPath));
         }
         if (request.method === "PUT") {
+          if (!authorizedMutation(request, mutationSecret)) return unauthorized(response);
           let body;
           try {
             body = JSON.parse(await readRequestBody(request));
@@ -98,6 +126,7 @@ export async function startDashboardServer({
       );
       if (versionPublishMatch) {
         if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        if (!authorizedMutation(request, mutationSecret)) return unauthorized(response);
         let versionId;
         try {
           versionId = decodeURIComponent(versionPublishMatch[1]);

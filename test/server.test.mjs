@@ -7,6 +7,9 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
 
 import { createTaskboardServer } from "../server/index.mjs";
+import { startDashboardServer } from "../orchestration/dashboard/http-server.mjs";
+import { createCloudWorkerHarness } from "./helpers/cloud-worker-harness.mjs";
+import { seedDashboardFixture } from "./helpers/dashboard-fixture.mjs";
 
 const runningApps = [];
 
@@ -87,6 +90,80 @@ test("health and the default local project are available", async () => {
   assert.equal(result.body.projects[0].name, "Local");
   assert.equal(result.body.projects[0].workspacePath, null);
   assert.equal(result.body.projects[0].issueCount, 0);
+});
+
+test("loopback orchestration proxy authorizes mutations without exposing its secret", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestration-auth-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const controlPath = path.join(directory, "control.json");
+  await writeFile(path.join(directory, "index.html"), "<main>Taskboard</main>", "utf8");
+  const mutationSecret = "main-server-proxy-test-secret";
+  const dashboard = await startDashboardServer({
+    db: harness.db,
+    port: 0,
+    controlPath,
+    mutationSecret,
+    versionStatusMap: {
+      规划中: "planning",
+      进行中: "active",
+      发布中: "releasing",
+      发布失败: "release_failed",
+      已发布: "published",
+      已取消: "canceled",
+    },
+  });
+  t.after(() => dashboard.close());
+
+  const baseUrl = await startServer(async () => ({
+    orchestrationPort: dashboard.port,
+    orchestrationMutationSecret: mutationSecret,
+    staticDirectory: directory,
+  }));
+
+  const html = await fetch(baseUrl);
+  assert.equal(html.status, 200);
+  assert.equal((await html.text()).includes(mutationSecret), false);
+
+  const dashboardRead = await request(baseUrl, "/api/orchestration/dashboard");
+  assert.equal(dashboardRead.response.status, 200);
+  assert.equal(JSON.stringify(dashboardRead.body).includes(mutationSecret), false);
+
+  const publish = await request(
+    baseUrl,
+    "/api/orchestration/dashboard/versions/version-1/publish",
+    { method: "POST", body: {} },
+  );
+  assert.equal(publish.response.status, 200);
+  assert.deepEqual(publish.body, { ok: true, status: "releasing" });
+
+  const notReady = await request(
+    baseUrl,
+    "/api/orchestration/dashboard/versions/version-2/publish",
+    { method: "POST", body: {} },
+  );
+  assert.equal(notReady.response.status, 409);
+  assert.equal(notReady.body.error.code, "NOT_RELEASABLE");
+
+  const updated = await request(baseUrl, "/api/orchestration/control", {
+    method: "PUT",
+    body: { enabled: false },
+  });
+  assert.equal(updated.response.status, 200);
+  assert.equal(updated.body.enabled, false);
+
+  const invalid = await request(baseUrl, "/api/orchestration/control", {
+    method: "PUT",
+    body: { enabled: "no" },
+  });
+  assert.equal(invalid.response.status, 400);
+  assert.equal(invalid.body.error.code, "INVALID_BODY");
+
+  const metadata = await request(baseUrl, "/api/meta");
+  assert.equal(JSON.stringify(metadata.body).includes(mutationSecret), false);
 });
 
 test("workflow workspaces persist centrally with optimistic concurrency", async () => {

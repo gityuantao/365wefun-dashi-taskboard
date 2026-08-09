@@ -86,10 +86,12 @@ test("orchestrator dashboard server enqueues a publish mutation when releasable"
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedDashboardFixture(harness.db);
+  const mutationSecret = "dashboard-http-test-secret";
 
   const dashboard = await startDashboardServer({
     db: harness.db,
     port: 0,
+    mutationSecret,
     versionListUrl: "https://app.clickup.com/space-1/v/l/version-list",
     versionStatusMap: {
       规划中: "planning",
@@ -108,10 +110,26 @@ test("orchestrator dashboard server enqueues a publish mutation when releasable"
   assert.equal(version.status, 200);
   const versionBody = await version.json();
   assert.equal(versionBody.releasable, true);
+  assert.equal(JSON.stringify(versionBody).includes(mutationSecret), false);
+
+  const unauthorized = await fetch(
+    `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
+    { method: "POST" },
+  );
+  assert.equal(unauthorized.status, 401);
+  assert.equal((await unauthorized.json()).error.code, "UNAUTHORIZED");
+  const unauthorizedMutation = await harness.db
+    .prepare("SELECT COUNT(*) AS count FROM outbox_mutations WHERE object_id = ?")
+    .bind("version-1")
+    .first();
+  assert.equal(unauthorizedMutation.count, 0);
 
   const publish = await fetch(
     `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
-    { method: "POST" },
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${mutationSecret}` },
+    },
   );
   assert.equal(publish.status, 200);
   assert.deepEqual(await publish.json(), { ok: true, status: "releasing" });
@@ -124,7 +142,10 @@ test("orchestrator dashboard server enqueues a publish mutation when releasable"
 
   const notReady = await fetch(
     `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-2/publish`,
-    { method: "POST" },
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${mutationSecret}` },
+    },
   );
   assert.equal(notReady.status, 409);
   const notReadyBody = await notReady.json();

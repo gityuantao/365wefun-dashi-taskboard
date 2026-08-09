@@ -16,6 +16,7 @@ import {
   isTaskStatus,
 } from "../shared/domain.mjs";
 import { normalizeWorkflowSnapshot } from "../shared/workflow-control-flow.mjs";
+import { getProcessOrchestrationMutationSecret } from "../orchestration/dashboard/http-server.mjs";
 import { AiChatService } from "./ai-chat.mjs";
 import { createCloudConfigStore } from "./cloud-config.mjs";
 import {
@@ -1316,6 +1317,9 @@ export function resolveHost(value = process.env.CODEX_TASKBOARD_HOST ?? "0.0.0.0
 
 export function createTaskboardServer(options = {}) {
   const resolved = resolveServerOptions(options);
+  const orchestrationMutationSecret = Object.hasOwn(options, "orchestrationMutationSecret")
+    ? options.orchestrationMutationSecret
+    : getProcessOrchestrationMutationSecret();
   const database = new TaskboardDatabase(resolved.databasePath);
   const events = new EventHub();
   const cloudConfig = options.cloudConfigStore ?? createCloudConfigStore({
@@ -1596,9 +1600,17 @@ export function createTaskboardServer(options = {}) {
           signal: AbortSignal.timeout(5000),
         };
         if (request.method === "POST") {
+          if (typeof orchestrationMutationSecret === "string"
+            && orchestrationMutationSecret.length > 0) {
+            init.headers.authorization = `Bearer ${orchestrationMutationSecret}`;
+          }
           init.headers["content-type"] = "application/json";
-          init.body = Readable.toWeb(request);
-          init.duplex = "half";
+          const body = await readBody(
+            request,
+            JSON_BODY_LIMIT,
+            "Orchestration request body cannot exceed 1 MiB",
+          );
+          if (body.length > 0) init.body = body;
         }
         let upstream;
         let text;
@@ -1637,9 +1649,17 @@ export function createTaskboardServer(options = {}) {
           signal: AbortSignal.timeout(5000),
         };
         if (request.method === "PUT") {
+          if (typeof orchestrationMutationSecret === "string"
+            && orchestrationMutationSecret.length > 0) {
+            init.headers.authorization = `Bearer ${orchestrationMutationSecret}`;
+          }
           init.headers["content-type"] = "application/json";
-          init.body = Readable.toWeb(request);
-          init.duplex = "half";
+          const body = await readBody(
+            request,
+            JSON_BODY_LIMIT,
+            "Orchestration request body cannot exceed 1 MiB",
+          );
+          if (body.length > 0) init.body = body;
         }
         let upstream;
         try {
