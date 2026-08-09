@@ -267,15 +267,35 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
 }
 
 async function ensureVersionAssignmentJob(env, snapshot, now) {
-  const jobId = `${snapshot.id}-assign-version`;
-  const existing = await env.DB
-    .prepare("SELECT id FROM runner_jobs WHERE id = ?")
-    .bind(jobId)
-    .first();
-  if (existing) return;
+  const commandId = `auto-assign-version-${snapshot.id}`;
+  const rows = await env.DB
+    .prepare(
+      `SELECT id, status, created_at, completed_at
+       FROM runner_jobs
+       WHERE command_id = ? AND job_type = 'assign_version'
+       ORDER BY created_at DESC, id DESC`,
+    )
+    .bind(commandId)
+    .all();
+  const jobs = rows.results ?? [];
+  if (jobs.some((job) => ["queued", "claimed", "completed"].includes(job.status))) {
+    return;
+  }
+  const latestFailure = jobs.find((job) => job.status === "failed");
+  if (latestFailure) {
+    const retryWindowMinutes = Number(
+      env.CLICKUP_VERSION_ASSIGNMENT_RETRY_MINUTES
+      ?? env.CLICKUP_JOB_RETRY_MINUTES
+      ?? 5,
+    );
+    const failedAt = latestFailure.completed_at ?? latestFailure.created_at;
+    if (failedAt && addMinutes(failedAt, retryWindowMinutes) > now) return;
+  }
+  const generation = jobs.length + 1;
+  const jobId = `${snapshot.id}-assign-version-${generation}`;
   await enqueueJob(env.DB, {
     jobId,
-    commandId: `auto-assign-version-${snapshot.id}`,
+    commandId,
     jobType: "assign_version",
     payload: { taskId: snapshot.id },
     payloadHash: snapshot.fieldsHash,
@@ -309,7 +329,9 @@ export async function pollClickUpOnce(env, {
     // 无目标版本的 inbox 先派发独立的 AI 选版作业，并等待 ClickUp 下一轮读回确认。
     // 在此之前不创建聚合、不写 ClickUp 状态、不派发正式 analysis 作业。
     if (snapshot.status === "inbox" && !snapshot.targetVersion) {
-      await ensureVersionAssignmentJob(env, snapshot, now);
+      if (currentDevVersion) {
+        await ensureVersionAssignmentJob(env, snapshot, now);
+      }
       if (changes.length > 0) {
         processed += 1;
         await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });

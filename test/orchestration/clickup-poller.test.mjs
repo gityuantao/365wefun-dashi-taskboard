@@ -7,7 +7,11 @@ import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
 import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-store.mjs";
 import { saveSnapshot } from "../../orchestration/clickup/snapshot.mjs";
 import { pollClickUpOnce } from "../../cloud/src/clickup-poller.mjs";
-import { claimJob } from "../../orchestration/persistence/d1-runner-jobs.mjs";
+import {
+  claimJob,
+  completeJob,
+  enqueueJob,
+} from "../../orchestration/persistence/d1-runner-jobs.mjs";
 
 const NOW = "2026-08-04T00:00:10.000Z";
 
@@ -132,6 +136,41 @@ async function seedOrdinaryDevelopmentFailure(harness) {
       NOW,
     )
     .run();
+}
+
+async function seedVersionAssignmentJob(harness, {
+  generation = 1,
+  status = "queued",
+  createdAt = "2026-08-03T23:49:00.000Z",
+  completedAt = "2026-08-03T23:50:00.000Z",
+} = {}) {
+  const jobId = `task-1-assign-version-${generation}`;
+  await enqueueJob(harness.db, {
+    jobId,
+    commandId: "auto-assign-version-task-1",
+    jobType: "assign_version",
+    payload: { taskId: "task-1" },
+    payloadHash: `assign-hash-${generation}`,
+    expiresAt: "2026-08-04T00:30:00.000Z",
+    createdAt,
+  });
+  if (status === "queued") return { jobId, claim: null };
+  const claim = await claimJob(harness.db, {
+    deviceId: "assign-device",
+    jobType: "assign_version",
+    now: createdAt,
+    leaseMs: 60 * 60_000,
+  });
+  if (status === "claimed") return { jobId, claim };
+  await completeJob(harness.db, {
+    jobId,
+    deviceId: "assign-device",
+    fencingToken: claim.fencingToken,
+    status,
+    result: status === "failed" ? { error: "temporary AI failure" } : { ok: true },
+    now: completedAt,
+  });
+  return { jobId, claim };
 }
 
 test("poller processes tasks without requiring a managed flag", async (t) => {
@@ -312,6 +351,122 @@ test("poller queues version selection before starting analysis for an unversione
     .prepare("SELECT COUNT(*) AS count FROM runner_jobs WHERE job_type = 'assign_version'")
     .first();
   assert.equal(jobCount.count, 1);
+});
+
+test("poller keeps an unversioned inbox side-effect free when no unreleased version exists", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "收件箱", version: null }),
+  ], [
+    { id: "v0", name: "1.0.0", status: { status: "已发布" } },
+  ]);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.deepEqual(result.commands, []);
+  const job = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE job_type = 'assign_version'")
+    .first();
+  assert.equal(job, null);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.version, 0);
+});
+
+test("poller retries a failed version assignment with a new generation after backoff", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedVersionAssignmentJob(harness, { status: "failed" });
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "收件箱", version: null }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+
+  await pollClickUpOnce(env, { now: NOW });
+
+  const jobs = await harness.db
+    .prepare("SELECT id, status FROM runner_jobs WHERE job_type = 'assign_version' ORDER BY id")
+    .all();
+  assert.deepEqual(jobs.results, [
+    { id: "task-1-assign-version-1", status: "failed" },
+    { id: "task-1-assign-version-2", status: "queued" },
+  ]);
+});
+
+test("poller stops retrying after a retried version assignment completes", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedVersionAssignmentJob(harness, { status: "failed" });
+  const tasks = [sandboxTask({ status: "收件箱", version: null })];
+  const versions = [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }];
+  await pollClickUpOnce(await makeEnv(harness, tasks, versions), { now: NOW });
+  const retry = await claimJob(harness.db, {
+    deviceId: "assign-device-2",
+    jobType: "assign_version",
+    now: NOW,
+  });
+  await completeJob(harness.db, {
+    jobId: retry.id,
+    deviceId: "assign-device-2",
+    fencingToken: retry.fencingToken,
+    status: "completed",
+    result: { assigned: true },
+    now: NOW,
+  });
+
+  await pollClickUpOnce(await makeEnv(harness, tasks, versions), {
+    now: "2026-08-04T00:10:10.000Z",
+  });
+
+  const count = await harness.db
+    .prepare("SELECT COUNT(*) AS count FROM runner_jobs WHERE job_type = 'assign_version'")
+    .first();
+  assert.equal(count.count, 2);
+});
+
+test("poller does not duplicate queued, claimed, or completed version assignment jobs", async (t) => {
+  for (const status of ["queued", "claimed", "completed"]) {
+    await t.test(status, async () => {
+      const harness = await createCloudWorkerHarness();
+      t.after(() => harness.dispose());
+      await seedVersionAssignmentJob(harness, { status });
+      const env = await makeEnv(harness, [
+        sandboxTask({ status: "收件箱", version: null }),
+      ], [
+        { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+      ]);
+
+      await pollClickUpOnce(env, { now: NOW });
+
+      const count = await harness.db
+        .prepare("SELECT COUNT(*) AS count FROM runner_jobs WHERE job_type = 'assign_version'")
+        .first();
+      assert.equal(count.count, 1);
+    });
+  }
+});
+
+test("poller honors the retry window for a recent failed version assignment", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedVersionAssignmentJob(harness, {
+    status: "failed",
+    createdAt: "2026-08-04T00:08:00.000Z",
+    completedAt: "2026-08-04T00:09:00.000Z",
+  });
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "收件箱", version: null }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+
+  await pollClickUpOnce(env, { now: "2026-08-04T00:10:00.000Z" });
+
+  const count = await harness.db
+    .prepare("SELECT COUNT(*) AS count FROM runner_jobs WHERE job_type = 'assign_version'")
+    .first();
+  assert.equal(count.count, 1);
 });
 
 test("poller starts analysis only after the selected current version is read back", async (t) => {
