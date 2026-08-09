@@ -21,7 +21,11 @@ function fakeRun(script) {
 test("reuses an existing pull request instead of failing", async (t) => {
   const { run, calls } = fakeRun(() => ({
     status: 0,
-    stdout: "https://github.com/gityuantao/365wefun/pull/861\n",
+    stdout: JSON.stringify({
+      url: "https://github.com/gityuantao/365wefun/pull/861",
+      state: "OPEN",
+      baseRefName: "version/1.0.1",
+    }),
     stderr: "",
   }));
   const result = await createPullRequest({
@@ -55,6 +59,51 @@ test("creates a pull request when none exists", async (t) => {
   assert.equal(result.url, "https://github.com/gityuantao/365wefun/pull/900");
   assert.equal(result.alreadyExists, false);
   assert.ok(calls.some(([command, args]) => command === "gh" && args.includes("pr") && args.includes("create")));
+});
+
+test("creates a new pull request when the previous branch PR is already merged", async () => {
+  const calls = [];
+  const run = async (_command, args) => {
+    calls.push(args);
+    if (args.includes("view")) {
+      const requestedFields = args[args.indexOf("--json") + 1] ?? "";
+      if (!requestedFields.includes("state")) {
+        return {
+          status: 0,
+          stdout: "https://github.com/gityuantao/365wefun/pull/881\n",
+          stderr: "",
+        };
+      }
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          url: "https://github.com/gityuantao/365wefun/pull/881",
+          state: "MERGED",
+          baseRefName: "version/v1.0.3",
+        }),
+        stderr: "",
+      };
+    }
+    return {
+      status: 0,
+      stdout: "https://github.com/gityuantao/365wefun/pull/887\n",
+      stderr: "",
+    };
+  };
+
+  const result = await createPullRequest({
+    branch: "task/86d3xmaw8",
+    base: "version/v1.0.3",
+    title: "返工修复",
+    body: "最新验收反馈",
+    run,
+  });
+
+  assert.deepEqual(result, {
+    url: "https://github.com/gityuantao/365wefun/pull/887",
+    alreadyExists: false,
+  });
+  assert.ok(calls.some((args) => args.includes("create")));
 });
 
 test("createPullRequest rechecks fencing after view and before create mutation", async () => {

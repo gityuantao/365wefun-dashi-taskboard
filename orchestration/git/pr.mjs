@@ -55,11 +55,20 @@ export async function createPullRequest({
     "pr", "view",
     branch,
     "--repo", repo,
-    "--json", "url",
-    "--jq", ".url",
+    "--json", "url,state,baseRefName",
   ]);
-  if (view.status === 0 && /^https?:/.test(view.stdout.trim())) {
-    return { url: view.stdout.trim(), alreadyExists: true };
+  if (view.status === 0) {
+    let existing = null;
+    try {
+      existing = JSON.parse(view.stdout);
+    } catch {}
+    if (
+      existing?.state === "OPEN"
+      && existing.baseRefName === base
+      && /^https?:/.test(existing.url ?? "")
+    ) {
+      return { url: existing.url, alreadyExists: true };
+    }
   }
 
   await beforeMutation();
