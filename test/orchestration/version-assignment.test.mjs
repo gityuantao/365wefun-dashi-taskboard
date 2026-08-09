@@ -124,7 +124,7 @@ test("assignment joins the single unreleased version", async () => {
   assert.deepEqual(calls[0][3], { add: ["v-1.0.3"], rem: [] });
 });
 
-test("assignment creates the next version when none is unreleased", async () => {
+test("assignment blocks when there is no current development version", async () => {
   const calls = [];
   const client = makeClient(
     task("task-3"),
@@ -140,21 +140,18 @@ test("assignment creates the next version when none is unreleased", async () => 
     codex: { run: async () => ({ exitCode: 0, stdout: "{}" }) },
     now: "2026-08-04T00:00:00.000Z",
   });
-  assert.equal(result.versionName, "1.0.4");
-  assert.equal(result.created, true);
-  assert.equal(calls[0][0], "create");
-  assert.equal(calls[0][2].name, "1.0.4");
-  assert.deepEqual(calls[1][3], { add: ["new-1.0.4"], rem: [] });
+  assert.equal(result.error, "no current development version");
+  assert.equal(result.assigned, false);
+  assert.deepEqual(calls, []);
 });
 
-test("assignment asks AI to choose among multiple unreleased versions", async () => {
+test("assignment only joins the current development version when several are unreleased", async () => {
   const calls = [];
   const client = makeClient(
     task("task-4"),
     [version("1.0.3", "进行中"), version("1.0.4", "进行中")],
     calls,
   );
-  let sawPrompt = "";
   const result = await assignTaskVersion({
     taskId: "task-4",
     client,
@@ -162,15 +159,13 @@ test("assignment asks AI to choose among multiple unreleased versions", async ()
     taskListKey: "taskSandbox",
     versionListKey: "versionSandbox",
     codex: {
-      run: async ({ prompt }) => {
-        sawPrompt = prompt;
-        return { exitCode: 0, stdout: '{"version": "1.0.4"}' };
+      run: async () => {
+        throw new Error("AI must not choose a version");
       },
     },
     now: "2026-08-04T00:00:00.000Z",
   });
-  assert.equal(result.versionName, "1.0.4");
-  assert.ok(sawPrompt.includes("1.0.3"));
-  assert.ok(sawPrompt.includes("1.0.4"));
-  assert.deepEqual(calls[0][3], { add: ["v-1.0.4"], rem: [] });
+  assert.equal(result.versionName, "1.0.3");
+  assert.equal(result.assigned, true);
+  assert.deepEqual(calls[0][3], { add: ["v-1.0.3"], rem: [] });
 });

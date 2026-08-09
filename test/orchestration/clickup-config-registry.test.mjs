@@ -72,6 +72,8 @@ test("task status mapping resolves every ClickUp status to the canonical state",
   assert.equal(resolveTaskStatus(config, "测试中"), "testing");
   assert.equal(resolveTaskStatus(config, "待发布"), "ready_for_release");
   assert.equal(resolveTaskStatus(config, "已发布"), "published");
+  assert.equal(resolveTaskStatus(config, "验收不通过"), "acceptance_rejected");
+  assert.equal(config.taskStatusMap["验收不通过"], "acceptance_rejected");
   assert.throws(() => resolveTaskStatus(config, "不存在状态"), /UNKNOWN_STATUS/);
 });
 

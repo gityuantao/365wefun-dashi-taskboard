@@ -2,6 +2,10 @@ import { DomainError } from "../domain/errors.mjs";
 
 export const LIST_KEYS = ["task", "version", "taskSandbox", "versionSandbox"];
 
+const REQUIRED_TASK_STATUS_MAP = {
+  验收不通过: "acceptance_rejected",
+};
+
 function deepFreeze(value) {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
     Object.values(value).forEach(deepFreeze);
@@ -53,7 +57,11 @@ export function loadClickUpConfig(value) {
   }
   assertConfigObject(value.taskStatusMap, 'Config field "taskStatusMap" must be an object');
   assertConfigObject(value.versionStatusMap, 'Config field "versionStatusMap" must be an object');
-  validateStatusMap(value.taskStatusMap, "taskStatusMap");
+  const taskStatusMap = {
+    ...REQUIRED_TASK_STATUS_MAP,
+    ...value.taskStatusMap,
+  };
+  validateStatusMap(taskStatusMap, "taskStatusMap");
   validateStatusMap(value.versionStatusMap, "versionStatusMap");
 
   const fields = value.fields ?? {};
@@ -80,7 +88,7 @@ export function loadClickUpConfig(value) {
         { id: value.lists[key].id, name: value.lists[key].name },
       ]),
     ),
-    taskStatusMap: { ...value.taskStatusMap },
+    taskStatusMap,
     versionStatusMap: { ...value.versionStatusMap },
     fields: {
       ...Object.fromEntries(

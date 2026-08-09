@@ -72,7 +72,7 @@ function sandboxTask({ id = "task-1", status = "测试中", managed = true, vers
   };
 }
 
-async function makeEnv(harness, tasks, versions = [], comments = []) {
+async function makeEnv(harness, tasks, versions = [], comments = [], fieldUpdates = []) {
   return {
     DB: harness.db,
     CLICKUP_API_TOKEN: "pk-test",
@@ -82,6 +82,9 @@ async function makeEnv(harness, tasks, versions = [], comments = []) {
       getTasksByList: async () => tasks,
       getVersionsByList: async () => versions,
       postComment: async (id, body) => comments.push(body),
+      updateCustomField: async (taskId, fieldId, value) => {
+        fieldUpdates.push({ taskId, fieldId, value });
+      },
     }),
   };
 }
@@ -135,10 +138,12 @@ test("poller processes tasks without requiring a managed flag", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const env = await makeEnv(harness, [
-    sandboxTask({ status: "收件箱", managed: false }),
+    sandboxTask({ status: "收件箱", managed: false, version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
   ]);
   const result = await pollClickUpOnce(env, { now: NOW });
-  assert.equal(result.processed, 1);
+  assert.equal(result.processed, 2);
   assert.equal(result.commands.length, 1);
   assert.equal(result.commands[0].type, "start_analysis");
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
@@ -205,10 +210,12 @@ test("poller records invalid commands without throwing", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const env = await makeEnv(harness, [
-    sandboxTask({ status: "收件箱" }),
+    sandboxTask({ status: "收件箱", version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
   ]);
   const result = await pollClickUpOnce(env, { now: NOW });
-  assert.equal(result.processed, 1);
+  assert.equal(result.processed, 2);
   assert.equal(result.commands.length, 1);
   assert.equal(result.commands[0].type, "start_analysis");
   assert.equal(result.commands[0].status, "succeeded");
@@ -268,6 +275,39 @@ test("poller processes tasks of the current dev version", async (t) => {
   const result = await pollClickUpOnce(env, { now: NOW });
   assert.equal(result.commands.length, 1);
   assert.equal(result.commands[0].type, "start_analysis");
+});
+
+test("poller assigns an unversioned inbox task to the current version before starting analysis", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const fieldUpdates = [];
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "收件箱", version: null }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+    { id: "v2", name: "1.0.2", status: { status: "进行中" } },
+  ], [], fieldUpdates);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.deepEqual(fieldUpdates, [{
+    taskId: "task-1",
+    fieldId: "field-version",
+    value: { add: ["v1"], rem: [] },
+  }]);
+  assert.deepEqual(result.commands, []);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.version, 0);
+  const statusMutation = await harness.db
+    .prepare("SELECT id FROM outbox_mutations WHERE object_id = ? AND field = 'status'")
+    .bind("task-1")
+    .first();
+  assert.equal(statusMutation, null);
+  const aiJob = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE json_extract(payload, '$.taskId') = ?")
+    .bind("task-1")
+    .first();
+  assert.equal(aiJob, null);
 });
 
 test("poller leaves tasks in waiting_info alone", async (t) => {
