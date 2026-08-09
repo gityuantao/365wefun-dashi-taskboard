@@ -18,7 +18,6 @@ import {
   checkTaskVersionGate,
   resolveCurrentDevVersionName,
 } from "../../orchestration/application/version-gate.mjs";
-import { assignTaskVersion } from "../../orchestration/application/version-assignment.mjs";
 import { stateChangeText } from "../../orchestration/clickup/state-comments.mjs";
 
 function jobTypeForState(status) {
@@ -267,6 +266,24 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
   });
 }
 
+async function ensureVersionAssignmentJob(env, snapshot, now) {
+  const jobId = `${snapshot.id}-assign-version`;
+  const existing = await env.DB
+    .prepare("SELECT id FROM runner_jobs WHERE id = ?")
+    .bind(jobId)
+    .first();
+  if (existing) return;
+  await enqueueJob(env.DB, {
+    jobId,
+    commandId: `auto-assign-version-${snapshot.id}`,
+    jobType: "assign_version",
+    payload: { taskId: snapshot.id },
+    payloadHash: snapshot.fieldsHash,
+    expiresAt: addMinutes(now, 90),
+    createdAt: now,
+  });
+}
+
 export async function pollClickUpOnce(env, {
   now,
   clientFactory,
@@ -289,23 +306,13 @@ export async function pollClickUpOnce(env, {
     const confirmed = await loadLastConfirmed(env.DB, "task", snapshot.id);
     const changes = compareSnapshots(confirmed, snapshot);
 
-    // 无目标版本的 inbox 先绑定当前开发版本，并等待下一轮读回确认。
-    // 在此之前不创建聚合、不写 ClickUp 状态、不派发 AI 作业。
+    // 无目标版本的 inbox 先派发独立的 AI 选版作业，并等待 ClickUp 下一轮读回确认。
+    // 在此之前不创建聚合、不写 ClickUp 状态、不派发正式 analysis 作业。
     if (snapshot.status === "inbox" && !snapshot.targetVersion) {
-      const assignment = await assignTaskVersion({
-        taskId: snapshot.id,
-        task: payload,
-        versions,
-        client,
-        config,
-        taskListKey,
-        versionListKey,
-      });
+      await ensureVersionAssignmentJob(env, snapshot, now);
       if (changes.length > 0) {
         processed += 1;
         await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });
-      } else if (assignment.assigned) {
-        processed += 1;
       }
       continue;
     }

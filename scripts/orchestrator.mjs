@@ -237,7 +237,7 @@ const lifecycle = createOrchestratorLifecycle({ dashboardServer, miniflare, log 
 lifecycle.installSignalHandlers(process);
 
 const handlers = {
-  analyze: async (job, { signal } = {}) => {
+  assign_version: async (job, { signal } = {}) => {
     const client = await jobClient(job);
     const assignment = await assignTaskVersion({
       taskId: job.payload.taskId,
@@ -246,16 +246,21 @@ const handlers = {
       taskListKey,
       versionListKey,
       codex: jobCodex(signal),
-      now: new Date().toISOString(),
       log,
     });
     if (assignment.error) {
       return { status: "failed", error: `version assignment failed: ${assignment.error}` };
     }
+    return { status: "completed", assignment };
+  },
+  analyze: async (job, { signal } = {}) => {
+    const client = await jobClient(job);
+    const task = await client.getTask(job.payload.taskId);
+    const targetVersion = targetVersionOfTask(task, config, taskListKey);
     const versions = await client.getVersionsByList(config.lists[versionListKey].id);
     const currentDevVersion = resolveCurrentDevVersionName(versions);
     const gate = checkTaskVersionGate({
-      targetVersion: assignment.versionName,
+      targetVersion,
       currentDevVersion,
     });
     if (gate.blocked) {
@@ -560,7 +565,7 @@ async function tick() {
     } catch (error) {
       log(`outbox error: ${error.message}`);
     }
-    for (const jobType of ["analyze", "develop", "accept"]) {
+    for (const jobType of ["assign_version", "analyze", "develop", "accept"]) {
       if (!lifecycle.canClaim()) break;
       try {
         await lifecycle.claimAndRun({

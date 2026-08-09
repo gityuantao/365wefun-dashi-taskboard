@@ -277,7 +277,7 @@ test("poller processes tasks of the current dev version", async (t) => {
   assert.equal(result.commands[0].type, "start_analysis");
 });
 
-test("poller assigns an unversioned inbox task to the current version before starting analysis", async (t) => {
+test("poller queues version selection before starting analysis for an unversioned inbox task", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const fieldUpdates = [];
@@ -290,11 +290,7 @@ test("poller assigns an unversioned inbox task to the current version before sta
 
   const result = await pollClickUpOnce(env, { now: NOW });
 
-  assert.deepEqual(fieldUpdates, [{
-    taskId: "task-1",
-    fieldId: "field-version",
-    value: { add: ["v1"], rem: [] },
-  }]);
+  assert.deepEqual(fieldUpdates, []);
   assert.deepEqual(result.commands, []);
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.version, 0);
@@ -303,11 +299,70 @@ test("poller assigns an unversioned inbox task to the current version before sta
     .bind("task-1")
     .first();
   assert.equal(statusMutation, null);
-  const aiJob = await harness.db
-    .prepare("SELECT id FROM runner_jobs WHERE json_extract(payload, '$.taskId') = ?")
+  const jobs = await harness.db
+    .prepare("SELECT job_type, status FROM runner_jobs WHERE json_extract(payload, '$.taskId') = ?")
+    .bind("task-1")
+    .all();
+  assert.deepEqual(jobs.results, [{ job_type: "assign_version", status: "queued" }]);
+
+  const second = await pollClickUpOnce(env, { now: NOW });
+  assert.equal(second.processed, 0);
+  assert.deepEqual(second.commands, []);
+  const jobCount = await harness.db
+    .prepare("SELECT COUNT(*) AS count FROM runner_jobs WHERE job_type = 'assign_version'")
+    .first();
+  assert.equal(jobCount.count, 1);
+});
+
+test("poller starts analysis only after the selected current version is read back", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const versions = [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+    { id: "v2", name: "1.0.2", status: { status: "进行中" } },
+  ];
+  await pollClickUpOnce(await makeEnv(harness, [
+    sandboxTask({ status: "收件箱", version: null }),
+  ], versions), { now: NOW });
+
+  const result = await pollClickUpOnce(await makeEnv(harness, [
+    sandboxTask({ status: "收件箱", version: "1.0.1" }),
+  ], versions), { now: NOW });
+
+  assert.deepEqual(result.commands.map((command) => command.type), ["start_analysis"]);
+  const analysisJob = await harness.db
+    .prepare("SELECT status FROM runner_jobs WHERE job_type = 'analyze'")
+    .first();
+  assert.deepEqual(analysisJob, { status: "queued" });
+});
+
+test("poller keeps inbox blocked after a future version is read back", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const versions = [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+    { id: "v2", name: "1.0.2", status: { status: "进行中" } },
+  ];
+  await pollClickUpOnce(await makeEnv(harness, [
+    sandboxTask({ status: "收件箱", version: null }),
+  ], versions), { now: NOW });
+
+  const result = await pollClickUpOnce(await makeEnv(harness, [
+    sandboxTask({ status: "收件箱", version: "1.0.2" }),
+  ], versions), { now: NOW });
+
+  assert.deepEqual(result.commands, []);
+  const aggregate = await loadAggregate(harness.db, "task", "task-1");
+  assert.equal(aggregate.version, 0);
+  const analysisJob = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE job_type = 'analyze'")
+    .first();
+  assert.equal(analysisJob, null);
+  const statusMutation = await harness.db
+    .prepare("SELECT id FROM outbox_mutations WHERE object_id = ? AND field = 'status'")
     .bind("task-1")
     .first();
-  assert.equal(aiJob, null);
+  assert.equal(statusMutation, null);
 });
 
 test("poller leaves tasks in waiting_info alone", async (t) => {

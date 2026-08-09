@@ -73,7 +73,9 @@ test("assignment keeps an existing target version", async () => {
     config: CONFIG,
     taskListKey: "taskSandbox",
     versionListKey: "versionSandbox",
-    codex: { run: async () => ({ exitCode: 0, stdout: "{}" }) },
+    codex: { run: async () => {
+      throw new Error("AI must not run without an unreleased version");
+    } },
     now: "2026-08-04T00:00:00.000Z",
   });
   assert.equal(result.versionName, "1.0.3");
@@ -104,6 +106,7 @@ test("assignment keeps an existing relationship target version", async () => {
 
 test("assignment joins the single unreleased version", async () => {
   const calls = [];
+  let aiCalls = 0;
   const client = makeClient(
     task("task-2"),
     [version("1.0.3", "进行中")],
@@ -115,11 +118,15 @@ test("assignment joins the single unreleased version", async () => {
     config: CONFIG,
     taskListKey: "taskSandbox",
     versionListKey: "versionSandbox",
-    codex: { run: async () => ({ exitCode: 0, stdout: "{}" }) },
+    codex: { run: async () => {
+      aiCalls += 1;
+      return { exitCode: 0, stdout: '{"version":"1.0.3"}' };
+    } },
     now: "2026-08-04T00:00:00.000Z",
   });
   assert.equal(result.versionName, "1.0.3");
   assert.equal(result.assigned, true);
+  assert.equal(aiCalls, 1);
   assert.equal(calls[0][0], "field");
   assert.deepEqual(calls[0][3], { add: ["v-1.0.3"], rem: [] });
 });
@@ -145,7 +152,7 @@ test("assignment blocks when there is no current development version", async () 
   assert.deepEqual(calls, []);
 });
 
-test("assignment only joins the current development version when several are unreleased", async () => {
+test("assignment lets AI choose a future version from all unreleased versions", async () => {
   const calls = [];
   const client = makeClient(
     task("task-4"),
@@ -159,13 +166,37 @@ test("assignment only joins the current development version when several are unr
     taskListKey: "taskSandbox",
     versionListKey: "versionSandbox",
     codex: {
-      run: async () => {
-        throw new Error("AI must not choose a version");
+      run: async ({ prompt }) => {
+        assert.match(prompt, /任务名称：任务/);
+        assert.match(prompt, /任务描述：需求描述/);
+        assert.match(prompt, /1\.0\.3/);
+        assert.match(prompt, /1\.0\.4/);
+        return { exitCode: 0, stdout: '{"version":"1.0.4"}' };
       },
     },
     now: "2026-08-04T00:00:00.000Z",
   });
-  assert.equal(result.versionName, "1.0.3");
+  assert.equal(result.versionName, "1.0.4");
   assert.equal(result.assigned, true);
-  assert.deepEqual(calls[0][3], { add: ["v-1.0.3"], rem: [] });
+  assert.deepEqual(calls[0][3], { add: ["v-1.0.4"], rem: [] });
+});
+
+test("assignment rejects an AI version outside the unreleased list without writing", async () => {
+  const calls = [];
+  const client = makeClient(
+    task("task-invalid-choice"),
+    [version("1.0.3", "进行中"), version("1.0.4", "进行中")],
+    calls,
+  );
+  const result = await assignTaskVersion({
+    taskId: "task-invalid-choice",
+    client,
+    config: CONFIG,
+    taskListKey: "taskSandbox",
+    versionListKey: "versionSandbox",
+    codex: { run: async () => ({ exitCode: 0, stdout: '{"version":"1.0.5"}' }) },
+  });
+  assert.equal(result.error, "version decision failed");
+  assert.equal(result.assigned, false);
+  assert.deepEqual(calls, []);
 });
