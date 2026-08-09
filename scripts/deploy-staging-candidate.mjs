@@ -51,9 +51,11 @@ let switched = false;
 try {
   await run("git", ["-C", repoPath, "worktree", "add", "--detach", worktree, candidateCommit]);
   await run("pnpm", ["install", "--frozen-lockfile"], { cwd: worktree, timeout: 10 * 60_000 });
-  for (const workspace of ["@e365/contracts", "@e365/storage", "@e365/api", "@e365/worker", "@e365/admin", "@e365/web"]) {
-    await run("pnpm", ["--filter", workspace, "build"], { cwd: worktree, timeout: 10 * 60_000 });
-  }
+  await run("pnpm", ["--filter", "@e365/db", "exec", "prisma", "generate"], {
+    cwd: worktree,
+    timeout: 5 * 60_000,
+  });
+  await run("pnpm", ["build"], { cwd: worktree, timeout: 15 * 60_000 });
 
   const prepared = await ssh(`
 previous="$(readlink -f "${base}/current")"
@@ -83,8 +85,8 @@ release="$1"
 ln -s "${base}/shared/.env" "$release/.env"
 export PATH=/root/.nvm/versions/node/v20.20.2/bin:$PATH
 cd "$release"
-node node_modules/.pnpm/prisma@6.19.3_typescript@5.9.3/node_modules/prisma/build/index.js generate --schema packages/db/prisma/schema.prisma
-node node_modules/.pnpm/prisma@6.19.3_typescript@5.9.3/node_modules/prisma/build/index.js db push --skip-generate --schema packages/db/prisma/schema.prisma
+node node_modules/.pnpm/prisma@6.19.3_typescript@5.9.3/node_modules/prisma/build/index.js generate --schema packages/db/prisma
+node node_modules/.pnpm/prisma@6.19.3_typescript@5.9.3/node_modules/prisma/build/index.js db push --skip-generate --schema packages/db/prisma
 ln -sfn "$release" "${base}/current"
 export RELEASE_ID="$2" GIT_SHA="$3"
 pm2 restart e365-api e365-worker --update-env
