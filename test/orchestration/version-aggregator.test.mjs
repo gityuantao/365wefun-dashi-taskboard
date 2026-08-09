@@ -13,6 +13,31 @@ import {
 } from "../../orchestration/release/version-aggregator.mjs";
 
 const NOW = "2026-08-04T00:06:00.000Z";
+const CANDIDATE = {
+  versionBranch: "version/version-1",
+  candidateCommit: "1111111111111111111111111111111111111111",
+  taskPrHeads: [
+    {
+      taskId: "task-a",
+      branch: "task/task-a",
+      headCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    },
+    {
+      taskId: "task-b",
+      branch: "task/task-b",
+      headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    },
+  ],
+  artifactIdentity: {
+    digest: "sha256:artifact-v1",
+    object: "releases/version-1/sha256:artifact-v1",
+  },
+  regressionEvidence: {
+    passed: true,
+    command: "node --test test/orchestration/*.test.mjs",
+    collectedAt: NOW,
+  },
+};
 
 async function seedActiveVersion(harness, versionId = "version-1") {
   const event = await createDomainEvent({
@@ -101,20 +126,63 @@ test("version gate fails when a task is blocked", async (t) => {
   assert.ok(gate.reasons.some((reason) => reason.includes("blocked")));
 });
 
-test("freezeManifest freezes tasks without advancing the version state", async (t) => {
+test("freezeManifest records the exact immutable Candidate without advancing version state", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedActiveVersion(harness);
   await seedTaskSnapshot(harness, "task-a", "ready_for_release", "version-1");
   await seedTaskSnapshot(harness, "task-b", "ready_for_release", "version-1");
-  const result = await freezeManifest({ db: harness.db, versionId: "version-1", now: NOW });
+  const result = await freezeManifest({
+    db: harness.db,
+    versionId: "version-1",
+    now: NOW,
+    ...CANDIDATE,
+  });
   assert.equal(result.status, "frozen");
   assert.deepEqual(result.manifest.taskIds.sort(), ["task-a", "task-b"]);
+  assert.equal(result.manifest.versionBranch, CANDIDATE.versionBranch);
+  assert.equal(result.manifest.candidateCommit, CANDIDATE.candidateCommit);
+  assert.deepEqual(result.manifest.taskPrHeads, CANDIDATE.taskPrHeads);
+  assert.deepEqual(result.manifest.artifactIdentity, CANDIDATE.artifactIdentity);
+  assert.deepEqual(result.manifest.regressionEvidence, CANDIDATE.regressionEvidence);
   assert.equal(typeof result.manifest.checksum, "string");
   const aggregate = await loadAggregate(harness.db, "version", "version-1");
   assert.equal(aggregate.state, "active");
   const stored = await loadManifest({ db: harness.db, versionId: "version-1" });
-  assert.equal(stored.versionId, "version-1");
+  assert.deepEqual(stored, result.manifest);
+
+  const changedCandidate = await freezeManifest({
+    db: harness.db,
+    versionId: "version-1",
+    now: "2026-08-04T00:10:00.000Z",
+    ...CANDIDATE,
+    candidateCommit: "2222222222222222222222222222222222222222",
+  });
+  assert.equal(changedCandidate.status, "already_frozen");
+  assert.deepEqual(changedCandidate.manifest, result.manifest);
+});
+
+test("freezeManifest rejects Candidate metadata gaps", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedActiveVersion(harness);
+  await seedTaskSnapshot(harness, "task-a", "ready_for_release", "version-1");
+
+  const result = await freezeManifest({
+    db: harness.db,
+    versionId: "version-1",
+    now: NOW,
+    versionBranch: "version/version-1",
+    candidateCommit: CANDIDATE.candidateCommit,
+    taskPrHeads: [],
+    artifactIdentity: CANDIDATE.artifactIdentity,
+    regressionEvidence: { passed: false },
+  });
+
+  assert.equal(result.status, "rejected");
+  assert.ok(result.reasons.some((reason) => /task PR heads/i.test(reason)));
+  assert.ok(result.reasons.some((reason) => /regression evidence/i.test(reason)));
+  assert.equal(await loadManifest({ db: harness.db, versionId: "version-1" }), null);
 });
 
 test("freezeManifest refuses when the gate fails", async (t) => {

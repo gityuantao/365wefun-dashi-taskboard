@@ -11,6 +11,11 @@ import { saveSnapshot } from "../../orchestration/clickup/snapshot.mjs";
 import { handleConfirmRelease } from "../../orchestration/application/release-commands.mjs";
 
 const NOW = "2026-08-04T00:07:00.000Z";
+const CANDIDATE_COMMIT = "1111111111111111111111111111111111111111";
+const ARTIFACT_IDENTITY = {
+  digest: "sha256:artifact-v1",
+  object: "releases/version-1/sha256:artifact-v1",
+};
 
 async function seedVersion(harness, versionId) {
   const event = await createDomainEvent({
@@ -85,7 +90,24 @@ async function seedTaskToRelease(harness, taskId) {
 async function prepareVersion(harness) {
   await seedVersion(harness, "version-1");
   await seedTaskToRelease(harness, "task-a");
-  await freezeManifest({ db: harness.db, versionId: "version-1", now: NOW });
+  await freezeManifest({
+    db: harness.db,
+    versionId: "version-1",
+    now: NOW,
+    versionBranch: "version/version-1",
+    candidateCommit: CANDIDATE_COMMIT,
+    taskPrHeads: [{
+      taskId: "task-a",
+      branch: "task/task-a",
+      headCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    }],
+    artifactIdentity: ARTIFACT_IDENTITY,
+    regressionEvidence: {
+      passed: true,
+      command: "node --test test/orchestration/*.test.mjs",
+      collectedAt: NOW,
+    },
+  });
 }
 
 test("confirm release publishes the version and its tasks", async (t) => {
@@ -94,6 +116,12 @@ test("confirm release publishes the version and its tasks", async (t) => {
   await prepareVersion(harness);
   const adapter = {
     release: async ({ manifest }) => ({ url: "https://releases.example.com/v1" }),
+    readback: async () => ({
+      confirmed: true,
+      published: true,
+      candidateCommit: CANDIDATE_COMMIT,
+      artifactIdentity: ARTIFACT_IDENTITY,
+    }),
   };
   const result = await handleConfirmRelease({
     db: harness.db,
@@ -108,6 +136,56 @@ test("confirm release publishes the version and its tasks", async (t) => {
   assert.equal(version.state, "published");
   const task = await loadAggregate(harness.db, "task", "task-a");
   assert.equal(task.state, "published");
+  assert.equal(result.publication.candidateCommit, CANDIDATE_COMMIT);
+});
+
+test("confirm release rejects missing or placeholder deployers before state changes", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await prepareVersion(harness);
+
+  for (const adapter of [null, { placeholder: true, release: async () => ({}) }]) {
+    const result = await handleConfirmRelease({
+      db: harness.db,
+      versionId: "version-1",
+      actorId: "release-manager",
+      actorRoles: ["release_manager"],
+      now: NOW,
+      adapter,
+    });
+    assert.equal(result.status, "rejected");
+    assert.match(result.error, /deployer|adapter/i);
+    const version = await loadAggregate(harness.db, "version", "version-1");
+    assert.equal(version.state, "active");
+  }
+});
+
+test("confirm release fails without exact remote Candidate readback and preserves tasks", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await prepareVersion(harness);
+
+  const result = await handleConfirmRelease({
+    db: harness.db,
+    versionId: "version-1",
+    actorId: "release-manager",
+    actorRoles: ["release_manager"],
+    now: NOW,
+    adapter: {
+      release: async () => ({ url: "https://releases.example.com/v1" }),
+      readback: async () => ({
+        confirmed: true,
+        published: true,
+        candidateCommit: "2222222222222222222222222222222222222222",
+        artifactIdentity: ARTIFACT_IDENTITY,
+      }),
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /Candidate readback/i);
+  assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "release_failed");
+  assert.equal((await loadAggregate(harness.db, "task", "task-a")).state, "ready_for_release");
 });
 
 test("confirm release rejects missing manifests", async (t) => {
@@ -132,6 +210,9 @@ test("confirm release failure leaves tasks ready for release", async (t) => {
   await prepareVersion(harness);
   const adapter = {
     release: async () => { throw new Error("deploy failed"); },
+    readback: async () => {
+      throw new Error("readback must not run after deployment failure");
+    },
   };
   const result = await handleConfirmRelease({
     db: harness.db,

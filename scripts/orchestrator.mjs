@@ -3,7 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Miniflare } from "miniflare";
 import { pollClickUpOnce } from "../cloud/src/clickup-poller.mjs";
 import { createClickUpClient } from "../orchestration/clickup/client.mjs";
@@ -29,9 +29,11 @@ import {
   freezeManifest,
   loadManifest,
 } from "../orchestration/release/version-aggregator.mjs";
-import { handleConfirmRelease } from "../orchestration/application/release-commands.mjs";
+import {
+  coordinateVersionRelease,
+  handleConfirmRelease,
+} from "../orchestration/application/release-commands.mjs";
 import { correctionText } from "../orchestration/clickup/state-comments.mjs";
-import { createWebAdapter } from "../orchestration/release/adapters/web.mjs";
 import { checkDevelopmentOrder } from "../orchestration/application/development-order.mjs";
 import { assignTaskVersion } from "../orchestration/application/version-assignment.mjs";
 import {
@@ -54,6 +56,10 @@ import {
   deleteRemoteTaskBranch,
   resolveRemoteRepo,
 } from "../orchestration/git/pr.mjs";
+import {
+  mergeTaskPrToVersionBranch,
+  verifyCandidateIntegration,
+} from "../orchestration/git/merge.mjs";
 import { readControl, shouldProcess } from "../orchestration/control.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -318,8 +324,22 @@ async function ensureVersionActive(versionId, now) {
   });
 }
 
+async function loadConfiguredReleaseAdapter() {
+  if (typeof runtime.releaseAdapterModule !== "string" || runtime.releaseAdapterModule.trim() === "") {
+    return null;
+  }
+  const modulePath = path.resolve(PROJECT_ROOT, runtime.releaseAdapterModule);
+  const module = await import(pathToFileURL(modulePath).href);
+  if (typeof module.createReleaseAdapter !== "function") {
+    throw new Error("release adapter module must export createReleaseAdapter");
+  }
+  const adapter = await module.createReleaseAdapter({ runtime, projectRoot: PROJECT_ROOT });
+  return adapter?.placeholder === true ? null : adapter;
+}
+
 async function releaseCoordinator(now) {
   const client = await clientFactory({ token });
+  const adapter = await loadConfiguredReleaseAdapter();
   const versions = await client.getVersionsByList(config.lists[versionListKey].id);
   for (const payload of versions) {
     const snapshot = normalizeVersion(payload, config, versionListKey);
@@ -330,60 +350,83 @@ async function releaseCoordinator(now) {
     if (snapshot.status !== "releasing") continue;
     const versionId = snapshot.id;
     const existingManifest = await loadManifest({ db, versionId });
+    const versionAggregate = await loadAggregate(db, "version", versionId);
+    if (versionAggregate.state === "published") continue;
+    if (
+      !adapter
+      || typeof adapter.release !== "function"
+      || typeof adapter.readback !== "function"
+      || (!existingManifest && (
+        typeof adapter.collectRegressionEvidence !== "function"
+        || typeof adapter.identifyArtifact !== "function"
+      ))
+    ) {
+      log(`version ${versionId} release rejected: configured deployer and Candidate evidence providers required`);
+      continue;
+    }
+
+    let taskIds = existingManifest?.taskIds ?? [];
     if (!existingManifest) {
       const gate = await checkVersionGate({ db, versionId });
       if (!gate.pass) {
         log(`version ${versionId} gate: ${gate.reasons.join("; ")}`);
         continue;
       }
-      const frozen = await freezeManifest({ db, versionId, now });
-      log(`version ${versionId} manifest ${frozen.status}`);
+      taskIds = gate.taskIds;
     }
-    const versionAggregate = await loadAggregate(db, "version", versionId);
-    if (versionAggregate.state === "published") continue;
-    const adapter = createWebAdapter({
-      deployer: {
-        preflight: async () => ({ ok: true }),
-        upload: async ({ versionId: vid }) => ({
-          object: `releases/${vid}/index.html`,
-        }),
-        switchEntry: async () => ({ url: "https://e365.example.com" }),
-        healthCheck: async () => ({ ok: true, status: 200 }),
+    const versionBranch = existingManifest?.versionBranch
+      ?? `version/${snapshot.name ?? versionId}`;
+    const result = await coordinateVersionRelease({
+      versionId,
+      versionBranch,
+      taskIds,
+      now,
+      existingManifest,
+      integrateTaskPr: async ({ taskBranch }) => mergeTaskPrToVersionBranch({
+        repoPath: runtime.repoPath,
+        versionBranch,
+        prRef: taskBranch,
+      }),
+      collectRegressionEvidence: (candidate) => adapter.collectRegressionEvidence(candidate),
+      identifyArtifact: (candidate) => adapter.identifyArtifact(candidate),
+      freezeCandidate: (candidate) => freezeManifest({ db, ...candidate }),
+      verifyCandidate: ({ manifest }) => verifyCandidateIntegration({
+        repoPath: runtime.repoPath,
+        versionBranch: manifest.versionBranch,
+        candidateCommit: manifest.candidateCommit,
+        taskPrHeads: manifest.taskPrHeads,
+      }),
+      publishCandidate: ({ manifest }) => handleConfirmRelease({
+        db,
+        versionId,
+        actorId: "system-poller",
+        actorRoles: ["release_manager"],
+        now,
+        adapter,
+        client,
+      }),
+      cleanupTask: async ({ taskId, branch }) => {
+        const worktree = removeTaskWorktree({
+          repoPath: runtime.repoPath,
+          taskId,
+          worktreesRoot: runtime.worktreesRoot,
+        });
+        const repo = resolveRemoteRepo(runtime.repoPath);
+        const pullRequestClosed = await closeTaskPullRequest({ branch, repo });
+        const remoteBranchRemoved = deleteRemoteTaskBranch({ repoPath: runtime.repoPath, branch });
+        return {
+          taskId,
+          branch,
+          worktreePath: worktree.worktreePath,
+          localBranchRemoved: true,
+          pullRequestClosed,
+          remoteBranchRemoved,
+        };
       },
     });
-    const result = await handleConfirmRelease({
-      db,
-      versionId,
-      actorId: "system-poller",
-      actorRoles: ["release_manager"],
-      now,
-      adapter,
-      client,
-    });
     log(`version ${versionId} release -> ${result.status}${result.error ? `: ${result.error}` : ""}`);
-    if (result.status === "succeeded") {
-      const manifest = await loadManifest({ db, versionId });
-      const repo = resolveRemoteRepo(runtime.repoPath);
-      for (const taskId of (manifest?.taskIds ?? [])) {
-        const branch = `task/${taskId}`;
-        try {
-          removeTaskWorktree({
-            repoPath: runtime.repoPath,
-            taskId,
-            worktreesRoot: runtime.worktreesRoot,
-          });
-          log(`cleaned worktree for task ${taskId}`);
-        } catch (error) {
-          log(`worktree cleanup failed for ${taskId}: ${error.message}`);
-        }
-        try {
-          await closeTaskPullRequest({ branch, repo });
-          deleteRemoteTaskBranch({ repoPath: runtime.repoPath, branch });
-          log(`cleaned PR and branch for task ${taskId}`);
-        } catch (error) {
-          log(`PR cleanup failed for ${taskId}: ${error.message}`);
-        }
-      }
+    if (result.cleanupResult) {
+      log(`version ${versionId} cleanup result ${JSON.stringify(result.cleanupResult)}`);
     }
   }
 }

@@ -4,7 +4,10 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { mergeTaskPrToVersionBranch } from "../../orchestration/git/merge.mjs";
+import {
+  mergeTaskPrToVersionBranch,
+  verifyCandidateIntegration,
+} from "../../orchestration/git/merge.mjs";
 
 function git(repoPath, args) {
   return execFileSync("git", ["-C", repoPath, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -37,10 +40,19 @@ test("mergeTaskPrToVersionBranch merges with history preserved", async (t) => {
     prRef: "task/task-1",
   });
   assert.equal(result.merged, true);
+  assert.equal(result.taskHead, taskSha);
   const mergedSha = git(root, ["rev-parse", "HEAD"]).trim();
+  assert.equal(result.candidateCommit, mergedSha);
+  assert.equal(result.versionBranch, "version/v-1");
   assert.notEqual(mergedSha, taskSha);
   const parents = git(root, ["log", "--format=%P", "-1"]).trim().split(/\s+/);
   assert.equal(parents.length, 2, "merge commit must preserve both parents");
+  assert.equal(verifyCandidateIntegration({
+    repoPath: root,
+    versionBranch: "version/v-1",
+    candidateCommit: mergedSha,
+    taskPrHeads: [{ taskId: "task-1", headCommit: taskSha }],
+  }).verified, true);
 });
 
 test("mergeTaskPrToVersionBranch reports conflicts without resolving", async (t) => {
@@ -63,4 +75,5 @@ test("mergeTaskPrToVersionBranch reports conflicts without resolving", async (t)
   });
   assert.equal(result.merged, false);
   assert.equal(result.conflict, true);
+  assert.equal(git(root, ["status", "--porcelain"]).trim(), "");
 });
