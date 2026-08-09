@@ -15,7 +15,6 @@ import {
   setOrchestrationControl,
 } from "../../api";
 import type {
-  AcceptanceRejectedTask,
   ActivityItem,
   DashboardPayload,
   OrchestrationControl,
@@ -25,7 +24,6 @@ import type {
   VersionProgress,
 } from "../../types";
 import { ActivityFeed } from "./ActivityFeed";
-import { AcceptanceRejectedTasks } from "./AcceptanceRejectedTasks";
 import { DashboardDialog } from "./DashboardDialog";
 import { DetailDrawer } from "./DetailDrawer";
 import { PipelineOverview } from "./PipelineOverview";
@@ -131,13 +129,6 @@ export function Dashboard() {
     setDialog({ kind: item.objectType, id: item.objectId, trigger: event.currentTarget });
   }
 
-  function openAcceptanceRejectedTask(
-    task: AcceptanceRejectedTask,
-    event: MouseEvent<HTMLButtonElement>,
-  ) {
-    setDialog({ kind: "task", id: task.id, trigger: event.currentTarget });
-  }
-
   function openVersion(version: VersionProgress, event: MouseEvent<HTMLButtonElement>) {
     setDialog({ kind: "version", id: version.id, trigger: event.currentTarget });
   }
@@ -210,10 +201,6 @@ export function Dashboard() {
         <div className="dashboard-workspace">
           <main className="dashboard-main-column">
             <ReleaseActions versions={payload.releasableVersions} onOpen={openRelease} />
-            <AcceptanceRejectedTasks
-              tasks={payload.acceptanceRejectedTasks ?? []}
-              onOpen={openAcceptanceRejectedTask}
-            />
             <ActivityFeed items={payload.activity} onOpen={openActivity} />
           </main>
           <aside className="dashboard-side-column" aria-label="研发概览">

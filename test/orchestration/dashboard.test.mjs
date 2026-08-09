@@ -47,14 +47,7 @@ test("buildDashboard aggregates releasable versions, pipeline, versions and acti
   }
   assert.equal(payload.pipeline.ready_for_release, 3);
   assert.equal(payload.pipeline.waiting_info, 1);
-  assert.equal(payload.pipeline.acceptance_rejected, 1);
   assert.equal(payload.pipeline.inbox, 0);
-  assert.deepEqual(payload.acceptanceRejectedTasks, [{
-    id: "task-5",
-    name: "支付页验收问题",
-    status: "acceptance_rejected",
-    targetVersion: "1.0.5",
-  }]);
 
   assert.equal(payload.versions.length, 4);
   const released = payload.versions.find((version) => version.name === "1.0.1");
@@ -84,34 +77,6 @@ test("buildDashboard aggregates releasable versions, pipeline, versions and acti
     develop.summary,
     "任务 任务一 开发完成，PR：https://github.com/example/pr/1",
   );
-});
-
-test("acceptance rejected tasks include aggregate state while ClickUp readback is stale", async (t) => {
-  const harness = await createCloudWorkerHarness();
-  t.after(() => harness.dispose());
-  await seedDashboardFixture(harness.db);
-  await harness.db
-    .prepare("UPDATE clickup_snapshots SET status = 'ready_for_test', snapshot = ? WHERE object_type = 'task' AND object_id = 'task-5'")
-    .bind(JSON.stringify({
-      id: "task-5",
-      listId: "list-task",
-      name: "支付页验收问题",
-      status: "ready_for_test",
-      targetVersion: "1.0.5",
-      assignee: null,
-      updatedAt: "2026-08-06T08:01:00.000Z",
-      fieldsHash: "h11",
-    }))
-    .run();
-
-  const payload = await buildDashboard(harness.db);
-
-  assert.deepEqual(payload.acceptanceRejectedTasks, [{
-    id: "task-5",
-    name: "支付页验收问题",
-    status: "acceptance_rejected",
-    targetVersion: "1.0.5",
-  }]);
 });
 
 test("activity correlates the development PR by command id even when the job completes later", async (t) => {

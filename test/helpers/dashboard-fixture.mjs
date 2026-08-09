@@ -56,19 +56,6 @@ export async function seedDashboardFixture(db) {
     }), DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
-      VALUES ('task', 'task-5', 'list-task', 'acceptance_rejected', ?, 'h10', ?)
-    `).bind(JSON.stringify({
-      id: "task-5",
-      listId: "list-task",
-      name: "支付页验收问题",
-      status: "acceptance_rejected",
-      targetVersion: "1.0.5",
-      assignee: null,
-      updatedAt: DASHBOARD_NOW,
-      fieldsHash: "h10",
-    }), DASHBOARD_NOW),
-    db.prepare(`
-      INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
       VALUES ('version', 'version-1', 'list-version', 'active', ?, 'h3', ?)
     `).bind(JSON.stringify({
       id: "version-1",
@@ -130,10 +117,6 @@ export async function seedDashboardFixture(db) {
     db.prepare(`
       INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)
       VALUES ('task', 'task-4', 4, 'ready_for_release', NULL, ?)
-    `).bind(DASHBOARD_NOW),
-    db.prepare(`
-      INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)
-      VALUES ('task', 'task-5', 5, 'acceptance_rejected', NULL, ?)
     `).bind(DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO orchestration_aggregates (aggregate_type, aggregate_id, aggregate_version, state, snapshot, updated_at)

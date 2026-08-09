@@ -219,7 +219,6 @@
 }
 
 .release-action-list,
-.acceptance-rejected-list,
 .pipeline-list,
 .version-progress-list,
 .activity-list,
@@ -240,7 +239,6 @@
 }
 
 .release-action-row + .release-action-row,
-.acceptance-rejected-list li + li,
 .activity-list li + li,
 .version-progress-list li + li,
 .pipeline-row + .pipeline-row {
@@ -248,7 +246,6 @@
 }
 
 .release-action-row:hover,
-.acceptance-rejected-row:hover,
 .activity-row:hover,
 .version-progress-row:hover {
   background: var(--surface-hover);
@@ -281,67 +278,6 @@
 .release-action-detail {
   flex: 0 0 auto;
   white-space: nowrap;
-}
-
-.acceptance-rejected-list {
-  padding-top: 3px;
-}
-
-.acceptance-rejected-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto 16px;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 44px;
-  padding: 6px 2px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-}
-
-.acceptance-rejected-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.acceptance-rejected-copy strong,
-.acceptance-rejected-copy span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.acceptance-rejected-copy strong {
-  font-size: 12px;
-  font-weight: 620;
-}
-
-.acceptance-rejected-copy span {
-  color: var(--text-tertiary);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-
-.acceptance-rejected-status {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
-}
-
-.acceptance-rejected-version {
-  font-variant-numeric: tabular-nums;
-}
-
-.acceptance-rejected-chevron {
-  color: var(--text-quaternary);
-  font-size: 16px;
-  line-height: 1;
-  text-align: right;
 }
 
 .pipeline-list {
@@ -412,7 +348,6 @@
 }
 
 .version-progress-row:focus-visible,
-.acceptance-rejected-row:focus-visible,
 .activity-row:focus-visible {
   outline: 0;
   box-shadow: 0 0 0 2px var(--accent-soft);
@@ -930,15 +865,6 @@
 
   .release-action-link {
     margin-left: 0;
-  }
-
-  .acceptance-rejected-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .acceptance-rejected-version,
-  .acceptance-rejected-chevron {
-    display: none;
   }
 
   .activity-row {

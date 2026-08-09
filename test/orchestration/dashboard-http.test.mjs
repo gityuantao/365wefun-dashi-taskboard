@@ -38,7 +38,6 @@ test("orchestrator dashboard server exposes read-only JSON endpoints", async (t)
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.releasableVersions.length, 2);
-  assert.equal(payload.acceptanceRejectedTasks[0].id, "task-5");
   assert.equal(
     payload.releasableVersions[0].url,
     "https://app.clickup.com/space-1/v/l/version-list",
