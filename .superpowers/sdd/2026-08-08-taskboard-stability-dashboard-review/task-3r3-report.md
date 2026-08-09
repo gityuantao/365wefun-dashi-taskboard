@@ -58,3 +58,15 @@ Covered behavior:
 - No real ClickUp request was sent; all write/readback paths were exercised with local fakes and the D1 test harness as required.
 - Mutations whose write response succeeds but whose remote value still equals `expected_before` remain pending and surface `REMOTE_CONFIRMATION_FAILED`; a later flush must re-establish the precondition before attempting again.
 - Existing untracked `.data` in the worktree was not modified or committed.
+
+## Review round 1 — preserve value-bearing business objects
+
+Important finding: the first implementation recursively unwrapped every object containing a `value` property. That discarded sibling business data such as `currency`, so `{ value: "same", currency: "USD" }` could compare equal to `{ value: "same", currency: "EUR" }`.
+
+RED evidence using the same focused command: 26 tests, 25 passed, 1 failed. The USD/EUR conflict was incorrectly returned in `flushed` instead of `expired`, proving the precondition could write through the mismatch.
+
+GREEN evidence using the same focused command: 26 tests, 26 passed, 0 failed, exit code 0.
+
+The fix now unwraps only the explicit ClickUp `custom_fields[]` wrapper by reading its `.value` once. The actual field value is canonicalized without data loss: object keys are sorted for deterministic deep comparison, while unknown arrays retain their original order and structure. Tests cover both the USD/EUR conflict with zero writes and an equal complex object with reordered object keys that writes and confirms normally.
+
+- Review fix commit: `3af5c54` (`fix: preserve ClickUp custom field JSON`)
