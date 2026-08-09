@@ -356,6 +356,98 @@ test("flushOutbox does not overwrite a normalized custom-field value changed rem
   assert.equal(writes, 0);
 });
 
+test("flushOutbox preserves value-bearing business objects when checking custom-field conflicts", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const target = { value: "next", currency: "USD", allocations: ["primary", "reserve"] };
+  const remoteValues = [
+    { value: "same", currency: "EUR", allocations: ["primary", "reserve"] },
+    target,
+  ];
+  let writes = 0;
+  const client = {
+    getTask: async () => ({
+      id: "task-1",
+      custom_fields: [{
+        id: "field-summary",
+        name: "执行摘要",
+        type: "text",
+        value: remoteValues.shift(),
+      }],
+    }),
+    updateTaskStatus: async () => {},
+    updateCustomField: async () => { writes += 1; },
+  };
+  await enqueueMutation(harness.db, mutationBase({
+    field: "执行摘要",
+    expectedBefore: {
+      value: "same",
+      currency: "USD",
+      allocations: ["primary", "reserve"],
+    },
+    target,
+  }));
+
+  const result = await flushOutbox(harness.db, client, { now: NOW, config: CONFIG });
+
+  assert.deepEqual(result.flushed, []);
+  assert.deepEqual(result.expired, ["mut-1"]);
+  assert.equal(writes, 0);
+});
+
+test("flushOutbox accepts an identical complex custom-field value without losing JSON structure", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const remoteValues = [
+    {
+      allocations: ["primary", "reserve"],
+      currency: "USD",
+      value: "same",
+    },
+    {
+      currency: "USD",
+      value: "next",
+      allocations: ["primary", "reserve"],
+    },
+  ];
+  const writes = [];
+  const client = {
+    getTask: async () => ({
+      id: "task-1",
+      custom_fields: [{
+        id: "field-summary",
+        name: "执行摘要",
+        type: "text",
+        value: remoteValues.shift(),
+      }],
+    }),
+    updateTaskStatus: async () => {},
+    updateCustomField: async (id, field, value) => writes.push([id, field, value]),
+  };
+  await enqueueMutation(harness.db, mutationBase({
+    field: "执行摘要",
+    expectedBefore: {
+      value: "same",
+      currency: "USD",
+      allocations: ["primary", "reserve"],
+    },
+    target: {
+      value: "next",
+      currency: "USD",
+      allocations: ["primary", "reserve"],
+    },
+  }));
+
+  const result = await flushOutbox(harness.db, client, { now: NOW, config: CONFIG });
+
+  assert.deepEqual(result.flushed, ["mut-1"]);
+  assert.deepEqual(writes, [[
+    "task-1",
+    "field-summary",
+    { value: "next", currency: "USD", allocations: ["primary", "reserve"] },
+  ]]);
+});
+
 test("confirmMutation idempotently confirms a mutation", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

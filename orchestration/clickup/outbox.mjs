@@ -74,22 +74,13 @@ function normalizeStatus(value, config, objectType) {
 }
 
 function normalizeCustomField(value) {
-  let normalized = value;
-  while (
-    normalized !== null
-    && typeof normalized === "object"
-    && !Array.isArray(normalized)
-    && "value" in normalized
-  ) {
-    normalized = normalized.value;
-  }
-  if (normalized === undefined) return null;
-  if (normalized === null || typeof normalized !== "object") return normalized;
-  if (Array.isArray(normalized)) return normalized.map(normalizeCustomField);
+  if (value === undefined) return null;
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(normalizeCustomField);
   return Object.fromEntries(
-    Object.keys(normalized)
+    Object.keys(value)
       .sort()
-      .map((key) => [key, normalizeCustomField(normalized[key])]),
+      .map((key) => [key, normalizeCustomField(value[key])]),
   );
 }
 
@@ -118,7 +109,7 @@ async function readRemoteValue(client, row, config, customFieldId) {
     );
   }
   const field = remote.custom_fields.find((candidate) => candidate?.id === customFieldId);
-  return normalizeCustomField(field ?? null);
+  return normalizeCustomField(field?.value ?? null);
 }
 
 async function expireMutation(db, mutationId) {
