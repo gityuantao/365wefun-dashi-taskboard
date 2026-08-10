@@ -21,14 +21,44 @@ function withTimeout(promise, ms, message) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-function trustedAttachmentUrl(value) {
+function createAttachmentHostAllowlist(extraHosts) {
+  if (!Array.isArray(extraHosts)) {
+    throw new DomainError("ATTACHMENT_HOST", "Attachment host allowlist must be an array");
+  }
+  const hosts = new Set(TRUSTED_ATTACHMENT_HOSTS);
+  for (const host of extraHosts) {
+    if (typeof host !== "string" || host.trim() === "") {
+      throw new DomainError("ATTACHMENT_HOST", "Attachment host allowlist contains an invalid host");
+    }
+    const normalizedHost = host.trim().toLowerCase();
+    let parsed;
+    try {
+      parsed = new URL(`https://${normalizedHost}`);
+    } catch {
+      throw new DomainError("ATTACHMENT_HOST", "Attachment host allowlist contains an invalid host");
+    }
+    if (parsed.hostname !== normalizedHost || parsed.port !== "") {
+      throw new DomainError("ATTACHMENT_HOST", "Attachment host allowlist contains an invalid host");
+    }
+    hosts.add(parsed.hostname);
+  }
+  return hosts;
+}
+
+function trustedAttachmentUrl(value, allowedHosts) {
   let url;
   try {
     url = new URL(value);
   } catch {
     throw new DomainError("ATTACHMENT_HOST", "Attachment URL must be a trusted HTTPS URL");
   }
-  if (url.protocol !== "https:" || !TRUSTED_ATTACHMENT_HOSTS.has(url.hostname)) {
+  if (
+    url.protocol !== "https:"
+    || url.port !== ""
+    || url.username !== ""
+    || url.password !== ""
+    || !allowedHosts.has(url.hostname)
+  ) {
     throw new DomainError("ATTACHMENT_HOST", "Attachment URL host is not trusted");
   }
   return url;
@@ -38,11 +68,6 @@ function normalizedContentType(value) {
   return value?.split(";", 1)[0].trim().toLowerCase() || "application/octet-stream";
 }
 
-function normalizedContentLength(value, fallback) {
-  const length = Number(value);
-  return Number.isSafeInteger(length) && length >= 0 ? length : fallback;
-}
-
 export function createClickUpClient({
   token,
   baseUrl = DEFAULT_BASE_URL,
@@ -50,10 +75,12 @@ export function createClickUpClient({
   retries = DEFAULT_RETRIES,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+  attachmentHostAllowlist = [],
 } = {}) {
   if (typeof token !== "string" || token.trim() === "") {
     throw new DomainError("TOKEN_REQUIRED", "ClickUp API token is required");
   }
+  const allowedAttachmentHosts = createAttachmentHostAllowlist(attachmentHostAllowlist);
   const headers = {
     Authorization: token.trim(),
     "Content-Type": "application/json",
@@ -108,7 +135,7 @@ export function createClickUpClient({
   }
 
   async function requestAttachment(url) {
-    const attachmentUrl = trustedAttachmentUrl(url);
+    const attachmentUrl = trustedAttachmentUrl(url, allowedAttachmentHosts);
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
@@ -116,6 +143,7 @@ export function createClickUpClient({
           fetchImpl(attachmentUrl.href, {
             method: "GET",
             headers,
+            redirect: "manual",
           }),
           timeoutMs,
           `ClickUp attachment request timed out after ${timeoutMs}ms`,
@@ -144,7 +172,7 @@ export function createClickUpClient({
         return {
           body,
           contentType: normalizedContentType(response.headers.get("content-type")),
-          contentLength: normalizedContentLength(response.headers.get("content-length"), body.byteLength),
+          contentLength: body.byteLength,
         };
       } catch (error) {
         if (error instanceof DomainError) throw error;

@@ -171,10 +171,91 @@ test("downloadAttachment sends ClickUp auth and returns binary metadata", async 
   }});
   const file = await client.downloadAttachment("https://attachments.clickup.com/a.png");
   assert.deepEqual([...file.body], [0x89, 0x50, 0x4e, 0x47]);
+  assert.equal(file.contentType, "image/png");
+  assert.equal(file.contentLength, 4);
   assert.equal(seen[0].init.headers.Authorization, "pk-test");
 });
 
 test("downloadAttachment rejects an untrusted host", async () => {
   const client = createClickUpClient({ token: "pk-test" });
   await assert.rejects(() => client.downloadAttachment("https://example.com/a.png"), /ATTACHMENT_HOST/);
+});
+
+test("downloadAttachment rejects non-HTTPS URLs", async () => {
+  const client = createClickUpClient({ token: "pk-test" });
+  await assert.rejects(() => client.downloadAttachment("http://attachments.clickup.com/a.png"), /ATTACHMENT_HOST/);
+});
+
+test("downloadAttachment reports byte length when Content-Length is missing", async () => {
+  const client = createClickUpClient({
+    token: "pk-test",
+    fetchImpl: async () => new Response(Uint8Array.from([1, 2, 3, 4]), {
+      headers: { "content-type": "image/png" },
+    }),
+  });
+
+  const file = await client.downloadAttachment("https://attachments.clickup.com/a.png");
+
+  assert.equal(file.contentLength, 4);
+});
+
+test("downloadAttachment reports byte length when Content-Length disagrees", async () => {
+  const client = createClickUpClient({
+    token: "pk-test",
+    fetchImpl: async () => new Response(Uint8Array.from([1, 2, 3, 4]), {
+      headers: { "content-length": "2" },
+    }),
+  });
+
+  const file = await client.downloadAttachment("https://attachments.clickup.com/a.png");
+
+  assert.equal(file.contentLength, 4);
+});
+
+test("downloadAttachment disables automatic redirects before sending authentication", async () => {
+  const calls = [];
+  const client = createClickUpClient({
+    token: "pk-test",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response("", {
+        status: 302,
+        headers: { location: "https://example.com/a.png" },
+      });
+    },
+  });
+
+  await assert.rejects(
+    () => client.downloadAttachment("https://attachments.clickup.com/a.png"),
+    /HTTP_302/,
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.redirect, "manual");
+});
+
+test("downloadAttachment accepts an explicitly allowed non-static host", async () => {
+  const calls = [];
+  const client = createClickUpClient({
+    token: "pk-test",
+    attachmentHostAllowlist: ["uploads.clickup-cdn.example"],
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(Uint8Array.from([1]), { headers: { "content-length": "1" } });
+    },
+  });
+
+  const file = await client.downloadAttachment("https://uploads.clickup-cdn.example/a.png");
+
+  assert.deepEqual([...file.body], [1]);
+  assert.equal(calls[0].url, "https://uploads.clickup-cdn.example/a.png");
+});
+
+test("client rejects malformed explicit attachment host allowlists", () => {
+  assert.throws(
+    () => createClickUpClient({
+      token: "pk-test",
+      attachmentHostAllowlist: ["uploads.clickup-cdn.example@evil.example"],
+    }),
+    /ATTACHMENT_HOST/,
+  );
 });
