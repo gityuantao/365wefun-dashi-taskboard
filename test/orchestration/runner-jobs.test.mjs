@@ -7,6 +7,7 @@ import {
   completeJob,
   enqueueJob,
   recoverRunnerJobs,
+  renewJobClaim,
 } from "../../orchestration/persistence/d1-runner-jobs.mjs";
 
 const NOW = "2026-08-04T00:00:30.000Z";
@@ -149,6 +150,55 @@ test("claimJob allows a new device to take over an expired lease", async (t) => 
   });
   assert.equal(takeover.id, "job-1");
   assert.equal(takeover.fencingToken, 2);
+});
+
+test("renewJobClaim keeps a long-running job fenced until the renewed expiry", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedJob(harness);
+  const first = await claimJob(harness.db, {
+    deviceId: "device-1",
+    jobType: "analyze",
+    now: NOW,
+    leaseMs: 1_000,
+  });
+
+  const renewed = await renewJobClaim(harness.db, {
+    jobId: first.id,
+    deviceId: "device-1",
+    fencingToken: first.fencingToken,
+    now: "2026-08-04T00:00:30.500Z",
+    leaseMs: 5_000,
+  });
+  assert.equal(renewed.expiresAt, "2026-08-04T00:00:35.500Z");
+  assert.equal(await claimJob(harness.db, {
+    deviceId: "device-2",
+    jobType: "analyze",
+    now: "2026-08-04T00:00:32.000Z",
+  }), null);
+  await assertJobClaim(harness.db, {
+    jobId: first.id,
+    deviceId: "device-1",
+    fencingToken: first.fencingToken,
+    now: "2026-08-04T00:00:32.000Z",
+  });
+
+  const takeover = await claimJob(harness.db, {
+    deviceId: "device-2",
+    jobType: "analyze",
+    now: "2026-08-04T00:00:36.000Z",
+  });
+  assert.equal(takeover.fencingToken, 2);
+  await assert.rejects(
+    renewJobClaim(harness.db, {
+      jobId: first.id,
+      deviceId: "device-1",
+      fencingToken: first.fencingToken,
+      now: "2026-08-04T00:00:36.000Z",
+      leaseMs: 5_000,
+    }),
+    /CLAIM_MISMATCH/,
+  );
 });
 
 test("completeJob validates the claimant and fencing token", async (t) => {

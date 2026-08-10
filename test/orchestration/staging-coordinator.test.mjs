@@ -230,3 +230,96 @@ test("an iOS App failure uses its exact TestFlight App and stage in staging roll
   assert.equal(await acceptancePassedCount(harness.db, taskId), 0);
   assert.ok(comments.some((comment) => String(comment).includes("阶段：testflight:cn:processing")));
 });
+
+test("a reclaimed staging lease blocks the next iOS external operation and every later App", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const taskId = "task-ios-reclaimed-lease";
+  await seedAcceptingTask(harness.db, taskId);
+  const { gitOps, adapter } = webGate();
+  let guardCalls = 0;
+  let readbackCalls = 0;
+  const stagedApps = [];
+
+  const result = await executeStagingGate({
+    job: stagingJob(taskId, ["ios"]),
+    db: harness.db,
+    client: { postComment: async () => ({}) },
+    gitOps,
+    adapter,
+    iosApps: IOS_APPS,
+    beforeExternalOperation: async () => { guardCalls += 1; },
+    iosAdapter: {
+      stage: async ({ app, targetVersion }) => {
+        assert.equal(guardCalls, 1);
+        stagedApps.push(app.id);
+        await harness.db.prepare(
+          "UPDATE orchestration_leases SET expires_at = ? WHERE id = 'staging-environment'",
+        ).bind("2026-08-10T07:59:59.000Z").run();
+        await harness.db.prepare(
+          `UPDATE orchestration_leases
+           SET holder = 'rival-job', fencing_token = fencing_token + 1, expires_at = ?
+           WHERE id = 'staging-environment' AND expires_at <= ?`,
+        ).bind("2026-08-10T10:00:00.000Z", NOW).run();
+        return {
+          appId: app.id,
+          scheme: app.scheme,
+          bundleId: app.bundleId,
+          marketingVersion: targetVersion,
+          buildNumber: "101",
+          uploadId: `upload-${app.id}`,
+        };
+      },
+      readback: async () => {
+        readbackCalls += 1;
+        throw new Error("readback must not run after lease reclaim");
+      },
+    },
+    now: NOW,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.stage, "testflight:au:processing");
+  assert.deepEqual(stagedApps, ["au"]);
+  assert.equal(readbackCalls, 0);
+  assert.equal(guardCalls, 2);
+  assert.equal(await acceptancePassedCount(harness.db, taskId), 0);
+});
+
+test("iOS staging fails closed with precise evidence for missing gate configuration", async (t) => {
+  const cases = [
+    { name: "missing iosApps", iosApps: null, iosAdapter: { stage() {}, readback() {} } },
+    { name: "missing iosAdapter", iosApps: IOS_APPS, iosAdapter: null },
+    { name: "malformed iosAdapter", iosApps: IOS_APPS, iosAdapter: { stage() {} } },
+  ];
+
+  for (const configCase of cases) {
+    await t.test(configCase.name, async (t) => {
+      const harness = await createCloudWorkerHarness();
+      t.after(() => harness.dispose());
+      const taskId = `task-${configCase.name.replaceAll(" ", "-")}`;
+      await seedAcceptingTask(harness.db, taskId);
+      const comments = [];
+      const { gitOps, adapter } = webGate();
+
+      const result = await executeStagingGate({
+        job: stagingJob(taskId, ["ios"]),
+        db: harness.db,
+        client: { postComment: async (_taskId, body) => comments.push(body) },
+        gitOps,
+        adapter,
+        iosApps: configCase.iosApps,
+        iosAdapter: configCase.iosAdapter,
+        now: NOW,
+      });
+
+      assert.equal(result.status, "failed");
+      assert.equal(result.stage, "testflight:all:configuration");
+      assert.equal(await acceptancePassedCount(harness.db, taskId), 0);
+      assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "ready_for_development");
+      assert.ok(comments.some((comment) => (
+        String(comment).includes("阶段：testflight:all:configuration")
+      )));
+    });
+  }
+});

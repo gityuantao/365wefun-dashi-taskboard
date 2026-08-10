@@ -4,6 +4,9 @@ import { dispatchCommand } from "./dispatch-command.mjs";
 import { recordFailure, resetRework } from "./failure-handler.mjs";
 import { executeIosStagingGate } from "./ios-staging-coordinator.mjs";
 import { requiresIosStaging } from "../domain/platforms.mjs";
+import { loadIosApps } from "../ios/app-registry.mjs";
+
+const DEFAULT_STAGING_LEASE_MS = 45 * 60_000;
 
 function concise(value, max = 300) {
   return String(value ?? "unknown error")
@@ -21,8 +24,8 @@ async function nextAttempt(db, taskId) {
   return Number(row?.attempt ?? 0) + 1;
 }
 
-async function acquireStagingLease(db, holder, now, minutes = 45) {
-  const expiresAt = new Date(Date.parse(now) + minutes * 60_000).toISOString();
+async function acquireStagingLease(db, holder, now, leaseMs = DEFAULT_STAGING_LEASE_MS) {
+  const expiresAt = new Date(Date.parse(now) + leaseMs).toISOString();
   await db.prepare(
     `INSERT INTO orchestration_leases (
        id, aggregate_type, aggregate_id, holder, fencing_token, expires_at, created_at
@@ -39,6 +42,18 @@ async function acquireStagingLease(db, holder, now, minutes = 45) {
   ).first();
   if (lease?.holder !== holder) throw new Error("staging environment is being deployed by another task");
   return Number(lease.fencing_token);
+}
+
+async function renewStagingLease(db, holder, fencingToken, now, leaseMs) {
+  const expiresAt = new Date(Date.parse(now) + leaseMs).toISOString();
+  const updated = await db.prepare(
+    `UPDATE orchestration_leases SET expires_at = ?
+     WHERE id = 'staging-environment' AND holder = ? AND fencing_token = ?
+       AND expires_at > ?`,
+  ).bind(expiresAt, holder, fencingToken, now).run();
+  if ((updated.meta?.changes ?? 0) === 0) {
+    throw new Error("staging environment lease was lost before TestFlight operation");
+  }
 }
 
 async function releaseStagingLease(db, holder, fencingToken) {
@@ -117,6 +132,8 @@ export async function executeStagingGate({
   adapter,
   iosApps = null,
   iosAdapter = null,
+  beforeExternalOperation = async () => {},
+  stagingLeaseMs = DEFAULT_STAGING_LEASE_MS,
   now,
 }) {
   const { taskId, pr, commitSha, versionBranch, targetVersion, platforms } = job.payload;
@@ -163,7 +180,12 @@ export async function executeStagingGate({
     if (!persisted.persisted) throw new Error(persisted.error ?? "candidate push failed");
 
     stage = "staging_lease";
-    fencingToken = await acquireStagingLease(db, job.id, new Date().toISOString());
+    fencingToken = await acquireStagingLease(
+      db,
+      job.id,
+      new Date().toISOString(),
+      stagingLeaseMs,
+    );
     stage = "deploy";
     await db.prepare("UPDATE staging_deployments SET stage = ? WHERE id = ?").bind(stage, attemptId).run();
     const deployment = await adapter.deploy({ candidateCommit, versionBranch, taskId, targetVersion });
@@ -185,15 +207,42 @@ export async function executeStagingGate({
     let iosEvidence = [];
     if (requiresIosStaging(platforms)) {
       stage = "testflight:all:configuration";
-      if (!Array.isArray(iosApps)) throw new Error("iOS App registry is not configured");
+      const validatedIosApps = loadIosApps(iosApps);
+      if (
+        iosAdapter === null
+        || typeof iosAdapter !== "object"
+        || typeof iosAdapter.stage !== "function"
+        || typeof iosAdapter.readback !== "function"
+      ) {
+        throw new Error("iOS TestFlight adapter is not configured");
+      }
+      const guardIosOperation = async () => {
+        await beforeExternalOperation();
+        await renewStagingLease(
+          db,
+          job.id,
+          fencingToken,
+          new Date().toISOString(),
+          stagingLeaseMs,
+        );
+      };
       const iosResult = await executeIosStagingGate({
         db,
         client,
         taskId,
         candidateCommit,
         targetVersion,
-        apps: iosApps,
-        adapter: iosAdapter,
+        apps: validatedIosApps,
+        adapter: {
+          stage: async (options) => {
+            await guardIosOperation();
+            return iosAdapter.stage(options);
+          },
+          readback: async (options) => {
+            await guardIosOperation();
+            return iosAdapter.readback(options);
+          },
+        },
         now,
       });
       if (iosResult.status !== "completed") {

@@ -13,11 +13,26 @@ export function normalizePlatforms(value) {
   )];
 }
 
+function resolveSelectedOption(field, selected) {
+  const options = field?.type_config?.options ?? [];
+  const option = options.find((candidate) => (
+    String(candidate?.id ?? "") === String(
+      selected !== null && typeof selected === "object" ? selected.id : selected,
+    )
+  ));
+  if (option) return option.name ?? option.label ?? option.id;
+  if (selected !== null && typeof selected === "object") {
+    return selected.name ?? selected.label ?? selected.id;
+  }
+  return selected;
+}
+
 export function resolveTaskPlatforms(task) {
   const field = task?.custom_fields?.find(
     (candidate) => candidate.name === "影响平台" || candidate.id === "field-platforms",
   );
-  return normalizePlatforms(field?.value);
+  const selected = Array.isArray(field?.value) ? field.value : [field?.value];
+  return normalizePlatforms(selected.map((value) => resolveSelectedOption(field, value)));
 }
 
 export function requiresIosStaging(platforms) {

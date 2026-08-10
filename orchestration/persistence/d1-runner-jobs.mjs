@@ -90,6 +90,23 @@ export async function assertJobClaim(db, {
   return true;
 }
 
+export async function renewJobClaim(db, {
+  jobId,
+  deviceId,
+  fencingToken,
+  now = new Date().toISOString(),
+  leaseMs = DEFAULT_LEASE_MS,
+}) {
+  const expiresAt = new Date(Date.parse(now) + leaseMs).toISOString();
+  const updated = await db.prepare(
+    `UPDATE runner_jobs SET expires_at = ?
+     WHERE id = ? AND status = 'claimed' AND device_id = ?
+       AND fencing_token = ? AND expires_at > ?`,
+  ).bind(expiresAt, jobId, deviceId, fencingToken, now).run();
+  if ((updated.meta?.changes ?? 0) === 0) throw claimMismatch(jobId, deviceId, fencingToken);
+  return { jobId, expiresAt };
+}
+
 export async function reconcileJobClaim(db, {
   jobId,
   deviceId,

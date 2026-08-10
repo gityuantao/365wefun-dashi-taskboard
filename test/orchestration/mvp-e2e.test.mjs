@@ -90,7 +90,17 @@ function makeClickUpTask(overrides = {}) {
     custom_fields: [
       { id: "field-managed", name: "自动化纳管", value: true },
       { id: "field-version", name: "目标版本", value: "version-e2e-1" },
-      { id: "field-platforms", name: "影响平台", value: ["Web", "iOS"] },
+      {
+        id: "field-platforms",
+        name: "影响平台",
+        value: ["platform-web", "platform-ios"],
+        type_config: {
+          options: [
+            { id: "platform-web", label: "Web" },
+            { id: "platform-ios", label: "iOS" },
+          ],
+        },
+      },
     ],
     updated_at: NOW,
     ...overrides,

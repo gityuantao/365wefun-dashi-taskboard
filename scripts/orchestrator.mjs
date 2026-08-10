@@ -52,6 +52,7 @@ import {
   completeJob,
   reconcileJobClaim,
   recoverRunnerJobs,
+  renewJobClaim,
 } from "../orchestration/persistence/d1-runner-jobs.mjs";
 import { loadAggregate } from "../orchestration/persistence/d1-aggregate-store.mjs";
 import { applyMigrations } from "../orchestration/persistence/migrations.mjs";
@@ -90,6 +91,14 @@ const config = loadClickUpConfig(rawClickUpConfig);
 const iosAppsValue = runtime.iosApps ?? rawClickUpConfig.iosApps;
 const iosApps = iosAppsValue === undefined ? null : loadIosApps(iosAppsValue);
 const iosAdapter = createTestFlightAdapter({ runtime, projectRoot: PROJECT_ROOT });
+const iosOperationTimeoutMs = Number(runtime.iosTestFlightTimeoutMs ?? 30 * 60_000);
+const iosOperationLeaseMs = (
+  Number.isFinite(iosOperationTimeoutMs) && iosOperationTimeoutMs > 0
+    ? iosOperationTimeoutMs
+    : 30 * 60_000
+) + 5 * 60_000;
+const stageTaskRunnerLeaseMs = Math.max(90 * 60_000, iosOperationLeaseMs);
+const stagingEnvironmentLeaseMs = Math.max(45 * 60_000, iosOperationLeaseMs);
 
 const persistRoot = path.join(PROJECT_ROOT, ".data", "orchestration-d1");
 mkdirSync(persistRoot, { recursive: true });
@@ -151,13 +160,18 @@ const CLICKUP_DURABLE_METHODS = [
   "updateTaskStatus",
 ];
 
-function jobClaimGuard(job) {
-  return () => assertJobClaim(db, {
-    jobId: job.id,
-    deviceId: runtime.deviceId,
-    fencingToken: job.fencingToken,
-    now: new Date().toISOString(),
-  });
+function jobClaimGuard(job, { renewLeaseMs = null } = {}) {
+  return () => {
+    const claim = {
+      jobId: job.id,
+      deviceId: runtime.deviceId,
+      fencingToken: job.fencingToken,
+      now: new Date().toISOString(),
+    };
+    return renewLeaseMs === null
+      ? assertJobClaim(db, claim)
+      : renewJobClaim(db, { ...claim, leaseMs: renewLeaseMs });
+  };
 }
 
 async function jobClient(job) {
@@ -348,6 +362,7 @@ const handlers = {
       repository: resolveRemoteRepo(runtime.repoPath),
     });
     const assertActive = jobClaimGuard(job);
+    const renewActiveClaim = jobClaimGuard(job, { renewLeaseMs: stageTaskRunnerLeaseMs });
     const guardedGitOps = {
       integrateTaskPr: async (options) => {
         await assertActive();
@@ -370,6 +385,8 @@ const handlers = {
       adapter,
       iosApps,
       iosAdapter,
+      beforeExternalOperation: renewActiveClaim,
+      stagingLeaseMs: stagingEnvironmentLeaseMs,
       now: new Date().toISOString(),
     });
   },
@@ -613,7 +630,7 @@ async function tick() {
             deviceId: runtime.deviceId,
             jobType,
             now,
-            leaseMs: 90 * 60_000,
+            leaseMs: jobType === "stage_task" ? stageTaskRunnerLeaseMs : 90 * 60_000,
           }),
           reconcile: (job) => reconcileJobClaim(db, {
             jobId: job.id,
