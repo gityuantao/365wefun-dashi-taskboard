@@ -65,6 +65,20 @@ function omittedImageLabel(commentId, filename, code) {
   return `- 评论 ${commentId} 图片未读取：${filename}（${code}）`;
 }
 
+function downloadError(error, commentId, filename) {
+  const originalCode = typeof error?.code === "string" ? error.code : "";
+  const code = /^[A-Z][A-Z0-9_]{1,39}$/.test(originalCode)
+    ? originalCode
+    : "IMAGE_UNAVAILABLE";
+  const originalName = typeof error?.name === "string" ? error.name : "";
+  const name = /^[A-Za-z][A-Za-z0-9]*Error$/.test(originalName) ? originalName : "Error";
+  return new DomainError(
+    code,
+    `Attachment ${filename} download failed`,
+    { commentId, filename, cause: { name, code } },
+  );
+}
+
 /**
  * Downloads supported image attachments from the same recent comment window used in AI prompts.
  */
@@ -107,7 +121,12 @@ export async function collectCommentMedia({
       if (!url) {
         throw new DomainError("IMAGE_UNAVAILABLE", `Attachment ${filename} has no usable URL`, { commentId, filename });
       }
-      const downloaded = await client.downloadAttachment(url);
+      let downloaded;
+      try {
+        downloaded = await client.downloadAttachment(url);
+      } catch (error) {
+        throw downloadError(error, commentId, filename);
+      }
       const body = downloaded.body;
       const imageType = detectedImageType(body);
       if (!imageType) {

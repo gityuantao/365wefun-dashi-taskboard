@@ -85,7 +85,7 @@ async function rollbackDevelopment({ db, client, taskId, jobId, now, reason }) {
 
 async function markDevelopmentNeedsInfo({ db, client, taskId, jobId, now, reason }) {
   const aggregate = await loadAggregate(db, "task", taskId);
-  if (aggregate.state !== "developing") return;
+  if (aggregate.state !== "developing") return false;
   const command = parseCommandEnvelope({
     id: `development-needs-info-${jobId}`,
     type: "development_needs_info",
@@ -100,7 +100,7 @@ async function markDevelopmentNeedsInfo({ db, client, taskId, jobId, now, reason
   try {
     await dispatchCommand({ db, command, now: new Date().toISOString() });
   } catch {
-    // 状态推进失败不掩盖 needs_info 结论；用户恢复开发后仍可继续
+    return false;
   }
   try {
     await client.postComment(
@@ -113,6 +113,7 @@ async function markDevelopmentNeedsInfo({ db, client, taskId, jobId, now, reason
   } catch {
     // 评论失败不影响状态
   }
+  return true;
 }
 
 function staleDevelopmentResult(aggregate) {
@@ -190,22 +191,32 @@ export async function executeDevelopment({
       mediaBundle = await collectCommentMedia({ comments, client, taskId });
     } catch (error) {
       const reason = formatCommentMediaError(error);
-      await markDevelopmentNeedsInfo({ db, client, taskId, jobId: job.id, now, reason });
+      const transitioned = await markDevelopmentNeedsInfo({
+        db,
+        client,
+        taskId,
+        jobId: job.id,
+        now,
+        reason,
+      });
+      if (!transitioned) {
+        return staleDevelopmentResult(await loadAggregate(db, "task", taskId));
+      }
       return { status: "failed", classification: "needs_info", error: `needs_info: ${reason}` };
-    }
-    let commentContext = mediaBundle.textContext;
-    const feedbackField = task.custom_fields?.find(
-      (field) => field.name === "验收反馈" || field.id === "field-acceptance-feedback",
-    );
-    if (feedbackField?.value) {
-      commentContext = [commentContext, `验收反馈：${feedbackField.value}`]
-        .filter(Boolean)
-        .join("\n");
     }
     let activity;
     let worktree;
     let run;
     try {
+      let commentContext = mediaBundle.textContext;
+      const feedbackField = task.custom_fields?.find(
+        (field) => field.name === "验收反馈" || field.id === "field-acceptance-feedback",
+      );
+      if (feedbackField?.value) {
+        commentContext = [commentContext, `验收反馈：${feedbackField.value}`]
+          .filter(Boolean)
+          .join("\n");
+      }
       activity = await currentDevelopment(db, taskId, executionVersion);
       if (!activity.active) return staleDevelopmentResult(activity.aggregate);
       worktree = await gitOps.createWorktree({
@@ -250,7 +261,17 @@ export async function executeDevelopment({
       const reason = typeof parsed.reason === "string" && parsed.reason.trim() !== ""
         ? parsed.reason.trim()
         : "开发过程中无法复现问题或信息不足";
-      await markDevelopmentNeedsInfo({ db, client, taskId, jobId: job.id, now, reason });
+      const transitioned = await markDevelopmentNeedsInfo({
+        db,
+        client,
+        taskId,
+        jobId: job.id,
+        now,
+        reason,
+      });
+      if (!transitioned) {
+        return staleDevelopmentResult(await loadAggregate(db, "task", taskId));
+      }
       return { status: "failed", classification: "needs_info", error: `needs_info: ${reason}` };
     }
     if (typeof parsed.change_summary !== "string" || parsed.change_summary === "") {

@@ -323,6 +323,10 @@ test("removes downloaded media when a later attachment download fails", async (t
   const tempRoot = await makeTempRoot();
   t.after(() => rm(tempRoot, { recursive: true, force: true }));
   let downloads = 0;
+  const downloadFailure = Object.assign(
+    new Error("authorization failed token=download-secret"),
+    { code: "HTTP_401" },
+  );
 
   await assert.rejects(
     () => collectCommentMedia({
@@ -333,14 +337,21 @@ test("removes downloaded media when a later attachment download fails", async (t
       client: {
         downloadAttachment: async () => {
           downloads += 1;
-          if (downloads === 2) throw new Error("second download failed");
+          if (downloads === 2) throw downloadFailure;
           return { body: PNG, contentType: "image/png", contentLength: PNG.byteLength };
         },
       },
       taskId: "task-cleanup-failure",
       tempRoot,
     }),
-    /second download failed/,
+    (error) => {
+      assert.equal(error.code, "HTTP_401");
+      assert.equal(error.details.commentId, "second");
+      assert.equal(error.details.filename, "second.png");
+      assert.deepEqual(error.details.cause, { name: "Error", code: "HTTP_401" });
+      assert.doesNotMatch(error.message, /download-secret|token=/);
+      return true;
+    },
   );
 
   assert.deepEqual(await readdir(tempRoot), []);

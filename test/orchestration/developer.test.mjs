@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { access } from "node:fs/promises";
+import { access, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import { dispatchCommand } from "../../orchestration/application/dispatch-command.mjs";
@@ -79,6 +81,12 @@ function validOutput() {
     change_summary: "实现录音回放按钮",
     tests: [{ name: "test-1", passed: true }],
   });
+}
+
+async function commentMediaDirectories() {
+  return new Set((await readdir(tmpdir(), { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("taskboard-clickup-images-"))
+    .map((entry) => entry.name));
 }
 
 test("development completes, creates a PR, and advances to ready for test", async (t) => {
@@ -283,6 +291,57 @@ test("development that cannot reproduce parks the task in waiting_info", async (
     calls.some(([, , body]) => String(body).includes("开发无法完成")),
     "should post a comment asking for more info",
   );
+});
+
+test("development reloads stale state when its needs_info transition is not persisted", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  await dispatchCommand({
+    db: harness.db,
+    command: parseCommandEnvelope({
+      id: "needs-info-dispatch-failure-start",
+      type: "start_development",
+      aggregateType: "task",
+      aggregateId: "task-1",
+      expectedVersion: 3,
+      actorId: "system",
+      issuedAt: NOW,
+      reason: "seed",
+      parameters: {},
+    }),
+    now: NOW,
+  });
+  const comments = [];
+  const failingDb = {
+    prepare: (sql) => harness.db.prepare(sql),
+    batch: async () => {
+      throw new Error("forced needs_info dispatch failure");
+    },
+  };
+
+  const result = await executeDevelopment({
+    job: JOB,
+    db: failingDb,
+    client: makeClient({
+      postComment: async (_taskId, body) => comments.push(body),
+    }),
+    codex: {
+      run: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({ needs_info: true, reason: "需要更多复现信息" }),
+        stderr: "",
+      }),
+    },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /stale develop job: task is in developing/);
+  assert.equal(result.classification, undefined);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "developing");
+  assert.equal(comments.some((body) => String(body).includes("开发无法完成")), false);
 });
 
 test("needs_info comments redact common credential formats", async (t) => {
@@ -560,6 +619,61 @@ test("development sends comment images to Codex with their comment label and cle
   assert.match(options.prompt, /需求补充：点击后需要跳转/);
   assert.match(options.prompt, /完整验收失败详情：按钮无法点击/);
   await assert.rejects(access(downloadedPath));
+});
+
+test("development cleans comment media when feedback processing throws after collection", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const before = await commentMediaDirectories();
+  let codexCalled = false;
+
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      getTask: async () => ({
+        id: "task-1",
+        name: "录音回放按钮",
+        description: "修复录音回放",
+        custom_fields: [{
+          id: "field-acceptance-feedback",
+          name: "验收反馈",
+          get value() {
+            throw new Error("feedback extraction failed");
+          },
+        }],
+      }),
+      getComments: async () => [{
+        id: "comment-cleanup-feedback-error",
+        attachments: [{
+          title: "feedback-error.png",
+          url: "https://attachments.clickup.com/feedback-error.png",
+        }],
+      }],
+      downloadAttachment: async () => ({
+        body: PNG,
+        contentType: "image/png",
+        contentLength: PNG.byteLength,
+      }),
+    }),
+    codex: { run: async () => { codexCalled = true; return { exitCode: 0, stdout: validOutput(), stderr: "" }; } },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+
+  const after = await commentMediaDirectories();
+  const created = [...after].filter((directory) => !before.has(directory));
+  t.after(async () => {
+    await Promise.all(created.map((directory) => rm(path.join(tmpdir(), directory), {
+      recursive: true,
+      force: true,
+    })));
+  });
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /feedback extraction failed/);
+  assert.equal(codexCalled, false);
+  assert.deepEqual(created, []);
 });
 
 test("development waits for info when a selected comment image is corrupt", async (t) => {
