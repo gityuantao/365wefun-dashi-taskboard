@@ -239,13 +239,26 @@ function attachmentUrl(attachment) {
   return attachment?.url ?? attachment?.image_url ?? attachment?.download_url ?? null;
 }
 
+function safeLabel(value, fallback) {
+  const sanitized = String(value ?? "")
+    .replace(/[\r\n]/g, " ")
+    .split(/[\\/]/)
+    .at(-1)
+    .split(/[?#]/, 1)[0]
+    .trim()
+    .slice(0, 120);
+  return sanitized || fallback;
+}
+
 function attachmentFilename(attachment, ordinal, preferredFilename) {
   if (typeof preferredFilename === "string" && preferredFilename.trim() !== "") {
-    return preferredFilename.trim();
+    return safeLabel(preferredFilename, `attachment-${ordinal}`);
   }
   if (typeof attachment === "object" && attachment !== null) {
     for (const value of [attachment.title, attachment.filename, attachment.name]) {
-      if (typeof value === "string" && value.trim() !== "") return value.trim();
+      if (typeof value === "string" && value.trim() !== "") {
+        return safeLabel(value, `attachment-${ordinal}`);
+      }
     }
   }
   return `attachment-${ordinal}`;
@@ -264,7 +277,7 @@ function contextFor(comments, labelsByComment) {
   const lines = [];
   for (const comment of comments) {
     const text = textForComment(comment);
-    if (text) lines.push(`- ${text}`);
+    if (text) lines.push(`- 评论 ${String(comment?.id ?? "unknown")}：${text}`);
     lines.push(...(labelsByComment.get(comment) ?? []));
   }
   return lines.length > 0 ? lines.join("\n") : null;
@@ -331,14 +344,14 @@ export async function collectCommentMedia({
   };
 
   try {
-    for (const candidate of candidates) {
+    for (const [candidateIndex, candidate] of candidates.entries()) {
       const filename = attachmentFilename(
         candidate.attachment,
         candidate.ordinal,
         candidate.filename,
       );
       const commentId = String(candidate.comment?.id ?? "unknown");
-      if (images.length >= maxImages) {
+      if (candidateIndex >= maxImages) {
         diagnostics.push({ code: "IMAGE_LIMIT", commentId, filename });
         labelsByComment.get(candidate.comment).push(omittedImageLabel(commentId, filename, "IMAGE_LIMIT"));
         continue;

@@ -47,6 +47,21 @@ export function commentImageDecodeFailure(value, images = []) {
   return `comment image unavailable: ${safeAttachmentFilename(image.filename)} (IMAGE_DECODE_FAILED)`;
 }
 
+export function formatCommentMediaDiagnostics(diagnostics) {
+  if (!Array.isArray(diagnostics) || diagnostics.length === 0) return null;
+  const lines = diagnostics.map((diagnostic) => {
+    const commentId = String(diagnostic?.commentId ?? "unknown")
+      .replace(/[^A-Za-z0-9_-]/g, "")
+      .slice(0, 80) || "unknown";
+    const filename = safeAttachmentFilename(diagnostic?.filename);
+    const code = String(diagnostic?.code ?? "IMAGE_LIMIT")
+      .replace(/[^A-Za-z0-9_-]/g, "")
+      .slice(0, 40) || "IMAGE_LIMIT";
+    return `- 评论 ${commentId} 图片：${filename}（${code}）`;
+  });
+  return ["⚠️ 部分评论图片未读取（已优先保留最新图片）：", ...lines].join("\n");
+}
+
 export function buildAnalysisPrompt(task, commentContext = null, platforms = null) {
   return [
     "你是研发分析器。分析下面的 ClickUp 任务，输出严格的 JSON，不要输出其他文字。",

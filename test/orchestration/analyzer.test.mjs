@@ -448,3 +448,35 @@ test("analysis routes a Codex image decoder failure to waiting info", async (t) 
   assert.match(comments[0], /comment image unavailable: decoder-analysis\.png \(IMAGE_DECODE_FAILED\)/);
   assert.doesNotMatch(comments[0], /decoder-secret|taskboard-clickup-images-|\/tmp\//);
 });
+
+test("analysis posts one safe ClickUp diagnostic when older comment images are truncated", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const posts = [];
+  const mediaComments = Array.from({ length: 9 }, (_, index) => ({
+    id: `analysis-limit-${index}`,
+    date: String(9 - index),
+    images: [{
+      filename: index === 8 ? "oldest.png?token=truncate-secret" : `image-${index}.png`,
+      url: `https://attachments.clickup.com/image-${index}.png?signature=private-${index}`,
+    }],
+  }));
+  const result = await executeAnalysis({
+    job: { id: "job-limit-analysis", payload: { taskId: "task-1" } },
+    db: harness.db,
+    client: makeClient({
+      getComments: async () => mediaComments,
+      downloadAttachment: async () => ({ body: PNG, contentType: "image/png" }),
+      postComment: async (_taskId, body) => posts.push(body),
+    }),
+    codex: { run: async () => ({ exitCode: 0, stdout: validOutput(), stderr: "" }) },
+    now: NOW,
+  });
+
+  assert.equal(result.status, "completed");
+  const diagnostics = posts.filter((body) => body.includes("部分评论图片未读取"));
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0], /评论 analysis-limit-8 图片：oldest\.png（IMAGE_LIMIT）/);
+  assert.doesNotMatch(diagnostics[0], /truncate-secret|signature=|attachments\.clickup\.com|taskboard-clickup-images-|\/tmp\//);
+});

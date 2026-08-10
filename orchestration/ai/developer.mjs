@@ -6,6 +6,7 @@ import {
   buildDevelopmentPrompt,
   commentImageDecodeFailure,
   formatCommentMediaError,
+  formatCommentMediaDiagnostics,
 } from "./prompts.mjs";
 
 function resolvePlatforms(task) {
@@ -224,6 +225,14 @@ export async function executeDevelopment({
       }
       activity = await currentDevelopment(db, taskId, executionVersion);
       if (!activity.active) return staleDevelopmentResult(activity.aggregate);
+      const diagnosticComment = formatCommentMediaDiagnostics(mediaBundle.diagnostics);
+      if (diagnosticComment) {
+        try {
+          await client.postComment(taskId, diagnosticComment);
+        } catch {
+          // 截断诊断评论失败不影响已保留图片的开发
+        }
+      }
       worktree = await gitOps.createWorktree({
         repoPath,
         taskId,

@@ -775,6 +775,39 @@ test("development routes a Codex image decoder failure to waiting info", async (
   assert.doesNotMatch(comments.at(-1), /decoder-secret|taskboard-clickup-images-|\/tmp\//);
 });
 
+test("development posts one safe ClickUp diagnostic when older comment images are truncated", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const posts = [];
+  const mediaComments = Array.from({ length: 9 }, (_, index) => ({
+    id: `development-limit-${index}`,
+    date: String(9 - index),
+    images: [{
+      filename: index === 8 ? "oldest.png?token=truncate-secret" : `image-${index}.png`,
+      url: `https://attachments.clickup.com/image-${index}.png?signature=private-${index}`,
+    }],
+  }));
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      getComments: async () => mediaComments,
+      downloadAttachment: async () => ({ body: PNG, contentType: "image/png" }),
+      postComment: async (_taskId, body) => posts.push(body),
+    }),
+    codex: { run: async () => ({ exitCode: 0, stdout: validOutput(), stderr: "" }) },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+
+  assert.equal(result.status, "completed");
+  const diagnostics = posts.filter((body) => body.includes("部分评论图片未读取"));
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0], /评论 development-limit-8 图片：oldest\.png（IMAGE_LIMIT）/);
+  assert.doesNotMatch(diagnostics[0], /truncate-secret|signature=|attachments\.clickup\.com|taskboard-clickup-images-|\/tmp\//);
+});
+
 test("development keeps the newest ClickUp feedback when comments are newest-first", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

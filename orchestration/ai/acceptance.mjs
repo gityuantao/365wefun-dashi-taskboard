@@ -10,6 +10,7 @@ import {
   buildAcceptancePrompt,
   commentImageDecodeFailure,
   formatCommentMediaError,
+  formatCommentMediaDiagnostics,
 } from "./prompts.mjs";
 
 function extractJson(stdout) {
@@ -189,6 +190,14 @@ export async function executeAcceptance({
     try {
       activity = await currentAcceptance(db, taskId, executionVersion);
       if (!activity.active) return staleAcceptanceResult(activity.aggregate);
+      const diagnosticComment = formatCommentMediaDiagnostics(mediaBundle.diagnostics);
+      if (diagnosticComment) {
+        try {
+          await client.postComment(taskId, diagnosticComment);
+        } catch {
+          // 截断诊断评论失败不影响已保留图片的验收
+        }
+      }
       run = await codex.run({
         prompt: buildAcceptancePrompt(task, acceptanceCriteria, commitSha, mediaBundle.textContext),
         workdir: job.payload.workdir,

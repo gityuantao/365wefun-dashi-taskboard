@@ -51,6 +51,8 @@ test("collects the newest twelve comments and keeps image labels with their comm
   assert.match(bundle.textContext, /feedback 13/);
   assert.match(bundle.textContext, /feedback 2/);
   assert.doesNotMatch(bundle.textContext, /- feedback 1(?:\n|$)/);
+  assert.match(bundle.textContext, /评论 comment-13：feedback 13/);
+  assert.match(bundle.textContext, /评论 comment-2：feedback 2/);
   assert.match(bundle.textContext, /评论 comment-13 图片：newest screenshot\.png/);
   assert.match(bundle.textContext, /评论 comment-12 图片：second-newest\.png/);
   assert.deepEqual(
@@ -421,6 +423,40 @@ test("does not download older candidates after the total byte budget is exhauste
   assert.deepEqual(bundle.diagnostics, [
     { code: "IMAGE_LIMIT", commentId: "older", filename: "older.png" },
   ]);
+  await bundle.cleanup();
+});
+
+test("bounds download attempts even when every selected image exceeds its byte limit", async (t) => {
+  const tempRoot = await makeTempRoot();
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const downloaded = [];
+  const bundle = await collectCommentMedia({
+    comments: Array.from({ length: 5 }, (_, index) => ({
+      id: `bounded-${index}`,
+      date: String(5 - index),
+      images: [{
+        filename: `bounded-${index}.png`,
+        url: `https://attachments.clickup.com/bounded-${index}.png`,
+      }],
+    })),
+    client: {
+      downloadAttachment: async (url) => {
+        downloaded.push(url);
+        return { body: PNG, contentType: "image/png", contentLength: PNG.byteLength };
+      },
+    },
+    taskId: "task-bounded-attempts",
+    tempRoot,
+    maxImages: 2,
+    maxImageBytes: PNG.byteLength - 1,
+  });
+
+  assert.deepEqual(downloaded, [
+    "https://attachments.clickup.com/bounded-0.png",
+    "https://attachments.clickup.com/bounded-1.png",
+  ]);
+  assert.equal(bundle.images.length, 0);
+  assert.equal(bundle.diagnostics.length, 5);
   await bundle.cleanup();
 });
 
