@@ -7,6 +7,8 @@
       "name": "海外版",
       "enabled": true,
       "scheme": "E365AU",
+      "testScheme": "E365AU",
+      "testTarget": "E365StoreKitTests",
       "bundleId": "online.365english.app",
       "testFlightGroup": "Internal Testing",
       "buildNumberSource": "app-store-connect"
@@ -16,6 +18,8 @@
       "name": "中国版",
       "enabled": true,
       "scheme": "E365CN",
+      "testScheme": "E365ChinaComplianceTests",
+      "testTarget": "E365ChinaComplianceTests",
       "bundleId": "online.365english.china",
       "testFlightGroup": "Internal Testing",
       "buildNumberSource": "app-store-connect"

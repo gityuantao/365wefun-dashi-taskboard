@@ -41,12 +41,16 @@ const APPS = {
   au: {
     id: "au",
     scheme: "E365AU",
+    testScheme: "E365AU",
+    testTarget: "E365StoreKitTests",
     bundleId: "online.365english.app",
     otherBundleId: "online.365english.china",
   },
   cn: {
     id: "cn",
     scheme: "E365CN",
+    testScheme: "E365ChinaComplianceTests",
+    testTarget: "E365ChinaComplianceTests",
     bundleId: "online.365english.china",
     otherBundleId: "online.365english.app",
   },
@@ -103,7 +107,7 @@ function collectChild(child) {
 }
 
 for (const app of Object.values(APPS)) {
-  test(`${app.scheme} commands select only that App and use release-optimized Staging`, () => {
+  test(`${app.scheme} archives release-optimized Staging and runs only its configured automated tests`, () => {
     const context = commandContext(app);
     const settings = buildBuildSettingsCommand(context);
     const testCommand = buildTestCommand(context);
@@ -126,10 +130,11 @@ for (const app of Object.values(APPS)) {
     assert.deepEqual(testCommand.args, [
       "test",
       "-project", "/private/tmp/ios-candidate/apps/ios/E365.xcodeproj",
-      "-scheme", app.scheme,
-      "-configuration", "Staging",
+      "-scheme", app.testScheme,
+      "-configuration", "Debug",
       "-destination", "platform=iOS Simulator,name=iPhone 17 Pro",
       "-derivedDataPath", `/private/tmp/ios-artifacts/${app.id}/DerivedData`,
+      `-only-testing:${app.testTarget}`,
       "MARKETING_VERSION=1.2.3",
       "CURRENT_PROJECT_VERSION=2046",
       "API_BASE_URL=https://test-api.365english.online",
@@ -170,6 +175,8 @@ test("environment derives an internal deadline strictly shorter than the adapter
     IOS_STAGING_DRY_RUN: "1",
     IOS_APP_ID: "au",
     IOS_SCHEME: "E365AU",
+    IOS_TEST_SCHEME: "E365AU",
+    IOS_TEST_TARGET: "E365StoreKitTests",
     IOS_BUNDLE_ID: "online.365english.app",
     IOS_MARKETING_VERSION: "1.2.3",
     IOS_TESTFLIGHT_GROUP: "Dogfood AU",
@@ -186,6 +193,8 @@ test("environment derives an internal deadline strictly shorter than the adapter
       IOS_STAGING_DRY_RUN: "1",
       IOS_APP_ID: "au",
       IOS_SCHEME: "E365AU",
+      IOS_TEST_SCHEME: "E365AU",
+      IOS_TEST_TARGET: "E365StoreKitTests",
       IOS_BUNDLE_ID: "online.365english.app",
       IOS_MARKETING_VERSION: "1.2.3",
       IOS_TESTFLIGHT_GROUP: "Dogfood AU",
@@ -635,6 +644,8 @@ test("real mode fails closed on missing or mismatched private Apple configuratio
   const common = {
     IOS_APP_ID: "au",
     IOS_SCHEME: "E365AU",
+    IOS_TEST_SCHEME: "E365AU",
+    IOS_TEST_TARGET: "E365StoreKitTests",
     IOS_BUNDLE_ID: "online.365english.app",
     IOS_MARKETING_VERSION: "1.2.3",
     IOS_TESTFLIGHT_GROUP: "Dogfood AU",
@@ -871,6 +882,8 @@ test("credential-free stage dry-run prints only sanitized commands and one final
       IOS_STAGING_DRY_RUN: "1",
       IOS_APP_ID: "cn",
       IOS_SCHEME: "E365CN",
+      IOS_TEST_SCHEME: "E365ChinaComplianceTests",
+      IOS_TEST_TARGET: "E365ChinaComplianceTests",
       IOS_BUNDLE_ID: "online.365english.china",
       IOS_MARKETING_VERSION: "1.2.3",
       IOS_TESTFLIGHT_GROUP: "Dogfood CN",
@@ -922,6 +935,8 @@ test("readback dry-run cannot synthesize authoritative processing or group evide
       IOS_STAGING_DRY_RUN: "1",
       IOS_APP_ID: "au",
       IOS_SCHEME: "E365AU",
+      IOS_TEST_SCHEME: "E365AU",
+      IOS_TEST_TARGET: "E365StoreKitTests",
       IOS_BUNDLE_ID: "online.365english.app",
       IOS_MARKETING_VERSION: "1.2.3",
       IOS_TESTFLIGHT_GROUP: "Dogfood AU",

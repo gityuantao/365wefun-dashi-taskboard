@@ -10,6 +10,8 @@ const CURRENT_APPS = [
     name: "海外版",
     enabled: true,
     scheme: "E365AU",
+    testScheme: "E365AU",
+    testTarget: "E365StoreKitTests",
     bundleId: "online.365english.app",
     testFlightGroup: "Internal Testing",
     buildNumberSource: "app-store-connect",
@@ -19,6 +21,8 @@ const CURRENT_APPS = [
     name: "中国版",
     enabled: true,
     scheme: "E365CN",
+    testScheme: "E365ChinaComplianceTests",
+    testTarget: "E365ChinaComplianceTests",
     bundleId: "online.365english.china",
     testFlightGroup: "Internal Testing",
     buildNumberSource: "app-store-connect",
@@ -67,6 +71,14 @@ test("registry rejects a missing TestFlight group", () => {
   assertInvalid([{ ...CURRENT_APPS[0], testFlightGroup: "" }], "iosApps[0].testFlightGroup");
 });
 
+test("registry requires an explicit automated test scheme and target", () => {
+  const { testScheme: _testScheme, ...withoutScheme } = CURRENT_APPS[0];
+  assertInvalid([withoutScheme], "iosApps[0].testScheme");
+
+  const { testTarget: _testTarget, ...withoutTarget } = CURRENT_APPS[0];
+  assertInvalid([withoutTarget], "iosApps[0].testTarget");
+});
+
 test("registry rejects an unsupported build number source", () => {
   assertInvalid(
     [{ ...CURRENT_APPS[0], buildNumberSource: "xcode-project" }],
@@ -92,10 +104,10 @@ test("the public runtime example contains the two current iOS app identities", a
   const apps = loadIosApps(config.iosApps);
 
   assert.deepEqual(
-    apps.map(({ id, scheme, bundleId }) => ({ id, scheme, bundleId })),
+    apps.map(({ id, scheme, testScheme, testTarget, bundleId }) => ({ id, scheme, testScheme, testTarget, bundleId })),
     [
-      { id: "au", scheme: "E365AU", bundleId: "online.365english.app" },
-      { id: "cn", scheme: "E365CN", bundleId: "online.365english.china" },
+      { id: "au", scheme: "E365AU", testScheme: "E365AU", testTarget: "E365StoreKitTests", bundleId: "online.365english.app" },
+      { id: "cn", scheme: "E365CN", testScheme: "E365ChinaComplianceTests", testTarget: "E365ChinaComplianceTests", bundleId: "online.365english.china" },
     ],
   );
 });

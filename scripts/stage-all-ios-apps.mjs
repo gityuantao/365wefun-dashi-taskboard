@@ -11,6 +11,7 @@ import { pathToFileURL } from "node:url";
 export const STAGING_API_URL = "https://test-api.365english.online";
 const APP_STORE_CONNECT_ORIGIN = "https://api.appstoreconnect.apple.com";
 const BUILD_CONFIGURATION = "Staging";
+const TEST_CONFIGURATION = "Debug";
 const DEFAULT_TEST_DESTINATION = "platform=iOS Simulator,name=iPhone 17 Pro";
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const DEFAULT_READBACK_TIMEOUT_MS = 25 * 60_000;
@@ -133,10 +134,11 @@ export function buildTestCommand(context) {
     args: [
       "test",
       "-project", context.paths.projectPath,
-      "-scheme", context.app.scheme,
-      "-configuration", BUILD_CONFIGURATION,
+      "-scheme", context.app.testScheme,
+      "-configuration", TEST_CONFIGURATION,
       "-destination", context.testDestination,
       "-derivedDataPath", context.paths.derivedDataPath,
+      `-only-testing:${context.app.testTarget}`,
       `MARKETING_VERSION=${context.marketingVersion}`,
       `CURRENT_PROJECT_VERSION=${context.buildNumber}`,
       `API_BASE_URL=${context.apiUrl}`,
@@ -458,6 +460,8 @@ export function validateEnvironment(environment, mode, { checkFilesystem = true 
     app: {
       id: requireString(environment.IOS_APP_ID, "IOS_APP_ID"),
       scheme: requireString(environment.IOS_SCHEME, "IOS_SCHEME"),
+      testScheme: requireString(environment.IOS_TEST_SCHEME, "IOS_TEST_SCHEME"),
+      testTarget: requireString(environment.IOS_TEST_TARGET, "IOS_TEST_TARGET"),
       bundleId: requireString(environment.IOS_BUNDLE_ID, "IOS_BUNDLE_ID"),
       testFlightGroup: requireString(environment.IOS_TESTFLIGHT_GROUP, "IOS_TESTFLIGHT_GROUP"),
     },
@@ -476,6 +480,8 @@ export function validateEnvironment(environment, mode, { checkFilesystem = true 
   };
   assertSafeIdentifier(config.app.id, "IOS_APP_ID");
   assertSafeIdentifier(config.app.scheme, "IOS_SCHEME");
+  assertSafeIdentifier(config.app.testScheme, "IOS_TEST_SCHEME");
+  assertSafeIdentifier(config.app.testTarget, "IOS_TEST_TARGET");
   if (!/^[A-Za-z0-9.-]+$/.test(config.app.bundleId) || !config.app.bundleId.includes(".")) {
     throw new Error("iOS staging configuration IOS_BUNDLE_ID is invalid");
   }

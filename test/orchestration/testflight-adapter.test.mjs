@@ -11,6 +11,8 @@ const PROJECT_ROOT = process.cwd();
 const APP = {
   id: "au",
   scheme: "E365AU",
+  testScheme: "E365AU",
+  testTarget: "E365StoreKitTests",
   bundleId: "online.365english.app",
   testFlightGroup: "Internal Testing",
 };
@@ -47,6 +49,8 @@ test("stage passes the frozen Candidate and App identity through command environ
     requiredEnvironmentGuard({
       IOS_APP_ID: "au",
       IOS_SCHEME: "E365AU",
+      IOS_TEST_SCHEME: "E365AU",
+      IOS_TEST_TARGET: "E365StoreKitTests",
       IOS_BUNDLE_ID: "online.365english.app",
       IOS_MARKETING_VERSION: TARGET_VERSION,
       IOS_TESTFLIGHT_GROUP: "Internal Testing",

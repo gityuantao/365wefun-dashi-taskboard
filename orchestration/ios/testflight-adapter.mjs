@@ -63,6 +63,8 @@ function commandEnvironment({ runtime, app, marketingVersion, candidateCommit, s
     ...process.env,
     IOS_APP_ID: String(app?.id ?? ""),
     IOS_SCHEME: String(app?.scheme ?? ""),
+    IOS_TEST_SCHEME: String(app?.testScheme ?? ""),
+    IOS_TEST_TARGET: String(app?.testTarget ?? ""),
     IOS_BUNDLE_ID: String(app?.bundleId ?? ""),
     IOS_MARKETING_VERSION: marketingVersion,
     IOS_TESTFLIGHT_GROUP: String(app?.testFlightGroup ?? ""),

@@ -6,6 +6,8 @@ const REQUIRED_FIELDS = [
   "name",
   "enabled",
   "scheme",
+  "testScheme",
+  "testTarget",
   "bundleId",
   "testFlightGroup",
   "buildNumberSource",
@@ -63,7 +65,7 @@ export function loadIosApps(value) {
       }
     }
 
-    for (const field of ["id", "name", "scheme", "bundleId", "testFlightGroup", "buildNumberSource"]) {
+    for (const field of ["id", "name", "scheme", "testScheme", "testTarget", "bundleId", "testFlightGroup", "buildNumberSource"]) {
       assertNonEmptyString(app[field], `${prefix}.${field}`);
     }
     if (typeof app.enabled !== "boolean") {
@@ -86,6 +88,8 @@ export function loadIosApps(value) {
       name: app.name,
       enabled: app.enabled,
       scheme: app.scheme,
+      testScheme: app.testScheme,
+      testTarget: app.testTarget,
       bundleId: app.bundleId,
       testFlightGroup: app.testFlightGroup,
       buildNumberSource: app.buildNumberSource,
