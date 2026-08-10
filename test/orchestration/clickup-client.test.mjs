@@ -212,6 +212,125 @@ test("downloadAttachment reports byte length when Content-Length disagrees", asy
   assert.equal(file.contentLength, 4);
 });
 
+test("downloadAttachment rejects Content-Length above maxBytes before reading", async () => {
+  let read = false;
+  let cancelled = false;
+  const client = createClickUpClient({
+    token: "pk-test",
+    fetchImpl: async () => ({
+      status: 200,
+      ok: true,
+      headers: new Headers({
+        "content-type": "image/png",
+        "content-length": "9",
+      }),
+      body: {
+        getReader() {
+          read = true;
+          throw new Error("body must not be read");
+        },
+        async cancel() {
+          cancelled = true;
+        },
+      },
+      async arrayBuffer() {
+        read = true;
+        throw new Error("body must not be buffered");
+      },
+    }),
+  });
+
+  await assert.rejects(
+    () => client.downloadAttachment("https://attachments.clickup.com/large.png", {
+      maxBytes: 8,
+    }),
+    (error) => error.code === "IMAGE_TOO_LARGE",
+  );
+  assert.equal(read, false);
+  assert.equal(cancelled, true);
+});
+
+test("downloadAttachment cancels a streamed response when bytes exceed maxBytes", async () => {
+  let cancelled = false;
+  let readIndex = 0;
+  const chunks = [Uint8Array.from([1, 2, 3]), Uint8Array.from([4, 5, 6])];
+  const client = createClickUpClient({
+    token: "pk-test",
+    fetchImpl: async () => ({
+      status: 200,
+      ok: true,
+      headers: new Headers({ "content-type": "image/png" }),
+      body: {
+        getReader() {
+          return {
+            async read() {
+              if (readIndex >= chunks.length) return { done: true };
+              return { done: false, value: chunks[readIndex++] };
+            },
+            async cancel() {
+              cancelled = true;
+            },
+          };
+        },
+      },
+      async arrayBuffer() {
+        return Uint8Array.from([1, 2, 3, 4, 5, 6]).buffer;
+      },
+    }),
+  });
+
+  await assert.rejects(
+    () => client.downloadAttachment("https://attachments.clickup.com/stream.png", {
+      maxBytes: 5,
+    }),
+    (error) => error.code === "IMAGE_TOO_LARGE",
+  );
+  assert.equal(readIndex, 2);
+  assert.equal(cancelled, true);
+});
+
+test("downloadAttachment has a hard default byte limit", async () => {
+  let cancelled = false;
+  const client = createClickUpClient({
+    token: "pk-test",
+    fetchImpl: async () => ({
+      status: 200,
+      ok: true,
+      headers: new Headers({ "content-length": "10000001" }),
+      body: { async cancel() { cancelled = true; } },
+    }),
+  });
+
+  await assert.rejects(
+    () => client.downloadAttachment("https://attachments.clickup.com/default-limit.png"),
+    (error) => error.code === "IMAGE_TOO_LARGE",
+  );
+  assert.equal(cancelled, true);
+});
+
+test("downloadAttachment aborts the underlying fetch when it times out", async () => {
+  let requestSignal;
+  const client = createClickUpClient({
+    token: "pk-test",
+    retries: 0,
+    timeoutMs: 20,
+    fetchImpl: async (_url, init) => {
+      requestSignal = init.signal;
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        }, { once: true });
+      });
+    },
+  });
+
+  await assert.rejects(
+    () => client.downloadAttachment("https://attachments.clickup.com/slow.png"),
+    (error) => error.code === "TIMEOUT",
+  );
+  assert.equal(requestSignal.aborted, true);
+});
+
 test("downloadAttachment disables automatic redirects before sending authentication", async () => {
   const calls = [];
   const client = createClickUpClient({

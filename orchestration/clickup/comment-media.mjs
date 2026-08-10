@@ -193,14 +193,25 @@ export async function collectCommentMedia({
         labelsByComment.get(candidate.comment).push(omittedImageLabel(commentId, filename, "IMAGE_LIMIT"));
         continue;
       }
+      const remainingBytes = Math.min(maxImageBytes, maxTotalBytes - totalBytes);
+      if (remainingBytes <= 0) {
+        diagnostics.push({ code: "IMAGE_LIMIT", commentId, filename });
+        labelsByComment.get(candidate.comment).push(omittedImageLabel(commentId, filename, "IMAGE_LIMIT"));
+        continue;
+      }
       const url = attachmentUrl(candidate.attachment);
       if (!url) {
         throw new DomainError("IMAGE_UNAVAILABLE", `Attachment ${filename} has no usable URL`, { commentId, filename });
       }
       let downloaded;
       try {
-        downloaded = await client.downloadAttachment(url);
+        downloaded = await client.downloadAttachment(url, { maxBytes: remainingBytes });
       } catch (error) {
+        if (error?.code === "IMAGE_TOO_LARGE") {
+          diagnostics.push({ code: "IMAGE_LIMIT", commentId, filename });
+          labelsByComment.get(candidate.comment).push(omittedImageLabel(commentId, filename, "IMAGE_LIMIT"));
+          continue;
+        }
         throw downloadError(error, commentId, filename);
       }
       const body = downloaded.body;

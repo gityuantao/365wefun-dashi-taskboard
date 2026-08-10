@@ -329,6 +329,64 @@ test("omits an image that exceeds either the per-image or total byte limit", asy
   assert.match(total.textContext, /评论 older 图片未读取：older\.png（IMAGE_LIMIT）/);
 });
 
+test("passes the remaining per-image and total budget into each download", async (t) => {
+  const tempRoot = await makeTempRoot();
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const maxBytes = [];
+  const bundle = await collectCommentMedia({
+    comments: ["newest", "older"].map((id, index) => ({
+      id,
+      date: String(2 - index),
+      attachments: [{ title: `${id}.png`, url: `https://attachments.clickup.com/${id}.png` }],
+    })),
+    client: {
+      downloadAttachment: async (_url, options) => {
+        maxBytes.push(options?.maxBytes);
+        return { body: PNG, contentType: "image/png", contentLength: PNG.byteLength };
+      },
+    },
+    taskId: "task-remaining-budget",
+    tempRoot,
+    maxImageBytes: 20,
+    maxTotalBytes: 12,
+  });
+
+  assert.deepEqual(maxBytes, [12, 4]);
+  assert.deepEqual(bundle.images.map((image) => image.commentId), ["newest"]);
+  assert.deepEqual(bundle.diagnostics, [
+    { code: "IMAGE_LIMIT", commentId: "older", filename: "older.png" },
+  ]);
+  await bundle.cleanup();
+});
+
+test("does not download older candidates after the total byte budget is exhausted", async (t) => {
+  const tempRoot = await makeTempRoot();
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const downloaded = [];
+  const bundle = await collectCommentMedia({
+    comments: ["newest", "older"].map((id, index) => ({
+      id,
+      date: String(2 - index),
+      attachments: [{ title: `${id}.png`, url: `https://attachments.clickup.com/${id}.png` }],
+    })),
+    client: {
+      downloadAttachment: async (url) => {
+        downloaded.push(url);
+        return { body: PNG, contentType: "image/png", contentLength: PNG.byteLength };
+      },
+    },
+    taskId: "task-exhausted-budget",
+    tempRoot,
+    maxTotalBytes: PNG.byteLength,
+  });
+
+  assert.deepEqual(downloaded, ["https://attachments.clickup.com/newest.png"]);
+  assert.deepEqual(bundle.diagnostics, [
+    { code: "IMAGE_LIMIT", commentId: "older", filename: "older.png" },
+  ]);
+  await bundle.cleanup();
+});
+
 test("uses each discovered attachment ordinal for nameless omission diagnostics", async (t) => {
   const tempRoot = await makeTempRoot();
   t.after(() => rm(tempRoot, { recursive: true, force: true }));

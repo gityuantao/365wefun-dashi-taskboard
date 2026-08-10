@@ -4,6 +4,7 @@ const DEFAULT_BASE_URL = "https://api.clickup.com/api/v2";
 const DEFAULT_RETRIES = 3;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRY_DELAY_MS = 200;
+const DEFAULT_ATTACHMENT_MAX_BYTES = 10_000_000;
 const TRUSTED_ATTACHMENT_HOSTS = new Set([
   "api.clickup.com",
   "attachments.clickup.com",
@@ -73,6 +74,58 @@ function normalizedContentType(value) {
   return value?.split(";", 1)[0].trim().toLowerCase() || "application/octet-stream";
 }
 
+async function cancelBody(body) {
+  try {
+    await body?.cancel?.();
+  } catch {
+    // The original HTTP/limit error remains authoritative.
+  }
+}
+
+async function readBoundedBody(response, { maxBytes, controller, setReader }) {
+  const rawLength = response.headers.get("content-length");
+  const declaredLength = /^\d+$/.test(rawLength ?? "") ? Number(rawLength) : null;
+  if (declaredLength !== null && declaredLength > maxBytes) {
+    await cancelBody(response.body);
+    controller.abort(new Error("attachment exceeds byte limit"));
+    throw new DomainError("IMAGE_TOO_LARGE", "ClickUp attachment exceeds the byte limit", {
+      maxBytes,
+    });
+  }
+  if (!response.body || typeof response.body.getReader !== "function") {
+    throw new DomainError("ATTACHMENT_BODY", "ClickUp attachment response has no readable body");
+  }
+  const reader = response.body.getReader();
+  setReader(reader);
+  const chunks = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+    totalBytes += chunk.byteLength;
+    if (totalBytes > maxBytes) {
+      try {
+        await reader.cancel();
+      } catch {
+        // The size error remains authoritative.
+      }
+      controller.abort(new Error("attachment exceeds byte limit"));
+      throw new DomainError("IMAGE_TOO_LARGE", "ClickUp attachment exceeds the byte limit", {
+        maxBytes,
+      });
+    }
+    chunks.push(Uint8Array.from(chunk));
+  }
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
 export function createClickUpClient({
   token,
   baseUrl = DEFAULT_BASE_URL,
@@ -139,54 +192,83 @@ export function createClickUpClient({
     throw lastError;
   }
 
-  async function requestAttachment(url) {
+  async function requestAttachment(url, { maxBytes = DEFAULT_ATTACHMENT_MAX_BYTES } = {}) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      throw new DomainError("INVALID_IMAGE_LIMIT", "Attachment maxBytes must be a positive integer");
+    }
     const attachmentUrl = trustedAttachmentUrl(url, allowedAttachmentHosts);
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
+      const controller = new AbortController();
+      const timeoutError = new DomainError(
+        "TIMEOUT",
+        `ClickUp attachment request timed out after ${timeoutMs}ms`,
+      );
+      let timedOut = false;
+      let reader = null;
+      let timer;
       try {
-        const response = await withTimeout(
-          fetchImpl(attachmentUrl.href, {
+        const operation = (async () => {
+          const response = await fetchImpl(attachmentUrl.href, {
             method: "GET",
             headers,
             redirect: "manual",
-          }),
-          timeoutMs,
-          `ClickUp attachment request timed out after ${timeoutMs}ms`,
-        );
-        if (response.status === 429 || response.status >= 500) {
-          lastError = new DomainError(
-            `HTTP_${response.status}`,
-            `ClickUp API returned ${response.status}`,
-            { status: response.status },
-          );
-          if (attempt < retries) {
+            signal: controller.signal,
+          });
+          if (response.status === 429 || response.status >= 500) {
+            await cancelBody(response.body);
+            throw new DomainError(
+              `HTTP_${response.status}`,
+              `ClickUp API returned ${response.status}`,
+              { status: response.status },
+            );
+          }
+          if (!response.ok) {
+            await cancelBody(response.body);
+            throw new DomainError(
+              `HTTP_${response.status}`,
+              `ClickUp API returned ${response.status}`,
+              { status: response.status },
+            );
+          }
+          const body = await readBoundedBody(response, {
+            maxBytes,
+            controller,
+            setReader: (value) => { reader = value; },
+          });
+          return {
+            body,
+            contentType: normalizedContentType(response.headers.get("content-type")),
+            contentLength: body.byteLength,
+          };
+        })();
+        const timeout = new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            controller.abort(timeoutError);
+            void reader?.cancel?.().catch?.(() => {});
+            reject(timeoutError);
+          }, timeoutMs);
+        });
+        return await Promise.race([operation, timeout]);
+      } catch (error) {
+        if (timedOut) throw timeoutError;
+        if (error instanceof DomainError) {
+          lastError = error;
+          if ((error.code === "HTTP_429" || /^HTTP_5\d\d$/.test(error.code)) && attempt < retries) {
             await sleep(retryDelayMs * 2 ** attempt);
             continue;
           }
-          throw lastError;
+          throw error;
         }
-        if (!response.ok) {
-          const text = await response.text();
-          throw new DomainError(
-            `HTTP_${response.status}`,
-            `ClickUp API returned ${response.status}: ${text.slice(0, 200)}`,
-            { status: response.status, body: text.slice(0, 500) },
-          );
-        }
-        const body = new Uint8Array((await response.arrayBuffer()).slice(0));
-        return {
-          body,
-          contentType: normalizedContentType(response.headers.get("content-type")),
-          contentLength: body.byteLength,
-        };
-      } catch (error) {
-        if (error instanceof DomainError) throw error;
         lastError = error;
         if (attempt < retries) {
           await sleep(retryDelayMs * 2 ** attempt);
           continue;
         }
         throw new DomainError("NETWORK_ERROR", `ClickUp request failed: ${error.message}`);
+      } finally {
+        clearTimeout(timer);
       }
     }
     throw lastError;
@@ -233,6 +315,6 @@ export function createClickUpClient({
       const data = await request(`/task/${encodeURIComponent(taskId)}/comment`);
       return data.comments ?? [];
     },
-    downloadAttachment: (url) => requestAttachment(url),
+    downloadAttachment: (url, options) => requestAttachment(url, options),
   };
 }
