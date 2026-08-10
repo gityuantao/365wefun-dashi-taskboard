@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { access } from "node:fs/promises";
 import test from "node:test";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import { pollClickUpOnce } from "../../cloud/src/clickup-poller.mjs";
@@ -24,6 +25,8 @@ const CANDIDATE_ARTIFACT = {
   digest: "sha256:e2e-candidate-v1",
   object: "releases/version-e2e-1/sha256:e2e-candidate-v1",
 };
+const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const REJECTION_IMAGE_URL = "https://attachments.clickup.com/e2e-rejection.png";
 
 const CONFIG = {
   teamId: "90161712199",
@@ -87,7 +90,12 @@ function makeClickUpTask(overrides = {}) {
   };
 }
 
-async function makeEnv(harness, taskProvider) {
+async function makeEnv(
+  harness,
+  taskProvider,
+  commentsProvider = () => [],
+  attachmentProvider = () => null,
+) {
   return {
     DB: harness.db,
     CLICKUP_API_TOKEN: "pk-e2e",
@@ -101,6 +109,19 @@ async function makeEnv(harness, taskProvider) {
         { id: "version-e2e-1", name: "version-e2e-1", status: { status: "进行中" } },
       ],
       getTask: async () => taskProvider(),
+      getComments: async () => commentsProvider(),
+      downloadAttachment: async (url) => {
+        const attachment = attachmentProvider(url);
+        if (!attachment) {
+          throw Object.assign(new Error("ClickUp attachment not found"), { code: "HTTP_404" });
+        }
+        const body = Uint8Array.from(attachment.body);
+        return {
+          body,
+          contentType: attachment.contentType,
+          contentLength: body.byteLength,
+        };
+      },
       postComment: async () => ({}),
       updateTaskDescription: async () => ({}),
       updateCustomField: async () => ({}),
@@ -140,14 +161,26 @@ async function seedActiveVersion(harness, versionId) {
   });
 }
 
-test("complete MVP loop: ClickUp task to published version", async (t) => {
+test("complete MVP loop preserves an image-only rejection through development and acceptance", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   let clickUpTask = makeClickUpTask();
-  const env = await makeEnv(harness, () => clickUpTask);
+  let clickUpComments = [];
+  const clickUpAttachments = new Map([
+    [REJECTION_IMAGE_URL, { body: PNG, contentType: "image/png" }],
+  ]);
+  const env = await makeEnv(
+    harness,
+    () => clickUpTask,
+    () => clickUpComments,
+    (url) => clickUpAttachments.get(url),
+  );
+  let developmentCodexOptions;
+  let acceptanceCodexOptions;
 
   const codex = {
-    run: async ({ prompt }) => {
+    run: async (options) => {
+      const { prompt } = options;
       if (prompt.includes("研发分析器")) {
         return { exitCode: 0, stdout: JSON.stringify({
           scope: "实现录音回放按钮",
@@ -157,12 +190,14 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
         }), stderr: "" };
       }
       if (prompt.includes("验收器")) {
+        acceptanceCodexOptions = options;
         return { exitCode: 0, stdout: JSON.stringify({
           acceptance_result: "accepted",
           criteria_results: [{ id: "ac-1", result: "passed" }],
           findings: [],
         }), stderr: "" };
       }
+      developmentCodexOptions = options;
       return { exitCode: 0, stdout: JSON.stringify({ change_summary: "实现按钮", tests: [] }), stderr: "" };
     },
   };
@@ -237,6 +272,14 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
 
   // 3) ClickUp 状态推进到待开发后轮询 -> 开发作业
   clickUpTask = makeClickUpTask({ status: { status: "待开发" }, updated_at: "2026-08-04T00:10:30.000Z" });
+  clickUpComments = [
+    { id: "comment-e2e-older", date: "1785751200000", comment_text: "上一轮验收记录" },
+    {
+      id: "comment-e2e-rejection",
+      date: "1785751260000",
+      attachments: [{ title: "e2e-rejection.png", url: REJECTION_IMAGE_URL }],
+    },
+  ];
   await pollClickUpOnce(env, { now: NOW });
   const developClaim = await claimFromQueue(harness, "develop");
   assert.equal(developClaim.id, "task-e2e-1-develop-2");
@@ -248,7 +291,10 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
     gitOps,
     now: NOW,
   });
-  assert.equal(devResult.status, "completed");
+  assert.equal(devResult.status, "completed", JSON.stringify(devResult));
+  assert.equal(developmentCodexOptions.imagePaths.length, 1);
+  assert.match(developmentCodexOptions.prompt, /评论 comment-e2e-rejection 图片：e2e-rejection\.png/);
+  await assert.rejects(access(developmentCodexOptions.imagePaths[0]));
   assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "accepting");
 
   // 4) 系统自动验收通过 -> 部署测试环境 -> 待测试
@@ -262,6 +308,9 @@ test("complete MVP loop: ClickUp task to published version", async (t) => {
     now: NOW,
   });
   assert.equal(acceptResult.status, "completed");
+  assert.equal(acceptanceCodexOptions.imagePaths.length, 1);
+  assert.match(acceptanceCodexOptions.prompt, /评论 comment-e2e-rejection 图片：e2e-rejection\.png/);
+  await assert.rejects(access(acceptanceCodexOptions.imagePaths[0]));
   assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "accepting");
   const stageResult = await executeStagingGate({
     job: {
