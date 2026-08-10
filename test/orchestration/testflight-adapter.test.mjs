@@ -26,8 +26,29 @@ function createRuntime({ stageSource, readbackSource }) {
   };
 }
 
+function requiredEnvironmentGuard(expected) {
+  return [
+    `const expected = ${JSON.stringify(expected)};`,
+    "for (const [name, value] of Object.entries(expected)) {",
+    "  if (process.env[name] !== value) {",
+    "    console.error(`${name} was ${JSON.stringify(process.env[name])}, expected ${JSON.stringify(value)}`);",
+    "    process.exit(1);",
+    "  }",
+    "}",
+  ].join("\n");
+}
+
 test("stage passes the frozen Candidate and App identity through command environment and reads only final JSON evidence", async () => {
   const stageSource = [
+    requiredEnvironmentGuard({
+      IOS_APP_ID: "au",
+      IOS_SCHEME: "E365AU",
+      IOS_BUNDLE_ID: "online.365english.app",
+      IOS_MARKETING_VERSION: TARGET_VERSION,
+      IOS_TESTFLIGHT_GROUP: "Internal Testing",
+      STAGING_CANDIDATE_COMMIT: CANDIDATE_COMMIT,
+      STAGING_REPO_PATH: "/repos/365wefun",
+    }),
     "console.log(JSON.stringify({ buildNumber: 'wrong-build', uploadId: 'wrong-upload' }));",
     "console.log(JSON.stringify({",
     "  appId: process.env.IOS_APP_ID,",
@@ -35,9 +56,7 @@ test("stage passes the frozen Candidate and App identity through command environ
     "  bundleId: process.env.IOS_BUNDLE_ID,",
     "  marketingVersion: process.env.IOS_MARKETING_VERSION,",
     "  buildNumber: '42',",
-    "  uploadId: 'upload-42',",
-    "  candidateCommit: process.env.STAGING_CANDIDATE_COMMIT,",
-    "  repoPath: process.env.STAGING_REPO_PATH",
+    "  uploadId: 'upload-42'",
     "}));",
   ].join("\n");
   const adapter = createTestFlightAdapter({
