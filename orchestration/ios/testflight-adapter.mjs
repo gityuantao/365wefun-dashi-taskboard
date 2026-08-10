@@ -1,6 +1,8 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 
+import { sanitizeObservedEvidenceString } from "../domain/redaction.mjs";
+
 const execFile = promisify(execFileCallback);
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;
 
@@ -19,10 +21,26 @@ function requireString(value, field, prefix) {
   return value;
 }
 
-function readbackError(message, stage) {
+function observedSnapshot(evidence) {
+  const observed = {};
+  if (typeof evidence?.processed === "boolean") observed.processed = evidence.processed;
+  if (typeof evidence?.processingStatus === "string") {
+    observed.processingStatus = sanitizeObservedEvidenceString(evidence.processingStatus);
+  }
+  if (typeof evidence?.testGroup === "string") {
+    observed.testGroup = sanitizeObservedEvidenceString(evidence.testGroup);
+  }
+  if (typeof evidence?.membershipConfirmed === "boolean") {
+    observed.membershipConfirmed = evidence.membershipConfirmed;
+  }
+  return observed;
+}
+
+function readbackError(message, stage, evidence) {
   const error = new Error(message);
   error.name = "TestFlightReadbackError";
   error.stage = stage;
+  error.observed = observedSnapshot(evidence);
   return error;
 }
 
@@ -106,19 +124,25 @@ function readbackEvidence(evidence, { app, staged }) {
       throw readbackError(
         `TestFlight readback evidence ${field} does not exactly match staged build`,
         field === "testGroup" ? "internal_testing" : "processing",
+        evidence,
       );
     }
   }
   if (evidence.processed !== true) {
-    throw readbackError("TestFlight readback evidence is not processed", "processing");
+    throw readbackError("TestFlight readback evidence is not processed", "processing", evidence);
   }
   if (evidence.processingStatus !== "processed") {
-    throw readbackError("TestFlight readback evidence processingStatus is not processed", "processing");
+    throw readbackError(
+      "TestFlight readback evidence processingStatus is not processed",
+      "processing",
+      evidence,
+    );
   }
   if (evidence.membershipConfirmed !== true) {
     throw readbackError(
       "TestFlight readback evidence does not confirm Internal Testing membership",
       "internal_testing",
+      evidence,
     );
   }
   return {

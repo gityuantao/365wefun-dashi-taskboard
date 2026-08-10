@@ -1,5 +1,5 @@
 import { enabledIosApps } from "../ios/app-registry.mjs";
-import { redactCredentials } from "../domain/redaction.mjs";
+import { redactCredentials, sanitizeObservedEvidenceString } from "../domain/redaction.mjs";
 
 function concise(value, max = 300) {
   return redactCredentials(value ?? "unknown error")
@@ -216,8 +216,8 @@ async function recordReuseFailure(db, {
     reusable.marketing_version,
     reusable.build_number,
     reusable.upload_id,
-    typeof observed?.processingStatus === "string" ? observed.processingStatus : null,
-    reusable.test_group,
+    sanitizeObservedEvidenceString(observed?.processingStatus),
+    sanitizeObservedEvidenceString(observed?.testGroup) ?? reusable.test_group,
     typeof observed?.membershipConfirmed === "boolean"
       ? (observed.membershipConfirmed ? 1 : 0)
       : null,
@@ -327,6 +327,9 @@ export async function executeIosStagingGate({
         try {
           observed = await adapter.readback({ app, staged });
         } catch (error) {
+          if (error?.name === "TestFlightReadbackError" && error.observed) {
+            observed = error.observed;
+          }
           stage = readbackFailureStage(error);
           const authoritative = error?.stage === "processing" || error?.stage === "internal_testing";
           failureClassification = authoritative ? "authoritative_stale" : "observation_error";

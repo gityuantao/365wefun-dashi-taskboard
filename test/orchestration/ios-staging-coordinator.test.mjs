@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { executeIosStagingGate } from "../../orchestration/application/ios-staging-coordinator.mjs";
 import { loadIosApps } from "../../orchestration/ios/app-registry.mjs";
+import { createTestFlightAdapter } from "../../orchestration/ios/testflight-adapter.mjs";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 
 const CANDIDATE_A = "1111111111111111111111111111111111111111";
@@ -71,6 +72,26 @@ function createAdapter({ stageFor, readbackFor } = {}) {
       return readbackFor ? readbackFor({ app, staged }) : confirmedReadback(app);
     },
   };
+}
+
+function createProductionReadbackAdapter(evidence) {
+  return createTestFlightAdapter({
+    runtime: {
+      repoPath: process.cwd(),
+      iosTestFlightTimeoutMs: 5_000,
+      iosTestFlightStageCommand: [
+        process.execPath,
+        "-e",
+        "console.error('reuse must not invoke the upload command'); process.exit(97);",
+      ],
+      iosTestFlightReadbackCommand: [
+        process.execPath,
+        "-e",
+        `console.log(${JSON.stringify(JSON.stringify(evidence))});`,
+      ],
+    },
+    projectRoot: process.cwd(),
+  });
 }
 
 async function deploymentRows(db) {
@@ -589,6 +610,156 @@ test("authoritative missing membership records a separate stale attempt for late
     "readback:cn:upload-cn-111111",
   ]);
   assert.deepEqual(await deploymentRows(harness.db), failedRows);
+});
+
+test("production readback mismatch audits actual observation while preserving reusable success and skipping upload", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const client = createClient();
+  const app = CURRENT_APPS[0];
+  const first = await execute({
+    db: harness.db,
+    client,
+    adapter: createAdapter(),
+    apps: [app],
+  });
+  assert.equal(first.status, "completed");
+  const historicalRows = await deploymentRows(harness.db);
+  const observedGroup = "AU Reviewers";
+  const staleAdapter = createProductionReadbackAdapter({
+    bundleId: app.bundleId,
+    marketingVersion: TARGET_VERSION,
+    buildNumber: "41",
+    testGroup: observedGroup,
+    processed: false,
+    processingStatus: "processing",
+    membershipConfirmed: false,
+    checkedAt: NOW,
+    token: "must-not-escape-production-token",
+    rawBody: "must-not-escape-raw-body",
+  });
+
+  const stale = await execute({
+    db: harness.db,
+    client,
+    adapter: staleAdapter,
+    apps: [app],
+  });
+
+  assert.deepEqual(
+    {
+      status: stale.status,
+      appId: stale.error.appId,
+      stage: stale.error.stage,
+      classification: stale.error.classification,
+      retryable: stale.error.retryable,
+    },
+    {
+      status: "failed",
+      appId: "au",
+      stage: "internal_testing",
+      classification: "authoritative_stale",
+      retryable: false,
+    },
+  );
+  const failedRows = await deploymentRows(harness.db);
+  assert.deepEqual(failedRows.slice(0, historicalRows.length), historicalRows);
+  assert.deepEqual(failedRows.at(-1), {
+    task_id: "task-ios-1",
+    candidate_commit: CANDIDATE_A,
+    app_id: "au",
+    attempt: 2,
+    stage: "internal_testing",
+    status: "failed",
+    build_number: "41",
+    upload_id: "upload-au-111111",
+    processing_status: "processing",
+    test_group: observedGroup,
+    membership_confirmed: 0,
+    failure_classification: "authoritative_stale",
+    error: "TestFlight readback evidence testGroup does not exactly match staged build",
+    started_at: NOW,
+    completed_at: NOW,
+  });
+  assert.doesNotMatch(
+    JSON.stringify({ result: stale, rows: failedRows, comments: client.comments }),
+    /must-not-escape-production-token|must-not-escape-raw-body/,
+  );
+  const recovered = await execute({
+    db: harness.db,
+    client,
+    adapter: createProductionReadbackAdapter({
+      bundleId: app.bundleId,
+      marketingVersion: TARGET_VERSION,
+      buildNumber: "41",
+      testGroup: app.testFlightGroup,
+      processed: true,
+      processingStatus: "processed",
+      membershipConfirmed: true,
+      checkedAt: NOW,
+    }),
+    apps: [app],
+  });
+
+  assert.equal(recovered.status, "completed");
+  assert.deepEqual(recovered.apps.map(({ id, reused }) => ({ id, reused })), [
+    { id: "au", reused: true },
+  ]);
+  assert.deepEqual(await deploymentRows(harness.db), failedRows);
+});
+
+test("reuse audit sanitizes typed observed strings again at the persistence boundary", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const client = createClient();
+  const app = CURRENT_APPS[0];
+  const first = await execute({
+    db: harness.db,
+    client,
+    adapter: createAdapter(),
+    apps: [app],
+  });
+  assert.equal(first.status, "completed");
+  const unsafeAdapter = createAdapter({
+    stageFor() {
+      throw new Error("reuse must not upload");
+    },
+    readbackFor() {
+      const error = new Error("TestFlight readback evidence testGroup does not exactly match staged build");
+      error.name = "TestFlightReadbackError";
+      error.stage = "internal_testing";
+      error.observed = {
+        processed: false,
+        processingStatus: "Set-Cookie: asc_session=cookie-secret; Path=/",
+        testGroup: "https://alice:url-password@example.com/groups",
+        membershipConfirmed: false,
+      };
+      throw error;
+    },
+  });
+
+  const failed = await execute({
+    db: harness.db,
+    client,
+    adapter: unsafeAdapter,
+    apps: [app],
+  });
+
+  assert.equal(failed.status, "failed");
+  const audit = (await deploymentRows(harness.db)).at(-1);
+  assert.deepEqual(
+    {
+      processing_status: audit.processing_status,
+      test_group: audit.test_group,
+      membership_confirmed: audit.membership_confirmed,
+    },
+    {
+      processing_status: "Set-Cookie: [REDACTED]",
+      test_group: "https://[REDACTED]@example.com/groups",
+      membership_confirmed: 0,
+    },
+  );
+  assert.doesNotMatch(JSON.stringify({ failed, audit }), /cookie-secret|url-password/);
 });
 
 test("a success-shaped row without a complete lifecycle is not reusable", async (t) => {

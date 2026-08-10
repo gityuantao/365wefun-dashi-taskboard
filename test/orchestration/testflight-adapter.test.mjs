@@ -134,6 +134,96 @@ test("readback accepts only matching processed Internal Testing evidence", async
   });
 });
 
+test("readback mismatch exposes only a sanitized observed status snapshot", async () => {
+  const evidence = {
+    bundleId: "online.365english.app",
+    marketingVersion: "1.2.3",
+    buildNumber: "42",
+    testGroup: [
+      "https://alice:url-password@example.com/groups",
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhc2Mtc2VjcmV0In0.signaturevalue123",
+    ].join(" "),
+    processed: false,
+    processingStatus: "Set-Cookie: asc_session=cookie-secret; Path=/",
+    membershipConfirmed: false,
+    checkedAt: "2026-08-10T00:00:00.000Z",
+    token: "top-level-secret",
+    rawBody: "raw-body-secret",
+  };
+  const adapter = createTestFlightAdapter({
+    runtime: createRuntime({
+      stageSource: "process.exit(0);",
+      readbackSource: `console.log(${JSON.stringify(JSON.stringify(evidence))});`,
+    }),
+    projectRoot: PROJECT_ROOT,
+  });
+
+  await assert.rejects(
+    adapter.readback({
+      app: APP,
+      staged: {
+        appId: "au",
+        scheme: "E365AU",
+        bundleId: "online.365english.app",
+        marketingVersion: "1.2.3",
+        buildNumber: "42",
+        uploadId: "upload-42",
+      },
+    }),
+    (error) => {
+      assert.equal(error.name, "TestFlightReadbackError");
+      assert.equal(error.stage, "internal_testing");
+      assert.deepEqual(error.observed, {
+        processed: false,
+        processingStatus: "Set-Cookie: [REDACTED]",
+        testGroup: "https://[REDACTED]@example.com/groups [REDACTED]",
+        membershipConfirmed: false,
+      });
+      assert.doesNotMatch(
+        JSON.stringify(error.observed),
+        /url-password|cookie-secret|asc-secret|top-level-secret|raw-body-secret|rawBody/,
+      );
+      return true;
+    },
+  );
+
+  for (const unsafeGroup of [
+    "https://secret-token@example.com/groups",
+    "https://:url-password@example.com/groups",
+    "https://alice:first-secret@second-secret@example.com/groups",
+  ]) {
+    const boundaryAdapter = createTestFlightAdapter({
+      runtime: createRuntime({
+        stageSource: "process.exit(0);",
+        readbackSource: `console.log(${JSON.stringify(JSON.stringify({
+          ...evidence,
+          testGroup: unsafeGroup,
+          processingStatus: "processing",
+        }))});`,
+      }),
+      projectRoot: PROJECT_ROOT,
+    });
+    await assert.rejects(
+      boundaryAdapter.readback({
+        app: APP,
+        staged: {
+          appId: "au",
+          scheme: "E365AU",
+          bundleId: "online.365english.app",
+          marketingVersion: "1.2.3",
+          buildNumber: "42",
+          uploadId: "upload-42",
+        },
+      }),
+      (error) => {
+        assert.equal(error.observed.testGroup, "https://[REDACTED]@example.com/groups");
+        assert.doesNotMatch(error.observed.testGroup, /secret-token|url-password/);
+        return true;
+      },
+    );
+  }
+});
+
 for (const [field, value, stage] of [
   ["bundleId", "online.365english.other", "processing"],
   ["marketingVersion", "9.9.9", "processing"],
