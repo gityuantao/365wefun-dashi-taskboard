@@ -808,6 +808,38 @@ test("development posts one safe ClickUp diagnostic when older comment images ar
   assert.doesNotMatch(diagnostics[0], /truncate-secret|signature=|attachments\.clickup\.com|taskboard-clickup-images-|\/tmp\//);
 });
 
+test("development redacts a non-decoder Codex failure that includes a comment image path", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const posts = [];
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      getComments: async () => [{
+        id: "safe-failure-development",
+        images: [{ filename: "safe-failure.png", url: "https://attachments.clickup.com/safe-failure.png" }],
+      }],
+      downloadAttachment: async () => ({ body: PNG, contentType: "image/png" }),
+      postComment: async (_taskId, body) => posts.push(body),
+    }),
+    codex: {
+      run: async ({ imagePaths }) => ({
+        exitCode: 2,
+        stdout: "",
+        stderr: `model unavailable for ${imagePaths[0]}?token=runtime-secret`,
+      }),
+    },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+
+  assert.match(result.error, /CODEX_IMAGE_RUN_FAILED/);
+  assert.doesNotMatch(result.error, /runtime-secret|taskboard-clickup-images-|\/tmp\//);
+  assert.doesNotMatch(posts.join("\n"), /runtime-secret|taskboard-clickup-images-|\/tmp\//);
+});
+
 test("development keeps the newest ClickUp feedback when comments are newest-first", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

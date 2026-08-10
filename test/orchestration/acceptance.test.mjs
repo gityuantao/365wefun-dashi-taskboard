@@ -501,6 +501,34 @@ test("acceptance posts one safe ClickUp diagnostic when older comment images are
   assert.doesNotMatch(diagnostics[0], /truncate-secret|signature=|attachments\.clickup\.com|taskboard-clickup-images-|\/tmp\//);
 });
 
+test("acceptance redacts a non-decoder Codex failure that includes a comment image path", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedToAccepting(harness);
+  const result = await executeAcceptance({
+    job: JOB,
+    db: harness.db,
+    client: makeClient("version-9", {
+      getComments: async () => [{
+        id: "safe-failure-acceptance",
+        images: [{ filename: "safe-failure.png", url: "https://attachments.clickup.com/safe-failure.png" }],
+      }],
+      downloadAttachment: async () => ({ body: PNG, contentType: "image/png" }),
+    }),
+    codex: {
+      run: async ({ imagePaths }) => ({
+        exitCode: 2,
+        stdout: "",
+        stderr: `model unavailable for ${imagePaths[0]}?token=runtime-secret`,
+      }),
+    },
+    now: NOW,
+  });
+
+  assert.match(result.error, /CODEX_IMAGE_RUN_FAILED/);
+  assert.doesNotMatch(result.error, /runtime-secret|taskboard-clickup-images-|\/tmp\//);
+});
+
 test("acceptance rejection posts full findings and writes the feedback field", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

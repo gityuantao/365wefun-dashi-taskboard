@@ -62,6 +62,12 @@ export function formatCommentMediaDiagnostics(diagnostics) {
   return ["⚠️ 部分评论图片未读取（已优先保留最新图片）：", ...lines].join("\n");
 }
 
+export function formatCodexMediaRunFailure(value, images = []) {
+  if (!Array.isArray(images) || images.length === 0) return null;
+  const exitCode = Number.isInteger(value?.exitCode) ? `, exit ${value.exitCode}` : "";
+  return `codex comment-image run failed (CODEX_IMAGE_RUN_FAILED${exitCode})`;
+}
+
 export function buildAnalysisPrompt(task, commentContext = null, platforms = null) {
   return [
     "你是研发分析器。分析下面的 ClickUp 任务，输出严格的 JSON，不要输出其他文字。",

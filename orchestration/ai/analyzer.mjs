@@ -7,6 +7,7 @@ import {
   commentImageDecodeFailure,
   formatCommentMediaError,
   formatCommentMediaDiagnostics,
+  formatCodexMediaRunFailure,
 } from "./prompts.mjs";
 
 function resolvePlatforms(task) {
@@ -144,6 +145,7 @@ export async function executeAnalysis({
   let activity;
   let run;
   let runError;
+  let codexStarted = false;
   try {
     activity = await currentAnalysis(db, taskId, executionVersion);
     if (!activity.active) return staleAnalysisResult(activity.aggregate);
@@ -155,6 +157,7 @@ export async function executeAnalysis({
         // 截断诊断评论失败不影响已保留图片的分析
       }
     }
+    codexStarted = true;
     run = await codex.run({
       prompt: buildAnalysisPrompt(task, mediaBundle.textContext, resolvePlatforms(task)),
       workdir: job.payload.workdir,
@@ -166,7 +169,9 @@ export async function executeAnalysis({
   } finally {
     await mediaBundle.cleanup();
   }
-  const decodeReason = commentImageDecodeFailure(runError ?? run, mediaBundle.images);
+  const decodeReason = codexStarted
+    ? commentImageDecodeFailure(runError ?? run, mediaBundle.images)
+    : null;
   if (decodeReason) {
     return parkAnalysisForCommentMedia({
       db,
@@ -177,11 +182,21 @@ export async function executeAnalysis({
       reason: decodeReason,
     });
   }
-  if (runError) throw runError;
+  if (runError) {
+    const safeFailure = codexStarted
+      ? formatCodexMediaRunFailure(runError, mediaBundle.images)
+      : null;
+    if (safeFailure) throw new Error(safeFailure);
+    throw runError;
+  }
   activity = await currentAnalysis(db, taskId, executionVersion);
   if (!activity.active) return staleAnalysisResult(activity.aggregate);
   if (run.exitCode !== 0) {
-    return { status: "failed", error: `codex exited ${run.exitCode}: ${run.stderr}` };
+    return {
+      status: "failed",
+      error: formatCodexMediaRunFailure(run, mediaBundle.images)
+        ?? `codex exited ${run.exitCode}: ${run.stderr}`,
+    };
   }
   let parsed;
   try {

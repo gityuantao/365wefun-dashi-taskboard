@@ -7,6 +7,7 @@ import {
   commentImageDecodeFailure,
   formatCommentMediaError,
   formatCommentMediaDiagnostics,
+  formatCodexMediaRunFailure,
 } from "./prompts.mjs";
 
 function resolvePlatforms(task) {
@@ -213,6 +214,7 @@ export async function executeDevelopment({
     let worktree;
     let run;
     let runError;
+    let codexStarted = false;
     try {
       let commentContext = mediaBundle.textContext;
       const feedbackField = task.custom_fields?.find(
@@ -241,6 +243,7 @@ export async function executeDevelopment({
       });
       activity = await currentDevelopment(db, taskId, executionVersion);
       if (!activity.active) return staleDevelopmentResult(activity.aggregate);
+      codexStarted = true;
       run = await codex.run({
         prompt: buildDevelopmentPrompt(task, acceptanceCriteria, commentContext, resolvePlatforms(task)),
         workdir: worktree.worktreePath,
@@ -252,7 +255,9 @@ export async function executeDevelopment({
     } finally {
       await mediaBundle.cleanup();
     }
-    const decodeReason = commentImageDecodeFailure(runError ?? run, mediaBundle.images);
+    const decodeReason = codexStarted
+      ? commentImageDecodeFailure(runError ?? run, mediaBundle.images)
+      : null;
     if (decodeReason) {
       const transitioned = await markDevelopmentNeedsInfo({
         db,
@@ -271,11 +276,18 @@ export async function executeDevelopment({
         error: `needs_info: ${decodeReason}`,
       };
     }
-    if (runError) throw runError;
+    if (runError) {
+      const safeFailure = codexStarted
+        ? formatCodexMediaRunFailure(runError, mediaBundle.images)
+        : null;
+      if (safeFailure) throw new Error(safeFailure);
+      throw runError;
+    }
     activity = await currentDevelopment(db, taskId, executionVersion);
     if (!activity.active) return staleDevelopmentResult(activity.aggregate);
     if (run.exitCode !== 0) {
-      const reason = `codex exited ${run.exitCode}: ${run.stderr}`;
+      const reason = formatCodexMediaRunFailure(run, mediaBundle.images)
+        ?? `codex exited ${run.exitCode}: ${run.stderr}`;
       await rollbackDevelopment({ db, client, taskId, jobId: job.id, now, reason });
       return { status: "failed", error: reason };
     }
