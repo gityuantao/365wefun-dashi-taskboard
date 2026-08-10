@@ -92,6 +92,26 @@ test("keeps an image-only ClickUp comment as media context", async (t) => {
   assert.match(bundle.textContext, /评论 image-only 图片：annotated\.webp/);
 });
 
+test("rejects an image-only comment attachment that has no usable URL", async (t) => {
+  const tempRoot = await makeTempRoot();
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+
+  await assert.rejects(
+    () => collectCommentMedia({
+      comments: [{
+        id: "missing-url",
+        date: "1",
+        comment_text: "",
+        attachments: [{ title: "unavailable.png" }],
+      }],
+      client: { downloadAttachment: async () => { throw new Error("must not download"); } },
+      taskId: "task-missing-url",
+      tempRoot,
+    }),
+    (error) => error.code === "IMAGE_UNAVAILABLE" && error.details.filename === "unavailable.png",
+  );
+});
+
 test("accepts PNG, JPEG, WebP, and GIF bytes using their canonical media types", async (t) => {
   const tempRoot = await makeTempRoot();
   t.after(() => rm(tempRoot, { recursive: true, force: true }));
@@ -192,6 +212,8 @@ test("omits every older image after the image-count limit while retaining the ne
     { code: "IMAGE_LIMIT", commentId: "middle", filename: "middle.png" },
     { code: "IMAGE_LIMIT", commentId: "oldest", filename: "oldest.png" },
   ]);
+  assert.match(bundle.textContext, /评论 middle 图片未读取：middle\.png（IMAGE_LIMIT）/);
+  assert.match(bundle.textContext, /评论 oldest 图片未读取：oldest\.png（IMAGE_LIMIT）/);
 });
 
 test("omits an image that exceeds either the per-image or total byte limit", async (t) => {
@@ -213,10 +235,38 @@ test("omits an image that exceeds either the per-image or total byte limit", asy
   assert.deepEqual(perImage.diagnostics, [
     { code: "IMAGE_LIMIT", commentId: "newest", filename: "newest.png" },
   ]);
+  assert.match(perImage.textContext, /评论 newest 图片未读取：newest\.png（IMAGE_LIMIT）/);
   assert.deepEqual(total.images.map((image) => image.commentId), ["newest"]);
   assert.deepEqual(total.diagnostics, [
     { code: "IMAGE_LIMIT", commentId: "older", filename: "older.png" },
   ]);
+  assert.match(total.textContext, /评论 older 图片未读取：older\.png（IMAGE_LIMIT）/);
+});
+
+test("uses each discovered attachment ordinal for nameless omission diagnostics", async (t) => {
+  const tempRoot = await makeTempRoot();
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const bundle = await collectCommentMedia({
+    comments: [{
+      id: "nameless",
+      date: "1",
+      attachments: [
+        { url: "https://attachments.clickup.com/first" },
+        { url: "https://attachments.clickup.com/second" },
+      ],
+    }],
+    client: { downloadAttachment: async () => { throw new Error("limit must skip downloads"); } },
+    taskId: "task-nameless",
+    tempRoot,
+    maxImages: 0,
+  });
+
+  assert.deepEqual(bundle.diagnostics, [
+    { code: "IMAGE_LIMIT", commentId: "nameless", filename: "attachment-1" },
+    { code: "IMAGE_LIMIT", commentId: "nameless", filename: "attachment-2" },
+  ]);
+  assert.match(bundle.textContext, /评论 nameless 图片未读取：attachment-1（IMAGE_LIMIT）/);
+  assert.match(bundle.textContext, /评论 nameless 图片未读取：attachment-2（IMAGE_LIMIT）/);
 });
 
 test("cleanup is idempotent after a successful download", async (t) => {

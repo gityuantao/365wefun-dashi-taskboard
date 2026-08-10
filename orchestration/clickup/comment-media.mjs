@@ -61,6 +61,10 @@ function contextFor(comments, labelsByComment) {
   return lines.length > 0 ? lines.join("\n") : null;
 }
 
+function omittedImageLabel(commentId, filename, code) {
+  return `- 评论 ${commentId} 图片未读取：${filename}（${code}）`;
+}
+
 /**
  * Downloads supported image attachments from the same recent comment window used in AI prompts.
  */
@@ -78,7 +82,7 @@ export async function collectCommentMedia({
   const candidates = selected.flatMap((comment) => attachmentValues(comment).map((attachment) => ({
     comment,
     attachment,
-  }))).filter(({ attachment }) => attachmentUrl(attachment));
+  }))).map((candidate, index) => ({ ...candidate, ordinal: index + 1 }));
   const labelsByComment = new Map(selected.map((comment) => [comment, []]));
   const diagnostics = [];
   const images = [];
@@ -92,13 +96,18 @@ export async function collectCommentMedia({
 
   try {
     for (const candidate of candidates) {
-      const filename = attachmentFilename(candidate.attachment, ordinal + 1);
+      const filename = attachmentFilename(candidate.attachment, candidate.ordinal);
       const commentId = String(candidate.comment?.id ?? "unknown");
+      const url = attachmentUrl(candidate.attachment);
+      if (!url) {
+        throw new DomainError("IMAGE_UNAVAILABLE", `Attachment ${filename} has no usable URL`, { commentId, filename });
+      }
       if (images.length >= maxImages) {
         diagnostics.push({ code: "IMAGE_LIMIT", commentId, filename });
+        labelsByComment.get(candidate.comment).push(omittedImageLabel(commentId, filename, "IMAGE_LIMIT"));
         continue;
       }
-      const downloaded = await client.downloadAttachment(attachmentUrl(candidate.attachment));
+      const downloaded = await client.downloadAttachment(url);
       const body = downloaded.body;
       const imageType = detectedImageType(body);
       if (!imageType) {
@@ -109,6 +118,7 @@ export async function collectCommentMedia({
       }
       if (body.byteLength > maxImageBytes || totalBytes + body.byteLength > maxTotalBytes) {
         diagnostics.push({ code: "IMAGE_LIMIT", commentId, filename });
+        labelsByComment.get(candidate.comment).push(omittedImageLabel(commentId, filename, "IMAGE_LIMIT"));
         continue;
       }
       if (!directory) {
