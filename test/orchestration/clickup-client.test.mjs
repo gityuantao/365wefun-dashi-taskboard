@@ -250,6 +250,42 @@ test("downloadAttachment accepts an explicitly allowed non-static host", async (
   assert.equal(calls[0].url, "https://uploads.clickup-cdn.example/a.png");
 });
 
+test("downloadAttachment accepts official and exact tenant ClickUp attachment hosts", async () => {
+  const calls = [];
+  const client = createClickUpClient({
+    token: "pk-test",
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return new Response(Uint8Array.from([1]));
+    },
+  });
+
+  await client.downloadAttachment("https://attachments-public.clickup.com/public.png");
+  await client.downloadAttachment(
+    "https://t90161712199.p.clickup-attachments.com/private.png",
+  );
+
+  assert.deepEqual(calls, [
+    "https://attachments-public.clickup.com/public.png",
+    "https://t90161712199.p.clickup-attachments.com/private.png",
+  ]);
+});
+
+test("downloadAttachment rejects ClickUp attachment suffix tricks and nested tenant labels", async () => {
+  const client = createClickUpClient({ token: "pk-test" });
+
+  for (const url of [
+    "https://t90161712199.p.clickup-attachments.com.evil.example/private.png",
+    "https://nested.t90161712199.p.clickup-attachments.com/private.png",
+    "https://evilp.clickup-attachments.com/private.png",
+  ]) {
+    await assert.rejects(
+      () => client.downloadAttachment(url),
+      (error) => error.code === "ATTACHMENT_HOST",
+    );
+  }
+});
+
 test("client rejects malformed explicit attachment host allowlists", () => {
   assert.throws(
     () => createClickUpClient({

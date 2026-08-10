@@ -23,9 +23,65 @@ function recentComments(comments, limit) {
     : comments.slice(-limit);
 }
 
+const SUPPORTED_IMAGE_MIME_TYPES = new Set(IMAGE_TYPES.map((type) => type.contentType));
+const SUPPORTED_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+const KNOWN_NON_IMAGE_EXTENSIONS = new Set([
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".zip",
+]);
+
+function supportedImageHint(attachment) {
+  if (typeof attachment === "string") {
+    try {
+      return SUPPORTED_IMAGE_EXTENSIONS.has(path.extname(new URL(attachment).pathname).toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+  if (typeof attachment !== "object" || attachment === null) return false;
+  const typeHints = [
+    attachment.contentType,
+    attachment.content_type,
+    attachment.mimeType,
+    attachment.mime_type,
+    attachment.extension,
+    attachment.type,
+  ].filter((value) => typeof value === "string").map((value) => value.trim().toLowerCase());
+  if (typeHints.some((value) => SUPPORTED_IMAGE_MIME_TYPES.has(value))) return true;
+  if (typeHints.some((value) => SUPPORTED_IMAGE_EXTENSIONS.has(`.${value.replace(/^\./, "")}`))) {
+    return true;
+  }
+  if (typeHints.some((value) => value.startsWith("application/") || value.startsWith("text/"))) {
+    return false;
+  }
+  for (const value of [attachment.title, attachment.filename, attachment.name, attachment.url]) {
+    if (typeof value !== "string" || value.trim() === "") continue;
+    try {
+      const pathname = value.includes("://") ? new URL(value).pathname : value;
+      const extension = path.extname(pathname).toLowerCase();
+      if (SUPPORTED_IMAGE_EXTENSIONS.has(extension)) return true;
+      if (KNOWN_NON_IMAGE_EXTENSIONS.has(extension)) return false;
+    } catch {
+      // Malformed generic attachment URLs are not image candidates.
+    }
+  }
+  return true;
+}
+
 function attachmentValues(comment) {
-  return [comment?.attachments, comment?.images, comment?.image]
-    .flatMap((value) => Array.isArray(value) ? value : value ? [value] : []);
+  const nested = Array.isArray(comment?.comment)
+    ? comment.comment
+      .filter((segment) => segment?.type === "image" && segment.image)
+      .map((segment) => ({ attachment: segment.image, filename: segment.text }))
+    : [];
+  const explicit = [comment?.images, comment?.image]
+    .flatMap((value) => Array.isArray(value) ? value : value ? [value] : [])
+    .map((attachment) => ({ attachment }));
+  const generic = (Array.isArray(comment?.attachments)
+    ? comment.attachments
+    : comment?.attachments ? [comment.attachments] : [])
+    .filter(supportedImageHint)
+    .map((attachment) => ({ attachment }));
+  return [...nested, ...explicit, ...generic];
 }
 
 function attachmentUrl(attachment) {
@@ -33,7 +89,10 @@ function attachmentUrl(attachment) {
   return attachment?.url ?? attachment?.image_url ?? attachment?.download_url ?? null;
 }
 
-function attachmentFilename(attachment, ordinal) {
+function attachmentFilename(attachment, ordinal, preferredFilename) {
+  if (typeof preferredFilename === "string" && preferredFilename.trim() !== "") {
+    return preferredFilename.trim();
+  }
   if (typeof attachment === "object" && attachment !== null) {
     for (const value of [attachment.title, attachment.filename, attachment.name]) {
       if (typeof value === "string" && value.trim() !== "") return value.trim();
@@ -93,10 +152,23 @@ export async function collectCommentMedia({
   maxTotalBytes = 30_000_000,
 } = {}) {
   const selected = recentComments(comments, maxComments);
-  const candidates = selected.flatMap((comment) => attachmentValues(comment).map((attachment) => ({
-    comment,
-    attachment,
-  }))).map((candidate, index) => ({ ...candidate, ordinal: index + 1 }));
+  const candidates = [];
+  const seenUrls = new Set();
+  let discoveredOrdinal = 0;
+  for (const comment of selected) {
+    for (const value of attachmentValues(comment)) {
+      discoveredOrdinal += 1;
+      const url = attachmentUrl(value.attachment);
+      if (url && seenUrls.has(url)) continue;
+      if (url) seenUrls.add(url);
+      candidates.push({
+        comment,
+        attachment: value.attachment,
+        filename: value.filename,
+        ordinal: discoveredOrdinal,
+      });
+    }
+  }
   const labelsByComment = new Map(selected.map((comment) => [comment, []]));
   const diagnostics = [];
   const images = [];
@@ -110,7 +182,11 @@ export async function collectCommentMedia({
 
   try {
     for (const candidate of candidates) {
-      const filename = attachmentFilename(candidate.attachment, candidate.ordinal);
+      const filename = attachmentFilename(
+        candidate.attachment,
+        candidate.ordinal,
+        candidate.filename,
+      );
       const commentId = String(candidate.comment?.id ?? "unknown");
       if (images.length >= maxImages) {
         diagnostics.push({ code: "IMAGE_LIMIT", commentId, filename });

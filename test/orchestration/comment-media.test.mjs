@@ -92,6 +92,63 @@ test("keeps an image-only ClickUp comment as media context", async (t) => {
   assert.match(bundle.textContext, /评论 image-only 图片：annotated\.webp/);
 });
 
+test("parses the real ClickUp nested image shape, deduplicates it, and ignores a PDF", async (t) => {
+  const tempRoot = await makeTempRoot();
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const imageUrl = "https://t90161712199.p.clickup-attachments.com/redacted/image.png";
+  const downloaded = [];
+
+  const bundle = await collectCommentMedia({
+    comments: [{
+      id: "real-clickup-comment",
+      date: "1786352400000",
+      comment_text: "这里是截图和补充文字",
+      comment: [
+        { type: "text", text: "这里是截图" },
+        {
+          type: "image",
+          text: "image.png",
+          image: {
+            name: "image.png",
+            title: "image.png",
+            type: "png",
+            extension: "image/png",
+            url: imageUrl,
+            uploaded: true,
+            width: 1170,
+            height: 2532,
+          },
+        },
+        { type: "text", text: "和补充文字" },
+      ],
+      attachments: [
+        { name: "duplicate.png", extension: "image/png", url: imageUrl },
+        {
+          name: "requirements.pdf",
+          extension: "application/pdf",
+          url: "https://attachments-public.clickup.com/requirements.pdf",
+        },
+      ],
+    }],
+    client: {
+      downloadAttachment: async (url) => {
+        downloaded.push(url);
+        return { body: PNG, contentType: "image/png", contentLength: PNG.byteLength };
+      },
+    },
+    taskId: "task-real-shape",
+    tempRoot,
+  });
+
+  assert.deepEqual(downloaded, [imageUrl]);
+  assert.deepEqual(
+    bundle.images.map(({ commentId, filename }) => ({ commentId, filename })),
+    [{ commentId: "real-clickup-comment", filename: "image.png" }],
+  );
+  assert.match(bundle.textContext, /评论 real-clickup-comment 图片：image\.png/);
+  await bundle.cleanup();
+});
+
 test("rejects an image-only comment attachment that has no usable URL", async (t) => {
   const tempRoot = await makeTempRoot();
   t.after(() => rm(tempRoot, { recursive: true, force: true }));

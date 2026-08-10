@@ -7,7 +7,9 @@ const DEFAULT_RETRY_DELAY_MS = 200;
 const TRUSTED_ATTACHMENT_HOSTS = new Set([
   "api.clickup.com",
   "attachments.clickup.com",
+  "attachments-public.clickup.com",
 ]);
+const CLICKUP_TENANT_ATTACHMENT_HOST = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.p\.clickup-attachments\.com$/;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -57,7 +59,10 @@ function trustedAttachmentUrl(value, allowedHosts) {
     || url.port !== ""
     || url.username !== ""
     || url.password !== ""
-    || !allowedHosts.has(url.hostname)
+    || (
+      !allowedHosts.has(url.hostname)
+      && !CLICKUP_TENANT_ATTACHMENT_HOST.test(url.hostname)
+    )
   ) {
     throw new DomainError("ATTACHMENT_HOST", "Attachment URL host is not trusted");
   }
