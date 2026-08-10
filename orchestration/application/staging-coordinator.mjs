@@ -52,7 +52,7 @@ async function renewStagingLease(db, holder, fencingToken, now, leaseMs) {
        AND expires_at > ?`,
   ).bind(expiresAt, holder, fencingToken, now).run();
   if ((updated.meta?.changes ?? 0) === 0) {
-    throw new Error("staging environment lease was lost before TestFlight operation");
+    throw new Error("staging environment lease was lost");
   }
 }
 
@@ -186,6 +186,24 @@ export async function executeStagingGate({
       new Date().toISOString(),
       stagingLeaseMs,
     );
+    const guardStagingOwnership = async () => {
+      await beforeExternalOperation();
+      await renewStagingLease(
+        db,
+        job.id,
+        fencingToken,
+        new Date().toISOString(),
+        stagingLeaseMs,
+      );
+    };
+    const withStagingOwnership = async (operation) => {
+      await guardStagingOwnership();
+      try {
+        return await operation();
+      } finally {
+        await guardStagingOwnership();
+      }
+    };
     stage = "deploy";
     await db.prepare("UPDATE staging_deployments SET stage = ? WHERE id = ?").bind(stage, attemptId).run();
     const deployment = await adapter.deploy({ candidateCommit, versionBranch, taskId, targetVersion });
@@ -194,18 +212,9 @@ export async function executeStagingGate({
     if (observed.confirmed !== true || observed.gitSha !== candidateCommit) {
       throw new Error(`staging runtime SHA ${observed.gitSha ?? "missing"} does not match ${candidateCommit}`);
     }
-    await db.prepare(
-      `UPDATE staging_deployments SET stage = 'complete', status = 'succeeded', release_id = ?,
-         observed_git_sha = ?, urls = ?, completed_at = ? WHERE id = ?`,
-    ).bind(
-      observed.releaseId ?? deployment.releaseId ?? null,
-      observed.gitSha,
-      JSON.stringify(observed.urls ?? [deployment.url].filter(Boolean)),
-      observed.deployedAt ?? new Date().toISOString(),
-      attemptId,
-    ).run();
     let iosEvidence = [];
-    if (requiresIosStaging(platforms)) {
+    const iosRequired = requiresIosStaging(platforms);
+    if (iosRequired) {
       stage = "testflight:all:configuration";
       const validatedIosApps = loadIosApps(iosApps);
       if (
@@ -216,16 +225,6 @@ export async function executeStagingGate({
       ) {
         throw new Error("iOS TestFlight adapter is not configured");
       }
-      const guardIosOperation = async () => {
-        await beforeExternalOperation();
-        await renewStagingLease(
-          db,
-          job.id,
-          fencingToken,
-          new Date().toISOString(),
-          stagingLeaseMs,
-        );
-      };
       const iosResult = await executeIosStagingGate({
         db,
         client,
@@ -234,15 +233,10 @@ export async function executeStagingGate({
         targetVersion,
         apps: validatedIosApps,
         adapter: {
-          stage: async (options) => {
-            await guardIosOperation();
-            return iosAdapter.stage(options);
-          },
-          readback: async (options) => {
-            await guardIosOperation();
-            return iosAdapter.readback(options);
-          },
+          stage: (options) => withStagingOwnership(() => iosAdapter.stage(options)),
+          readback: (options) => withStagingOwnership(() => iosAdapter.readback(options)),
         },
+        beforeSuccessSideEffect: guardStagingOwnership,
         now,
       });
       if (iosResult.status !== "completed") {
@@ -253,6 +247,18 @@ export async function executeStagingGate({
       }
       iosEvidence = iosResult.apps;
     }
+    stage = iosRequired ? "testflight:all:finalize" : "finalize";
+    await guardStagingOwnership();
+    await db.prepare(
+      `UPDATE staging_deployments SET stage = 'complete', status = 'succeeded', release_id = ?,
+         observed_git_sha = ?, urls = ?, completed_at = ? WHERE id = ?`,
+    ).bind(
+      observed.releaseId ?? deployment.releaseId ?? null,
+      observed.gitSha,
+      JSON.stringify(observed.urls ?? [deployment.url].filter(Boolean)),
+      observed.deployedAt ?? new Date().toISOString(),
+      attemptId,
+    ).run();
     const current = await loadAggregate(db, "task", taskId);
     if (current.state !== "accepting") throw new Error(`task changed to ${current.state} before staging completion`);
     const command = parseCommandEnvelope({
@@ -266,8 +272,11 @@ export async function executeStagingGate({
       reason: "staging deployment confirmed",
       parameters: { targetVersion },
     });
+    await guardStagingOwnership();
     const result = await dispatchCommand({ db, command, now: new Date().toISOString() });
+    await guardStagingOwnership();
     await resetRework({ db, taskId });
+    await guardStagingOwnership();
     await client.postComment(taskId, successComment({
       taskCommit,
       versionBranch,

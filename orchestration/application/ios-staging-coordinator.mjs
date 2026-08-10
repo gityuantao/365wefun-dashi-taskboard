@@ -300,6 +300,7 @@ export async function executeIosStagingGate({
   targetVersion,
   apps,
   adapter,
+  beforeSuccessSideEffect = async () => {},
   now,
 }) {
   const enabledApps = appSnapshot(apps);
@@ -401,6 +402,7 @@ export async function executeIosStagingGate({
       validateMembership(observed, app);
 
       const completedAt = observed.checkedAt ?? occurredAt;
+      await beforeSuccessSideEffect();
       await completeAttempt(db, {
         taskId,
         candidateCommit,
@@ -460,6 +462,7 @@ export async function executeIosStagingGate({
   }
 
   try {
+    await beforeSuccessSideEffect();
     await postSuccessComment(client, taskId, successComment(candidateCommit, confirmedApps));
   } catch (error) {
     return {
