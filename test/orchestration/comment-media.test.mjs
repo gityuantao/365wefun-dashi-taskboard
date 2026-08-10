@@ -216,6 +216,35 @@ test("omits every older image after the image-count limit while retaining the ne
   assert.match(bundle.textContext, /评论 oldest 图片未读取：oldest\.png（IMAGE_LIMIT）/);
 });
 
+test("omits an older missing-URL attachment after selecting the newest image limit", async (t) => {
+  const tempRoot = await makeTempRoot();
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const bundle = await collectCommentMedia({
+    comments: [
+      {
+        id: "newest",
+        date: "2",
+        attachments: [{ title: "newest.png", url: "https://attachments.clickup.com/newest" }],
+      },
+      {
+        id: "older-missing-url",
+        date: "1",
+        attachments: [{ title: "older.png" }],
+      },
+    ],
+    client: { downloadAttachment: async () => ({ body: PNG, contentType: "image/png", contentLength: PNG.byteLength }) },
+    taskId: "task-limit-before-url",
+    tempRoot,
+    maxImages: 1,
+  });
+
+  assert.deepEqual(bundle.images.map((image) => image.commentId), ["newest"]);
+  assert.deepEqual(bundle.diagnostics, [
+    { code: "IMAGE_LIMIT", commentId: "older-missing-url", filename: "older.png" },
+  ]);
+  assert.match(bundle.textContext, /评论 older-missing-url 图片未读取：older\.png（IMAGE_LIMIT）/);
+});
+
 test("omits an image that exceeds either the per-image or total byte limit", async (t) => {
   const tempRoot = await makeTempRoot();
   t.after(() => rm(tempRoot, { recursive: true, force: true }));

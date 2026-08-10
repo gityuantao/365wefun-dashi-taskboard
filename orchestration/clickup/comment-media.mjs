@@ -98,14 +98,14 @@ export async function collectCommentMedia({
     for (const candidate of candidates) {
       const filename = attachmentFilename(candidate.attachment, candidate.ordinal);
       const commentId = String(candidate.comment?.id ?? "unknown");
-      const url = attachmentUrl(candidate.attachment);
-      if (!url) {
-        throw new DomainError("IMAGE_UNAVAILABLE", `Attachment ${filename} has no usable URL`, { commentId, filename });
-      }
       if (images.length >= maxImages) {
         diagnostics.push({ code: "IMAGE_LIMIT", commentId, filename });
         labelsByComment.get(candidate.comment).push(omittedImageLabel(commentId, filename, "IMAGE_LIMIT"));
         continue;
+      }
+      const url = attachmentUrl(candidate.attachment);
+      if (!url) {
+        throw new DomainError("IMAGE_UNAVAILABLE", `Attachment ${filename} has no usable URL`, { commentId, filename });
       }
       const downloaded = await client.downloadAttachment(url);
       const body = downloaded.body;
