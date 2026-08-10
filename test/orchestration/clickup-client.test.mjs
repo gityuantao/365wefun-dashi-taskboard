@@ -160,3 +160,21 @@ test("getComments returns the comments array", async () => {
   const result = await client.getComments("t1");
   assert.deepEqual(result, comments);
 });
+
+test("downloadAttachment sends ClickUp auth and returns binary metadata", async () => {
+  const seen = [];
+  const client = createClickUpClient({ token: "pk-test", fetchImpl: async (url, init) => {
+    seen.push({ url, init });
+    return new Response(Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), {
+      headers: { "content-type": "image/png", "content-length": "4" },
+    });
+  }});
+  const file = await client.downloadAttachment("https://attachments.clickup.com/a.png");
+  assert.deepEqual([...file.body], [0x89, 0x50, 0x4e, 0x47]);
+  assert.equal(seen[0].init.headers.Authorization, "pk-test");
+});
+
+test("downloadAttachment rejects an untrusted host", async () => {
+  const client = createClickUpClient({ token: "pk-test" });
+  await assert.rejects(() => client.downloadAttachment("https://example.com/a.png"), /ATTACHMENT_HOST/);
+});

@@ -4,6 +4,10 @@ const DEFAULT_BASE_URL = "https://api.clickup.com/api/v2";
 const DEFAULT_RETRIES = 3;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRY_DELAY_MS = 200;
+const TRUSTED_ATTACHMENT_HOSTS = new Set([
+  "api.clickup.com",
+  "attachments.clickup.com",
+]);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -15,6 +19,28 @@ function withTimeout(promise, ms, message) {
     timer = setTimeout(() => reject(new DomainError("TIMEOUT", message)), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function trustedAttachmentUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new DomainError("ATTACHMENT_HOST", "Attachment URL must be a trusted HTTPS URL");
+  }
+  if (url.protocol !== "https:" || !TRUSTED_ATTACHMENT_HOSTS.has(url.hostname)) {
+    throw new DomainError("ATTACHMENT_HOST", "Attachment URL host is not trusted");
+  }
+  return url;
+}
+
+function normalizedContentType(value) {
+  return value?.split(";", 1)[0].trim().toLowerCase() || "application/octet-stream";
+}
+
+function normalizedContentLength(value, fallback) {
+  const length = Number(value);
+  return Number.isSafeInteger(length) && length >= 0 ? length : fallback;
 }
 
 export function createClickUpClient({
@@ -81,6 +107,58 @@ export function createClickUpClient({
     throw lastError;
   }
 
+  async function requestAttachment(url) {
+    const attachmentUrl = trustedAttachmentUrl(url);
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        const response = await withTimeout(
+          fetchImpl(attachmentUrl.href, {
+            method: "GET",
+            headers,
+          }),
+          timeoutMs,
+          `ClickUp attachment request timed out after ${timeoutMs}ms`,
+        );
+        if (response.status === 429 || response.status >= 500) {
+          lastError = new DomainError(
+            `HTTP_${response.status}`,
+            `ClickUp API returned ${response.status}`,
+            { status: response.status },
+          );
+          if (attempt < retries) {
+            await sleep(retryDelayMs * 2 ** attempt);
+            continue;
+          }
+          throw lastError;
+        }
+        if (!response.ok) {
+          const text = await response.text();
+          throw new DomainError(
+            `HTTP_${response.status}`,
+            `ClickUp API returned ${response.status}: ${text.slice(0, 200)}`,
+            { status: response.status, body: text.slice(0, 500) },
+          );
+        }
+        const body = new Uint8Array((await response.arrayBuffer()).slice(0));
+        return {
+          body,
+          contentType: normalizedContentType(response.headers.get("content-type")),
+          contentLength: normalizedContentLength(response.headers.get("content-length"), body.byteLength),
+        };
+      } catch (error) {
+        if (error instanceof DomainError) throw error;
+        lastError = error;
+        if (attempt < retries) {
+          await sleep(retryDelayMs * 2 ** attempt);
+          continue;
+        }
+        throw new DomainError("NETWORK_ERROR", `ClickUp request failed: ${error.message}`);
+      }
+    }
+    throw lastError;
+  }
+
   function listTasks(listId, page) {
     return request(
       `/list/${encodeURIComponent(listId)}/task?archived=false&page=${page}`,
@@ -122,5 +200,6 @@ export function createClickUpClient({
       const data = await request(`/task/${encodeURIComponent(taskId)}/comment`);
       return data.comments ?? [];
     },
+    downloadAttachment: (url) => requestAttachment(url),
   };
 }
