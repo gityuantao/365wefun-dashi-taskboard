@@ -268,6 +268,8 @@ export async function executeIosStagingGate({
     let attempt = null;
     let stage = "prepare";
     let staged = null;
+    let failureClassification = null;
+    let failureRetryable = null;
     try {
       const reusable = await findReusableSuccess(db, {
         taskId,
@@ -276,7 +278,6 @@ export async function executeIosStagingGate({
         app,
       });
       if (reusable) {
-        attempt = Number(reusable.attempt);
         staged = reusableStagedEvidence(app, reusable);
         stage = "processing";
         let observed;
@@ -284,34 +285,26 @@ export async function executeIosStagingGate({
           observed = await adapter.readback({ app, staged });
         } catch (error) {
           stage = readbackFailureStage(error);
+          const authoritative = error?.stage === "processing" || error?.stage === "internal_testing";
+          failureClassification = authoritative ? "authoritative_stale" : "observation_error";
+          failureRetryable = !authoritative;
           throw error;
         }
-        await recordReadback(db, {
-          taskId,
-          candidateCommit,
-          appId: app.id,
-          attempt,
-          observed,
-          stage,
-        });
-        validateProcessing(observed);
+        try {
+          validateProcessing(observed);
+        } catch (error) {
+          failureClassification = "authoritative_stale";
+          failureRetryable = false;
+          throw error;
+        }
         stage = "internal_testing";
-        await recordReadback(db, {
-          taskId,
-          candidateCommit,
-          appId: app.id,
-          attempt,
-          observed,
-          stage,
-        });
-        validateMembership(observed, app);
-        await completeAttempt(db, {
-          taskId,
-          candidateCommit,
-          appId: app.id,
-          attempt,
-          completedAt: observed.checkedAt,
-        });
+        try {
+          validateMembership(observed, app);
+        } catch (error) {
+          failureClassification = "authoritative_stale";
+          failureRetryable = false;
+          throw error;
+        }
         confirmedApps.push(confirmedEvidence(app, staged, observed, true));
         continue;
       }
@@ -391,10 +384,20 @@ export async function executeIosStagingGate({
         stage,
         error: message,
       }));
+      const failure = {
+        appId: app.id,
+        appName: app.name,
+        stage,
+        message,
+      };
+      if (failureClassification) {
+        failure.classification = failureClassification;
+        failure.retryable = failureRetryable;
+      }
       return {
         status: "failed",
         apps: confirmedApps,
-        error: { appId: app.id, appName: app.name, stage, message },
+        error: failure,
       };
     }
   }
