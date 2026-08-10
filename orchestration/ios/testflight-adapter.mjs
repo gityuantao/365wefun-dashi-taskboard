@@ -66,6 +66,7 @@ function commandEnvironment({ runtime, app, marketingVersion, candidateCommit, s
     IOS_BUNDLE_ID: String(app?.bundleId ?? ""),
     IOS_MARKETING_VERSION: marketingVersion,
     IOS_TESTFLIGHT_GROUP: String(app?.testFlightGroup ?? ""),
+    IOS_TESTFLIGHT_ADAPTER_TIMEOUT_MS: String(timeoutFor(runtime)),
     STAGING_CANDIDATE_COMMIT: String(candidateCommit ?? ""),
     STAGING_REPO_PATH: String(runtime?.repoPath ?? ""),
     ...(staged

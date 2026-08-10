@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { createTestFlightAdapter } from "../../orchestration/ios/testflight-adapter.mjs";
@@ -46,6 +50,7 @@ test("stage passes the frozen Candidate and App identity through command environ
       IOS_BUNDLE_ID: "online.365english.app",
       IOS_MARKETING_VERSION: TARGET_VERSION,
       IOS_TESTFLIGHT_GROUP: "Internal Testing",
+      IOS_TESTFLIGHT_ADAPTER_TIMEOUT_MS: "12345",
       STAGING_CANDIDATE_COMMIT: CANDIDATE_COMMIT,
       STAGING_REPO_PATH: "/repos/365wefun",
     }),
@@ -132,6 +137,85 @@ test("readback accepts only matching processed Internal Testing evidence", async
     membershipConfirmed: true,
     checkedAt: "2026-08-10T00:00:00.000Z",
   });
+});
+
+test("adapter readback reaches the real script without a Candidate-only preflight", async (t) => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ios-real-readback-contract-"));
+  const keyId = "CONTRACT01";
+  const keyPath = path.join(temporaryRoot, `AuthKey_${keyId}.p8`);
+  const hookPath = path.join(temporaryRoot, "fake-asc-fetch.mjs");
+  const scriptPath = path.resolve("scripts/stage-all-ios-apps.mjs");
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  fs.writeFileSync(keyPath, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+  fs.writeFileSync(hookPath, `
+globalThis.fetch = async (input) => {
+  const url = new URL(input);
+  let body;
+  if (url.pathname === "/v1/apps") {
+    body = { data: [{ id: "app-resource-id", attributes: { bundleId: "online.365english.app" } }] };
+  } else if (url.pathname === "/v1/builds") {
+    body = { data: [{ id: "build-resource-id", attributes: { version: "42", processingState: "VALID" } }] };
+  } else if (url.pathname === "/v1/betaGroups") {
+    body = { data: [{ id: "group-resource-id", attributes: { name: "Internal Testing", isInternalGroup: true } }] };
+  } else if (url.pathname === "/v1/betaGroups/group-resource-id/builds") {
+    body = { data: [{ id: "build-resource-id", attributes: { version: "42", processingState: "VALID" } }] };
+  } else {
+    return new Response("not found", { status: 404 });
+  }
+  return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+};
+`);
+  t.after(() => fs.rmSync(temporaryRoot, { recursive: true, force: true }));
+
+  const previous = new Map();
+  for (const [name, value] of Object.entries({
+    ASC_KEY_ID: keyId,
+    ASC_ISSUER_ID: "11111111-2222-3333-4444-555555555555",
+    ASC_PRIVATE_KEY_PATH: keyPath,
+    IOS_STAGING_DRY_RUN: undefined,
+    STAGING_CANDIDATE_COMMIT: undefined,
+  })) {
+    previous.set(name, process.env[name]);
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  t.after(() => {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  const adapter = createTestFlightAdapter({
+    runtime: {
+      repoPath: "/path/readback/must/not/inspect",
+      iosTestFlightTimeoutMs: 5_000,
+      iosTestFlightStageCommand: [process.execPath, scriptPath, "stage"],
+      iosTestFlightReadbackCommand: [process.execPath, "--import", hookPath, scriptPath, "readback"],
+    },
+    projectRoot: PROJECT_ROOT,
+  });
+
+  const observed = await adapter.readback({
+    app: APP,
+    staged: {
+      appId: "au",
+      scheme: "E365AU",
+      bundleId: "online.365english.app",
+      marketingVersion: "1.2.3",
+      buildNumber: "42",
+      uploadId: "upload-42",
+    },
+  });
+
+  assert.deepEqual(observed, {
+    processed: true,
+    processingStatus: "processed",
+    testGroup: "Internal Testing",
+    membershipConfirmed: true,
+    checkedAt: observed.checkedAt,
+  });
+  assert.match(observed.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
 });
 
 test("readback mismatch exposes only a sanitized observed status snapshot", async () => {

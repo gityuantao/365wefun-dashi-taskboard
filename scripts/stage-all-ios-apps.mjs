@@ -1,15 +1,12 @@
 #!/usr/bin/env node
 
-import { execFile as execFileCallback } from "node:child_process";
-import { createPrivateKey, sign } from "node:crypto";
+import { spawn } from "node:child_process";
+import { createHash, createPrivateKey, randomUUID, sign } from "node:crypto";
 import fs from "node:fs";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
-
-const execFile = promisify(execFileCallback);
 
 export const STAGING_API_URL = "https://test-api.365english.online";
 const APP_STORE_CONNECT_ORIGIN = "https://api.appstoreconnect.apple.com";
@@ -17,6 +14,11 @@ const BUILD_CONFIGURATION = "Staging";
 const DEFAULT_TEST_DESTINATION = "platform=iOS Simulator,name=iPhone 17 Pro";
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const DEFAULT_READBACK_TIMEOUT_MS = 25 * 60_000;
+const DEFAULT_ADAPTER_TIMEOUT_MS = 30 * 60_000;
+const MAX_DEADLINE_MARGIN_MS = 5_000;
+const DEFAULT_COMMAND_KILL_GRACE_MS = 1_000;
+const DEFAULT_BUILD_LOCK_STALE_MS = 2 * 60 * 60_000;
+const DEFAULT_BUILD_LOCK_POLL_INTERVAL_MS = 250;
 const COMMAND_MAX_BUFFER = 256 * 1024 * 1024;
 const DEBUG_HOOK_MARKERS = Object.freeze([
   "E365_UI_TEST_IAP_MODE",
@@ -135,6 +137,8 @@ export function buildTestCommand(context) {
       "-configuration", BUILD_CONFIGURATION,
       "-destination", context.testDestination,
       "-derivedDataPath", context.paths.derivedDataPath,
+      `MARKETING_VERSION=${context.marketingVersion}`,
+      `CURRENT_PROJECT_VERSION=${context.buildNumber}`,
       `API_BASE_URL=${context.apiUrl}`,
     ],
     cwd: context.paths.iosDirectory,
@@ -267,14 +271,190 @@ export function nextBuildNumberFromBuilds(builds) {
   return String(maximum + 1);
 }
 
+export function buildAppLockPaths({ lockRoot, app }) {
+  const appId = requireString(app?.id, "IOS_APP_ID");
+  const bundleId = requireString(app?.bundleId, "IOS_BUNDLE_ID");
+  assertSafeIdentifier(appId, "IOS_APP_ID");
+  const bundleHash = createHash("sha256").update(bundleId).digest("hex").slice(0, 16);
+  const key = `${appId}-${bundleHash}`;
+  return {
+    key,
+    lockPath: path.join(lockRoot, `${key}.lock`),
+    reservationPath: path.join(lockRoot, `${key}.reservation.json`),
+  };
+}
+
+function processIsAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+async function removeStaleBuildLock({ lockPath, staleMs, now, isProcessAlive }) {
+  let lockStat;
+  try {
+    lockStat = await stat(lockPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return true;
+    throw error;
+  }
+  let owner;
+  try {
+    owner = JSON.parse(await readFile(path.join(lockPath, "owner.json"), "utf8"));
+  } catch (error) {
+    if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+  }
+  const acquiredAt = Number.isFinite(owner?.acquiredAt) ? owner.acquiredAt : lockStat.mtimeMs;
+  if (now() - acquiredAt < staleMs) return false;
+  if (owner?.pid && isProcessAlive(owner.pid)) return false;
+  await rm(lockPath, { recursive: true, force: true });
+  return true;
+}
+
+async function readReservedBuildNumber(reservationPath) {
+  let reservation;
+  try {
+    reservation = JSON.parse(await readFile(reservationPath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    if (error instanceof SyntaxError) {
+      throw new Error("iOS staging build reservation is malformed");
+    }
+    throw error;
+  }
+  const buildNumber = String(reservation?.buildNumber ?? "");
+  if (!/^[1-9]\d*$/.test(buildNumber)) {
+    throw new Error("iOS staging build reservation is not a positive integer");
+  }
+  return buildNumber;
+}
+
+async function writeReservedBuildNumber(reservationPath, buildNumber) {
+  const temporaryPath = `${reservationPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify({ buildNumber, reservedAt: Date.now() })}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    await rename(temporaryPath, reservationPath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+
+export async function withAppBuildReservation({
+  lockRoot,
+  app,
+  fetchRemoteBuilds,
+  operation,
+  signal,
+  staleMs = DEFAULT_BUILD_LOCK_STALE_MS,
+  pollIntervalMs = DEFAULT_BUILD_LOCK_POLL_INTERVAL_MS,
+  sleep = abortableDelay,
+  now = Date.now,
+  isProcessAlive: checkProcessAlive = processIsAlive,
+}) {
+  if (typeof fetchRemoteBuilds !== "function" || typeof operation !== "function") {
+    throw new Error("iOS staging build reservation requires allocation and upload operations");
+  }
+  await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+  const paths = buildAppLockPaths({ lockRoot, app });
+  const token = randomUUID();
+  while (true) {
+    throwIfAborted(signal);
+    try {
+      await mkdir(paths.lockPath, { mode: 0o700 });
+      try {
+        await writeFile(path.join(paths.lockPath, "owner.json"), `${JSON.stringify({
+          token,
+          pid: process.pid,
+          acquiredAt: now(),
+        })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      } catch (error) {
+        await rm(paths.lockPath, { recursive: true, force: true });
+        throw error;
+      }
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const removed = await removeStaleBuildLock({
+        lockPath: paths.lockPath,
+        staleMs,
+        now,
+        isProcessAlive: checkProcessAlive,
+      });
+      if (!removed) await sleep(pollIntervalMs, signal);
+    }
+  }
+
+  try {
+    throwIfAborted(signal);
+    const remoteBuilds = await fetchRemoteBuilds();
+    const reservedBuildNumber = await readReservedBuildNumber(paths.reservationPath);
+    const allocationInputs = reservedBuildNumber
+      ? [...remoteBuilds, { attributes: { version: reservedBuildNumber } }]
+      : remoteBuilds;
+    const buildNumber = nextBuildNumberFromBuilds(allocationInputs);
+    await writeReservedBuildNumber(paths.reservationPath, buildNumber);
+    throwIfAborted(signal);
+    return await operation(buildNumber);
+  } finally {
+    let owner;
+    try {
+      owner = JSON.parse(await readFile(path.join(paths.lockPath, "owner.json"), "utf8"));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    if (owner && owner.token !== token) {
+      throw new Error("iOS staging build lock ownership changed before release");
+    }
+    if (owner) await rm(paths.lockPath, { recursive: true, force: true });
+  }
+}
+
 export function validateEnvironment(environment, mode, { checkFilesystem = true } = {}) {
   if (mode !== "stage" && mode !== "readback") {
     throw new Error('iOS staging mode must be "stage" or "readback"');
   }
   const dryRun = environment.IOS_STAGING_DRY_RUN === "1";
+  const adapterTimeoutMs = parsePositiveNumber(
+    environment.IOS_TESTFLIGHT_ADAPTER_TIMEOUT_MS,
+    DEFAULT_ADAPTER_TIMEOUT_MS,
+    "IOS_TESTFLIGHT_ADAPTER_TIMEOUT_MS",
+  );
+  const defaultMarginMs = Math.min(MAX_DEADLINE_MARGIN_MS, adapterTimeoutMs / 10);
+  const internalTimeoutMs = parsePositiveNumber(
+    environment.IOS_STAGING_INTERNAL_TIMEOUT_MS,
+    adapterTimeoutMs - defaultMarginMs,
+    "IOS_STAGING_INTERNAL_TIMEOUT_MS",
+  );
+  if (internalTimeoutMs >= adapterTimeoutMs) {
+    throw new Error("iOS staging internal deadline must be shorter than the adapter timeout");
+  }
   const config = {
     mode,
     dryRun,
+    adapterTimeoutMs,
+    internalTimeoutMs,
+    buildLockRoot: path.resolve(
+      environment.IOS_STAGING_LOCK_ROOT?.trim()
+        || path.join(os.tmpdir(), "365wefun-ios-staging-locks"),
+    ),
+    buildLockStaleMs: parsePositiveNumber(
+      environment.IOS_STAGING_LOCK_STALE_MS,
+      DEFAULT_BUILD_LOCK_STALE_MS,
+      "IOS_STAGING_LOCK_STALE_MS",
+    ),
+    buildLockPollIntervalMs: parsePositiveNumber(
+      environment.IOS_STAGING_LOCK_POLL_INTERVAL_MS,
+      DEFAULT_BUILD_LOCK_POLL_INTERVAL_MS,
+      "IOS_STAGING_LOCK_POLL_INTERVAL_MS",
+    ),
     app: {
       id: requireString(environment.IOS_APP_ID, "IOS_APP_ID"),
       scheme: requireString(environment.IOS_SCHEME, "IOS_SCHEME"),
@@ -282,19 +462,17 @@ export function validateEnvironment(environment, mode, { checkFilesystem = true 
       testFlightGroup: requireString(environment.IOS_TESTFLIGHT_GROUP, "IOS_TESTFLIGHT_GROUP"),
     },
     marketingVersion: requireString(environment.IOS_MARKETING_VERSION, "IOS_MARKETING_VERSION"),
-    candidateCommit: requireString(environment.STAGING_CANDIDATE_COMMIT, "STAGING_CANDIDATE_COMMIT").toLowerCase(),
-    repoPath: requireString(environment.STAGING_REPO_PATH, "STAGING_REPO_PATH"),
     testDestination: environment.IOS_TEST_DESTINATION?.trim() || DEFAULT_TEST_DESTINATION,
     pollIntervalMs: parsePositiveNumber(
       environment.IOS_TESTFLIGHT_POLL_INTERVAL_MS,
       DEFAULT_POLL_INTERVAL_MS,
       "IOS_TESTFLIGHT_POLL_INTERVAL_MS",
     ),
-    readbackTimeoutMs: parsePositiveNumber(
+    readbackTimeoutMs: Math.min(parsePositiveNumber(
       environment.IOS_TESTFLIGHT_READBACK_TIMEOUT_MS,
       DEFAULT_READBACK_TIMEOUT_MS,
       "IOS_TESTFLIGHT_READBACK_TIMEOUT_MS",
-    ),
+    ), internalTimeoutMs),
   };
   assertSafeIdentifier(config.app.id, "IOS_APP_ID");
   assertSafeIdentifier(config.app.scheme, "IOS_SCHEME");
@@ -304,10 +482,16 @@ export function validateEnvironment(environment, mode, { checkFilesystem = true 
   if (!/^\d+(?:\.\d+){1,2}$/.test(config.marketingVersion)) {
     throw new Error("iOS staging configuration IOS_MARKETING_VERSION is invalid");
   }
-  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(config.candidateCommit)) {
-    throw new Error("iOS staging configuration STAGING_CANDIDATE_COMMIT must be a full Git commit ID");
-  }
-  if (mode === "readback") {
+  if (mode === "stage") {
+    config.candidateCommit = requireString(
+      environment.STAGING_CANDIDATE_COMMIT,
+      "STAGING_CANDIDATE_COMMIT",
+    ).toLowerCase();
+    config.repoPath = requireString(environment.STAGING_REPO_PATH, "STAGING_REPO_PATH");
+    if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(config.candidateCommit)) {
+      throw new Error("iOS staging configuration STAGING_CANDIDATE_COMMIT must be a full Git commit ID");
+    }
+  } else {
     config.buildNumber = requirePositiveInteger(environment.IOS_BUILD_NUMBER, "IOS_BUILD_NUMBER");
     config.uploadId = requireString(environment.IOS_UPLOAD_ID, "IOS_UPLOAD_ID");
   }
@@ -331,7 +515,7 @@ export function validateEnvironment(environment, mode, { checkFilesystem = true 
       if ((permissions & 0o077) !== 0) {
         throw new Error("ASC_PRIVATE_KEY_PATH must not grant group or other permissions");
       }
-      if (!fs.existsSync(config.repoPath)) {
+      if (mode === "stage" && !fs.existsSync(config.repoPath)) {
         throw new Error("STAGING_REPO_PATH does not exist");
       }
     }
@@ -339,22 +523,181 @@ export function validateEnvironment(environment, mode, { checkFilesystem = true 
   return config;
 }
 
-async function runCommand(command, label = command.file) {
-  console.log(`$ ${redactCommand(command)}`);
+function operationError(message, name = "IOSStagingAbortError") {
+  const error = new Error(message);
+  error.name = name;
+  return error;
+}
+
+function abortReason(signal) {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : operationError("iOS staging operation was aborted");
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+export function createOperationControl({
+  adapterTimeoutMs,
+  internalTimeoutMs,
+  signalSource = process,
+  schedule = setTimeout,
+  cancel = clearTimeout,
+}) {
+  if (!(internalTimeoutMs > 0) || !(adapterTimeoutMs > internalTimeoutMs)) {
+    throw new Error("iOS staging internal deadline must be shorter than the adapter timeout");
+  }
+  const controller = new AbortController();
+  const abort = (reason) => {
+    if (!controller.signal.aborted) controller.abort(reason);
+  };
+  const signalHandlers = new Map([
+    ["SIGTERM", () => abort(operationError("iOS staging received SIGTERM"))],
+    ["SIGINT", () => abort(operationError("iOS staging received SIGINT"))],
+  ]);
+  for (const [name, handler] of signalHandlers) signalSource.on(name, handler);
+  const timer = schedule(() => {
+    abort(operationError("iOS staging internal deadline exceeded", "IOSStagingDeadlineError"));
+  }, internalTimeoutMs);
+  timer?.unref?.();
+  let disposed = false;
+  return {
+    signal: controller.signal,
+    abort,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      cancel(timer);
+      for (const [name, handler] of signalHandlers) signalSource.removeListener(name, handler);
+    },
+  };
+}
+
+function terminateProcessGroup(child, signalName) {
+  if (!child?.pid) return;
   try {
-    return await execFile(command.file, command.args ?? [], {
-      cwd: command.cwd,
-      encoding: "utf8",
-      env: { ...process.env, ...(command.env ?? {}) },
-      maxBuffer: COMMAND_MAX_BUFFER,
-    });
+    if (process.platform === "win32") child.kill(signalName);
+    else process.kill(-child.pid, signalName);
   } catch (error) {
-    const status = Number.isInteger(error?.code) ? `exit ${error.code}` : "execution error";
-    throw new Error(`${label} failed (${status})`);
+    if (error?.code !== "ESRCH") {
+      try {
+        child.kill(signalName);
+      } catch {}
+    }
   }
 }
 
-export async function withCandidateWorktree({ repoPath, candidateCommit, temporaryRoot, operation }) {
+function processGroupIsAlive(child) {
+  if (!child?.pid || process.platform === "win32") return false;
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+async function waitForProcessGroupExit(child, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (processGroupIsAlive(child) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return !processGroupIsAlive(child);
+}
+
+export async function runCommand(command, label = command.file, {
+  signal,
+  killGraceMs = DEFAULT_COMMAND_KILL_GRACE_MS,
+} = {}) {
+  throwIfAborted(signal);
+  console.log(`$ ${redactCommand(command)}`);
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(command.file, command.args ?? [], {
+        cwd: command.cwd,
+        env: { ...process.env, ...(command.env ?? {}) },
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      reject(new Error(`${label} failed (execution error)`));
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let executionError;
+    let escalationTimer;
+    let closed = false;
+    let onAbort = () => {};
+    const finish = (error, result) => {
+      if (closed) return;
+      closed = true;
+      if (escalationTimer) clearTimeout(escalationTimer);
+      signal?.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const terminationError = () => signal?.aborted
+      ? abortReason(signal)
+      : executionError ?? new Error(`${label} failed (execution error)`);
+    const requestTermination = () => {
+      terminateProcessGroup(child, "SIGTERM");
+      escalationTimer ??= setTimeout(async () => {
+        terminateProcessGroup(child, "SIGKILL");
+        const terminated = await waitForProcessGroupExit(child, Math.max(1_000, killGraceMs));
+        if (!terminated) {
+          finish(new Error(`${terminationError().message}; process group did not terminate`));
+          return;
+        }
+        finish(terminationError());
+      }, killGraceMs);
+    };
+    const appendOutput = (field, chunk) => {
+      const next = field === "stdout" ? stdout + chunk : stderr + chunk;
+      if (Buffer.byteLength(next) > COMMAND_MAX_BUFFER) {
+        executionError = new Error(`${label} failed (output limit exceeded)`);
+        requestTermination();
+        return;
+      }
+      if (field === "stdout") stdout = next;
+      else stderr = next;
+    };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => appendOutput("stdout", chunk));
+    child.stderr.on("data", (chunk) => appendOutput("stderr", chunk));
+    onAbort = requestTermination;
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    child.once("error", () => {
+      if ((signal?.aborted || executionError) && processGroupIsAlive(child)) return;
+      finish(signal?.aborted ? abortReason(signal) : new Error(`${label} failed (execution error)`));
+    });
+    child.once("close", (code, childSignal) => {
+      if (signal?.aborted) {
+        if (processGroupIsAlive(child)) return;
+        finish(abortReason(signal));
+        return;
+      }
+      if (executionError) {
+        if (processGroupIsAlive(child)) return;
+        finish(executionError);
+        return;
+      }
+      if (code === 0) {
+        finish(null, { stdout, stderr });
+        return;
+      }
+      const status = Number.isInteger(code) ? `exit ${code}` : `signal ${childSignal ?? "unknown"}`;
+      finish(new Error(`${label} failed (${status})`));
+    });
+  });
+}
+
+export async function withCandidateWorktree({ repoPath, candidateCommit, temporaryRoot, operation, signal }) {
   const ownsTemporaryRoot = temporaryRoot === undefined;
   const root = temporaryRoot ?? await mkdtemp(path.join(os.tmpdir(), "ios-staging-"));
   const candidatePath = path.join(root, "candidate");
@@ -368,14 +711,14 @@ export async function withCandidateWorktree({ repoPath, candidateCommit, tempora
     const resolved = await runCommand({
       file: "git",
       args: ["-C", repoPath, "rev-parse", "--verify", `${candidateCommit}^{commit}`],
-    }, "Candidate commit validation");
+    }, "Candidate commit validation", { signal });
     if (resolved.stdout.trim().toLowerCase() !== candidateCommit.toLowerCase()) {
       throw new Error("Candidate commit did not resolve to the exact requested commit");
     }
     await runCommand({
       file: "git",
       args: ["-C", repoPath, "worktree", "add", "--detach", candidatePath, candidateCommit],
-    }, "Candidate worktree creation");
+    }, "Candidate worktree creation", { signal });
     added = true;
     result = await operation(candidatePath, root);
   } catch (error) {
@@ -439,7 +782,10 @@ function validateApiUrl(value) {
   return url;
 }
 
-async function createAppStoreConnectClient(apple) {
+export async function createAppStoreConnectClient(apple, {
+  signal,
+  fetchImpl = globalThis.fetch,
+} = {}) {
   const privateKeyPem = await readFile(apple.privateKeyPath, "utf8");
   let privateKey;
   try {
@@ -449,12 +795,14 @@ async function createAppStoreConnectClient(apple) {
   }
 
   async function request(requestPath, { method = "GET", body } = {}) {
+    throwIfAborted(signal);
     const url = validateApiUrl(requestPath);
     let response;
     try {
-      response = await fetch(url, {
+      response = await fetchImpl(url, {
         method,
         redirect: "error",
+        signal,
         headers: {
           Authorization: `Bearer ${createJwt({ ...apple, privateKey })}`,
           Accept: "application/json",
@@ -463,6 +811,7 @@ async function createAppStoreConnectClient(apple) {
         body: body ? JSON.stringify(body) : undefined,
       });
     } catch {
+      if (signal?.aborted) throw abortReason(signal);
       throw new Error("App Store Connect request failed before a response was received");
     }
     if (!response.ok) {
@@ -537,8 +886,19 @@ async function createAppStoreConnectClient(apple) {
   };
 }
 
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function abortableDelay(milliseconds, signal) {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortReason(signal));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function assertWithinDeadline(startedAt, timeoutMs, stage) {
@@ -556,12 +916,14 @@ export async function ensureProcessedAndInGroup({
   groupName,
   timeoutMs,
   pollIntervalMs,
-  sleep = delay,
+  sleep = abortableDelay,
   now = () => new Date(),
+  signal,
 }) {
   const startedAt = Date.now();
   let build;
   while (true) {
+    throwIfAborted(signal);
     assertWithinDeadline(startedAt, timeoutMs, "processing");
     build = await client.findExactBuild({ appResourceId, marketingVersion, buildNumber });
     const state = build?.attributes?.processingState;
@@ -569,16 +931,18 @@ export async function ensureProcessedAndInGroup({
     if (state === "FAILED" || state === "INVALID") {
       throw new Error("TestFlight build processing failed");
     }
-    await sleep(pollIntervalMs);
+    await sleep(pollIntervalMs, signal);
   }
 
+  throwIfAborted(signal);
   const group = await client.findExactInternalGroup({ appResourceId, groupName });
   if (!await client.groupHasBuild(group.id, build.id)) {
     await client.addBuildToGroup(group.id, build.id);
   }
   while (!await client.groupHasBuild(group.id, build.id)) {
+    throwIfAborted(signal);
     assertWithinDeadline(startedAt, timeoutMs, "Internal Testing membership");
-    await sleep(pollIntervalMs);
+    await sleep(pollIntervalMs, signal);
   }
 
   return {
@@ -642,11 +1006,11 @@ async function writeExportOptions(exportOptionsPath) {
   await writeFile(exportOptionsPath, plist, { encoding: "utf8", mode: 0o600 });
 }
 
-async function readPlist(plistPath) {
+async function readPlist(plistPath, signal) {
   const result = await runCommand({
     file: "plutil",
     args: ["-convert", "json", "-o", "-", plistPath],
-  }, "Info.plist inspection");
+  }, "Info.plist inspection", { signal });
   try {
     return JSON.parse(result.stdout);
   } catch {
@@ -675,8 +1039,8 @@ async function findForbiddenStoreKitConfiguration(root) {
   return null;
 }
 
-async function verifyAppBundle(appBundlePath, context, source) {
-  const plist = await readPlist(path.join(appBundlePath, "Info.plist"));
+async function verifyAppBundle(appBundlePath, context, source, signal) {
+  const plist = await readPlist(path.join(appBundlePath, "Info.plist"), signal);
   const identity = verifyArtifactIdentity({
     bundleId: plist.CFBundleIdentifier,
     marketingVersion: plist.CFBundleShortVersionString,
@@ -733,11 +1097,12 @@ export function extractUploadIdentifier(stdout, fallback) {
   return fallback;
 }
 
-async function stage(config) {
-  const client = await createAppStoreConnectClient(config.apple);
+async function stage(config, signal) {
+  const client = await createAppStoreConnectClient(config.apple, { signal });
   return withCandidateWorktree({
     repoPath: config.repoPath,
     candidateCommit: config.candidateCommit,
+    signal,
     async operation(candidatePath, temporaryRoot) {
       const initialPaths = createBuildPaths({
         candidatePath,
@@ -745,73 +1110,82 @@ async function stage(config) {
         app: config.app,
       });
       await mkdir(initialPaths.appRoot, { recursive: true });
-      await runCommand(buildXcodegenCommand(initialPaths), "XcodeGen");
+      await runCommand(buildXcodegenCommand(initialPaths), "XcodeGen", { signal });
 
       const appResource = await client.findApp(config.app.bundleId);
-      const buildNumber = nextBuildNumberFromBuilds(await client.listBuilds(appResource.id));
-      const context = {
+      return withAppBuildReservation({
+        lockRoot: config.buildLockRoot,
         app: config.app,
-        paths: initialPaths,
-        marketingVersion: config.marketingVersion,
-        buildNumber,
-        testDestination: config.testDestination,
-        apiUrl: STAGING_API_URL,
-      };
-      const buildSettings = await runCommand(buildBuildSettingsCommand(context), "Xcode Staging preflight");
-      verifyBuildSettings(parseBuildSettings(buildSettings.stdout), context);
-      await runCommand(buildTestCommand(context), `${config.app.scheme} tests`);
-      await runCommand(buildArchiveCommand(context), `${config.app.scheme} archive`);
+        signal,
+        staleMs: config.buildLockStaleMs,
+        pollIntervalMs: config.buildLockPollIntervalMs,
+        fetchRemoteBuilds: () => client.listBuilds(appResource.id),
+        async operation(buildNumber) {
+          const context = {
+            app: config.app,
+            paths: initialPaths,
+            marketingVersion: config.marketingVersion,
+            buildNumber,
+            testDestination: config.testDestination,
+            apiUrl: STAGING_API_URL,
+          };
+          const buildSettings = await runCommand(buildBuildSettingsCommand(context), "Xcode Staging preflight", { signal });
+          verifyBuildSettings(parseBuildSettings(buildSettings.stdout), context);
+          await runCommand(buildTestCommand(context), `${config.app.scheme} tests`, { signal });
+          await runCommand(buildArchiveCommand(context), `${config.app.scheme} archive`, { signal });
 
-      const archiveApplications = path.join(context.paths.archivePath, "Products", "Applications");
-      const archiveApp = await findSingleEntry(
-        archiveApplications,
-        (entry) => entry.isDirectory() && entry.name.endsWith(".app"),
-        "archived .app",
-      );
-      const archiveIdentity = await verifyAppBundle(archiveApp, context, "archive");
+          const archiveApplications = path.join(context.paths.archivePath, "Products", "Applications");
+          const archiveApp = await findSingleEntry(
+            archiveApplications,
+            (entry) => entry.isDirectory() && entry.name.endsWith(".app"),
+            "archived .app",
+          );
+          const archiveIdentity = await verifyAppBundle(archiveApp, context, "archive", signal);
 
-      await mkdir(context.paths.exportPath, { recursive: true });
-      await writeExportOptions(context.paths.exportOptionsPath);
-      await runCommand(buildExportCommand(context), `${config.app.scheme} export`);
-      const ipaPath = await findSingleEntry(
-        context.paths.exportPath,
-        (entry) => entry.isFile() && entry.name.endsWith(".ipa"),
-        "exported IPA",
-      );
-      await rm(context.paths.ipaExpansionPath, { recursive: true, force: true });
-      await mkdir(context.paths.ipaExpansionPath, { recursive: true });
-      await runCommand(buildUnzipCommand(ipaPath, context.paths), "IPA expansion");
-      const ipaApp = await findSingleEntry(
-        path.join(context.paths.ipaExpansionPath, "Payload"),
-        (entry) => entry.isDirectory() && entry.name.endsWith(".app"),
-        "IPA Payload .app",
-      );
-      const ipaIdentity = await verifyAppBundle(ipaApp, context, "IPA");
-      if (JSON.stringify(archiveIdentity) !== JSON.stringify(ipaIdentity)) {
-        throw new Error("Archive and IPA identities do not exactly match");
-      }
+          await mkdir(context.paths.exportPath, { recursive: true });
+          await writeExportOptions(context.paths.exportOptionsPath);
+          await runCommand(buildExportCommand(context), `${config.app.scheme} export`, { signal });
+          const ipaPath = await findSingleEntry(
+            context.paths.exportPath,
+            (entry) => entry.isFile() && entry.name.endsWith(".ipa"),
+            "exported IPA",
+          );
+          await rm(context.paths.ipaExpansionPath, { recursive: true, force: true });
+          await mkdir(context.paths.ipaExpansionPath, { recursive: true });
+          await runCommand(buildUnzipCommand(ipaPath, context.paths), "IPA expansion", { signal });
+          const ipaApp = await findSingleEntry(
+            path.join(context.paths.ipaExpansionPath, "Payload"),
+            (entry) => entry.isDirectory() && entry.name.endsWith(".app"),
+            "IPA Payload .app",
+          );
+          const ipaIdentity = await verifyAppBundle(ipaApp, context, "IPA", signal);
+          if (JSON.stringify(archiveIdentity) !== JSON.stringify(ipaIdentity)) {
+            throw new Error("Archive and IPA identities do not exactly match");
+          }
 
-      const upload = await runCommand(buildUploadCommand({
-        ipaPath,
-        keyId: config.apple.keyId,
-        issuerId: config.apple.issuerId,
-        privateKeyPath: config.apple.privateKeyPath,
-      }), "App Store upload");
-      const fallbackUploadId = `asc:${appResource.id}:${config.marketingVersion}:${buildNumber}`;
-      return {
-        appId: config.app.id,
-        scheme: config.app.scheme,
-        bundleId: config.app.bundleId,
-        marketingVersion: config.marketingVersion,
-        buildNumber,
-        uploadId: extractUploadIdentifier(upload.stdout, fallbackUploadId),
-      };
+          const upload = await runCommand(buildUploadCommand({
+            ipaPath,
+            keyId: config.apple.keyId,
+            issuerId: config.apple.issuerId,
+            privateKeyPath: config.apple.privateKeyPath,
+          }), "App Store upload", { signal });
+          const fallbackUploadId = `asc:${appResource.id}:${config.marketingVersion}:${buildNumber}`;
+          return {
+            appId: config.app.id,
+            scheme: config.app.scheme,
+            bundleId: config.app.bundleId,
+            marketingVersion: config.marketingVersion,
+            buildNumber,
+            uploadId: extractUploadIdentifier(upload.stdout, fallbackUploadId),
+          };
+        },
+      });
     },
   });
 }
 
-async function readback(config) {
-  const client = await createAppStoreConnectClient(config.apple);
+async function readback(config, signal) {
+  const client = await createAppStoreConnectClient(config.apple, { signal });
   const appResource = await client.findApp(config.app.bundleId);
   return ensureProcessedAndInGroup({
     client,
@@ -822,6 +1196,7 @@ async function readback(config) {
     groupName: config.app.testFlightGroup,
     timeoutMs: config.readbackTimeoutMs,
     pollIntervalMs: config.pollIntervalMs,
+    signal,
   });
 }
 
@@ -877,12 +1252,19 @@ function dryRun(config) {
 async function main() {
   const mode = process.argv[2];
   const config = validateEnvironment(process.env, mode);
-  const evidence = config.dryRun
-    ? dryRun(config)
-    : mode === "stage"
-      ? await stage(config)
-      : await readback(config);
-  console.log(JSON.stringify(evidence));
+  if (config.dryRun) {
+    console.log(JSON.stringify(dryRun(config)));
+    return;
+  }
+  const control = createOperationControl(config);
+  try {
+    const evidence = mode === "stage"
+      ? await stage(config, control.signal)
+      : await readback(config, control.signal);
+    console.log(JSON.stringify(evidence));
+  } finally {
+    control.dispose();
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
