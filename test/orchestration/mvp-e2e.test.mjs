@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import { pollClickUpOnce } from "../../cloud/src/clickup-poller.mjs";
@@ -25,7 +26,12 @@ const CANDIDATE_ARTIFACT = {
   digest: "sha256:e2e-candidate-v1",
   object: "releases/version-e2e-1/sha256:e2e-candidate-v1",
 };
-const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const MINIMAL_PNG = Uint8Array.from([
+  137, 80, 78, 71, 13, 10, 26, 10,
+  0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0, 0, 181, 28, 12, 2,
+  0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 100, 248, 15, 0, 1, 5, 1, 1, 39, 24, 227, 102,
+  0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+]);
 const REJECTION_IMAGE_URL = "https://attachments.clickup.com/e2e-rejection.png";
 
 const CONFIG = {
@@ -161,13 +167,24 @@ async function seedActiveVersion(harness, versionId) {
   });
 }
 
+async function inspectLiveCodexImage(options) {
+  assert.equal(options.imagePaths.length, 1);
+  const [imagePath] = options.imagePaths;
+  const imageDirectory = path.dirname(imagePath);
+  assert.match(path.basename(imageDirectory), /^taskboard-clickup-images-/);
+  await access(imagePath);
+  await access(imageDirectory);
+  assert.deepEqual(new Uint8Array(await readFile(imagePath)), MINIMAL_PNG);
+  return imageDirectory;
+}
+
 test("complete MVP loop preserves an image-only rejection through development and acceptance", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   let clickUpTask = makeClickUpTask();
   let clickUpComments = [];
   const clickUpAttachments = new Map([
-    [REJECTION_IMAGE_URL, { body: PNG, contentType: "image/png" }],
+    [REJECTION_IMAGE_URL, { body: MINIMAL_PNG, contentType: "image/png" }],
   ]);
   const env = await makeEnv(
     harness,
@@ -177,6 +194,8 @@ test("complete MVP loop preserves an image-only rejection through development an
   );
   let developmentCodexOptions;
   let acceptanceCodexOptions;
+  let developmentImageDirectory;
+  let acceptanceImageDirectory;
 
   const codex = {
     run: async (options) => {
@@ -191,6 +210,7 @@ test("complete MVP loop preserves an image-only rejection through development an
       }
       if (prompt.includes("验收器")) {
         acceptanceCodexOptions = options;
+        acceptanceImageDirectory = await inspectLiveCodexImage(options);
         return { exitCode: 0, stdout: JSON.stringify({
           acceptance_result: "accepted",
           criteria_results: [{ id: "ac-1", result: "passed" }],
@@ -198,6 +218,7 @@ test("complete MVP loop preserves an image-only rejection through development an
         }), stderr: "" };
       }
       developmentCodexOptions = options;
+      developmentImageDirectory = await inspectLiveCodexImage(options);
       return { exitCode: 0, stdout: JSON.stringify({ change_summary: "实现按钮", tests: [] }), stderr: "" };
     },
   };
@@ -295,6 +316,7 @@ test("complete MVP loop preserves an image-only rejection through development an
   assert.equal(developmentCodexOptions.imagePaths.length, 1);
   assert.match(developmentCodexOptions.prompt, /评论 comment-e2e-rejection 图片：e2e-rejection\.png/);
   await assert.rejects(access(developmentCodexOptions.imagePaths[0]));
+  await assert.rejects(access(developmentImageDirectory));
   assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "accepting");
 
   // 4) 系统自动验收通过 -> 部署测试环境 -> 待测试
@@ -311,6 +333,7 @@ test("complete MVP loop preserves an image-only rejection through development an
   assert.equal(acceptanceCodexOptions.imagePaths.length, 1);
   assert.match(acceptanceCodexOptions.prompt, /评论 comment-e2e-rejection 图片：e2e-rejection\.png/);
   await assert.rejects(access(acceptanceCodexOptions.imagePaths[0]));
+  await assert.rejects(access(acceptanceImageDirectory));
   assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "accepting");
   const stageResult = await executeStagingGate({
     job: {
