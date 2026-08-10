@@ -35,9 +35,9 @@ import {
   targetVersionOfTask,
 } from "../orchestration/application/version-gate.mjs";
 import {
+  createProductionCodexAdapter,
   createOrchestratorLifecycle,
   guardDurableMethods,
-  runCodex,
 } from "../orchestration/runner/codex-runner.mjs";
 import { recoverExpiredRunnerJobsOnTick } from "../orchestration/runner/tick-recovery.mjs";
 import {
@@ -135,17 +135,7 @@ const gitOps = {
   createWorktree: (options) => createTaskWorktree(options),
 };
 
-const codex = {
-  run: async ({ prompt, workdir, taskId, signal }) => runCodex({
-    workdir: workdir ?? runtime.repoPath,
-    prompt,
-    timeoutMinutes: runtime.codexTimeoutMinutes ?? 20,
-    codexBin: runtime.codexBin ?? "codex",
-    signal,
-    abortGraceMs: runtime.codexAbortGraceMs ?? 2_000,
-    abortForceCloseMs: runtime.codexAbortForceCloseMs ?? 1_000,
-  }),
-};
+const codex = createProductionCodexAdapter({ runtime });
 
 const CLICKUP_DURABLE_METHODS = [
   "createTask",

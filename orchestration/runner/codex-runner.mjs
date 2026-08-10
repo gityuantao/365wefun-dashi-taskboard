@@ -139,6 +139,23 @@ export function runCodex({
   });
 }
 
+export function createProductionCodexAdapter({ runtime, runCodexImpl = runCodex, spawnImpl } = {}) {
+  return {
+    run: async ({ prompt, workdir, taskId, signal, imagePaths }) => runCodexImpl({
+      workdir: workdir ?? runtime.repoPath,
+      prompt,
+      taskId,
+      imagePaths,
+      timeoutMinutes: runtime.codexTimeoutMinutes ?? 20,
+      codexBin: runtime.codexBin ?? "codex",
+      signal,
+      abortGraceMs: runtime.codexAbortGraceMs ?? 2_000,
+      abortForceCloseMs: runtime.codexAbortForceCloseMs ?? 1_000,
+      ...(spawnImpl ? { spawnImpl } : {}),
+    }),
+  };
+}
+
 export function guardDurableMethods(target, { methods, assertActive }) {
   const guarded = new Set(methods);
   return new Proxy(target, {

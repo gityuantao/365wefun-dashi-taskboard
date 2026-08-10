@@ -69,6 +69,36 @@ test("runCodex attaches every comment image before an optional skill", async () 
   ]);
 });
 
+test("production Codex adapter forwards comment images into spawned CLI arguments", async () => {
+  const { createProductionCodexAdapter } = await import(
+    "../../orchestration/runner/codex-runner.mjs"
+  );
+  const child = mockChild();
+  let args;
+  const codex = createProductionCodexAdapter({
+    runtime: {
+      repoPath: "/tmp/production-repo",
+      codexBin: "codex-production",
+      codexTimeoutMinutes: 20,
+    },
+    spawnImpl: (_bin, value) => {
+      args = value;
+      return child;
+    },
+  });
+
+  const promise = codex.run({
+    prompt: "inspect the ClickUp screenshot",
+    workdir: "/tmp/production-worktree",
+    taskId: "task-production",
+    imagePaths: ["/tmp/clickup-comment.png"],
+  });
+  child.emit("close", 0);
+  await promise;
+
+  assert.deepEqual(args, ["exec", "--image", "/tmp/clickup-comment.png"]);
+});
+
 test("runCodex rejects a relative comment image path before spawning", () => {
   let spawned = false;
 
