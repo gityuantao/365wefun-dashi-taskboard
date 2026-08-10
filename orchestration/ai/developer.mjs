@@ -2,6 +2,7 @@ import { dispatchCommand } from "../application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { collectCommentMedia } from "../clickup/comment-media.mjs";
+import { redactCredentials } from "../domain/redaction.mjs";
 import {
   buildDevelopmentPrompt,
   commentImageDecodeFailure,
@@ -34,22 +35,7 @@ function concise(text, max = 60) {
 }
 
 function safeDiagnostic(reason) {
-  const redacted = String(reason ?? "")
-    .replace(
-      /(["'](?:api[_-]?key|token|password|secret|authorization)["']\s*:\s*)(["'])(.*?)\2/gi,
-      "$1$2[REDACTED]$2",
-    )
-    .replace(
-      /(authorization\s*[:=]\s*)(?:(?:bearer|basic)\s+)?[^\s,;}\]]+/gi,
-      "$1[REDACTED]",
-    )
-    .replace(/\b((?:bearer|basic)\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]")
-    .replace(
-      /((?:api[_-]?key|token|password|secret)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
-      "$1[REDACTED]",
-    )
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|pk_[A-Za-z0-9_-]{8,})\b/g, "[REDACTED]");
-  return concise(redacted, 200);
+  return concise(redactCredentials(reason), 200);
 }
 
 async function rollbackDevelopment({ db, client, taskId, jobId, now, reason }) {

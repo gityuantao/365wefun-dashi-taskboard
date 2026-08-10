@@ -1,9 +1,8 @@
 import { enabledIosApps } from "../ios/app-registry.mjs";
+import { redactCredentials } from "../domain/redaction.mjs";
 
 function concise(value, max = 300) {
-  return String(value ?? "unknown error")
-    .replace(/(?:bearer|basic)\s+\S+/gi, "[REDACTED]")
-    .replace(/((?:password|token|secret|api[_-]?key|key)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]")
+  return redactCredentials(value ?? "unknown error")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, max);
@@ -51,24 +50,18 @@ function requireStagedEvidence(staged, { app, candidateCommit, targetVersion }) 
   };
 }
 
-function reusableEvidence(app, row) {
+function reusableStagedEvidence(app, row) {
   return {
-    id: app.id,
-    name: app.name,
+    appId: app.id,
     scheme: app.scheme,
     bundleId: app.bundleId,
     marketingVersion: row.marketing_version,
     buildNumber: row.build_number,
     uploadId: row.upload_id,
-    processingStatus: row.processing_status,
-    testGroup: row.test_group,
-    membershipConfirmed: true,
-    checkedAt: row.completed_at,
-    reused: true,
   };
 }
 
-function confirmedEvidence(app, staged, observed) {
+function confirmedEvidence(app, staged, observed, reused = false) {
   return {
     id: app.id,
     name: app.name,
@@ -81,7 +74,7 @@ function confirmedEvidence(app, staged, observed) {
     testGroup: observed.testGroup,
     membershipConfirmed: true,
     checkedAt: observed.checkedAt,
-    reused: false,
+    reused,
   };
 }
 
@@ -195,7 +188,8 @@ async function failAttempt(db, { taskId, candidateCommit, appId, attempt, stage,
 }
 
 function readbackFailureStage(error) {
-  return /membership|internal[ _-]?testing|test\s*group/i.test(String(error?.message ?? error))
+  if (error?.stage === "processing" || error?.stage === "internal_testing") return error.stage;
+  return /membership|internal[ _-]?testing|test(?:\s*|_)group/i.test(String(error?.message ?? error))
     ? "internal_testing"
     : "processing";
 }
@@ -243,10 +237,17 @@ function failureComment({ app, targetVersion, staged, stage, error }) {
   ].join("\n");
 }
 
-async function postComment(client, taskId, text) {
+async function postFailureComment(client, taskId, text) {
   try {
     await client?.postComment?.(taskId, text);
   } catch {}
+}
+
+async function postSuccessComment(client, taskId, text) {
+  if (!client || typeof client.postComment !== "function") {
+    throw new Error("ClickUp comment client is not configured");
+  }
+  await client.postComment(taskId, text);
 }
 
 export async function executeIosStagingGate({
@@ -275,7 +276,43 @@ export async function executeIosStagingGate({
         app,
       });
       if (reusable) {
-        confirmedApps.push(reusableEvidence(app, reusable));
+        attempt = Number(reusable.attempt);
+        staged = reusableStagedEvidence(app, reusable);
+        stage = "processing";
+        let observed;
+        try {
+          observed = await adapter.readback({ app, staged });
+        } catch (error) {
+          stage = readbackFailureStage(error);
+          throw error;
+        }
+        await recordReadback(db, {
+          taskId,
+          candidateCommit,
+          appId: app.id,
+          attempt,
+          observed,
+          stage,
+        });
+        validateProcessing(observed);
+        stage = "internal_testing";
+        await recordReadback(db, {
+          taskId,
+          candidateCommit,
+          appId: app.id,
+          attempt,
+          observed,
+          stage,
+        });
+        validateMembership(observed, app);
+        await completeAttempt(db, {
+          taskId,
+          candidateCommit,
+          appId: app.id,
+          attempt,
+          completedAt: observed.checkedAt,
+        });
+        confirmedApps.push(confirmedEvidence(app, staged, observed, true));
         continue;
       }
 
@@ -347,7 +384,7 @@ export async function executeIosStagingGate({
           completedAt: occurredAt,
         });
       }
-      await postComment(client, taskId, failureComment({
+      await postFailureComment(client, taskId, failureComment({
         app,
         targetVersion,
         staged,
@@ -362,6 +399,20 @@ export async function executeIosStagingGate({
     }
   }
 
-  await postComment(client, taskId, successComment(candidateCommit, confirmedApps));
+  try {
+    await postSuccessComment(client, taskId, successComment(candidateCommit, confirmedApps));
+  } catch (error) {
+    return {
+      status: "failed",
+      apps: confirmedApps,
+      error: {
+        appId: "all",
+        appName: "All enabled iOS Apps",
+        stage: "comment",
+        message: concise(error?.message ?? error),
+        retryable: true,
+      },
+    };
+  }
   return { status: "completed", apps: confirmedApps };
 }

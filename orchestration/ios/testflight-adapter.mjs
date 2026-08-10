@@ -19,6 +19,13 @@ function requireString(value, field, prefix) {
   return value;
 }
 
+function readbackError(message, stage) {
+  const error = new Error(message);
+  error.name = "TestFlightReadbackError";
+  error.stage = stage;
+  return error;
+}
+
 function parseLastJsonEvidence(stdout, prefix) {
   const line = String(stdout ?? "").trim().split(/\r?\n/).at(-1);
   if (!line) throw new Error(`${prefix} did not return JSON evidence`);
@@ -96,17 +103,23 @@ function readbackEvidence(evidence, { app, staged }) {
   };
   for (const [field, value] of Object.entries(expected)) {
     if (evidence[field] !== value) {
-      throw new Error(`TestFlight readback evidence ${field} does not exactly match staged build`);
+      throw readbackError(
+        `TestFlight readback evidence ${field} does not exactly match staged build`,
+        field === "testGroup" ? "internal_testing" : "processing",
+      );
     }
   }
   if (evidence.processed !== true) {
-    throw new Error("TestFlight readback evidence is not processed");
+    throw readbackError("TestFlight readback evidence is not processed", "processing");
   }
   if (evidence.processingStatus !== "processed") {
-    throw new Error("TestFlight readback evidence processingStatus is not processed");
+    throw readbackError("TestFlight readback evidence processingStatus is not processed", "processing");
   }
   if (evidence.membershipConfirmed !== true) {
-    throw new Error("TestFlight readback evidence does not confirm Internal Testing membership");
+    throw readbackError(
+      "TestFlight readback evidence does not confirm Internal Testing membership",
+      "internal_testing",
+    );
   }
   return {
     processed: true,

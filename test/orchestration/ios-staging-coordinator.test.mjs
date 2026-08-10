@@ -134,6 +134,55 @@ test("AU success and CN upload failure fails the aggregate at only the CN upload
   assert.doesNotMatch(client.comments[0].text, /海外版|top-secret-token/);
 });
 
+test("failure evidence redacts credentials from D1, result, and ClickUp comment", async (t) => {
+  const cases = [
+    {
+      name: "quoted JSON credentials",
+      message: 'request failed: {"token":"json-token-value","password":"json-password-value","key":"json-key-value","secret":"json-secret-value"}',
+      secrets: ["json-token-value", "json-password-value", "json-key-value", "json-secret-value"],
+    },
+    {
+      name: "quoted JSON Authorization bearer",
+      message: 'request failed: {"Authorization":"Bearer json-bearer-value"}',
+      secrets: ["json-bearer-value"],
+    },
+    {
+      name: "Authorization Basic header",
+      message: "request failed: Authorization: Basic dXNlcjpzdXBlci1zZWNyZXQ=",
+      secrets: ["dXNlcjpzdXBlci1zZWNyZXQ="],
+    },
+  ];
+
+  for (const credentialCase of cases) {
+    await t.test(credentialCase.name, async (subtest) => {
+      const harness = await createCloudWorkerHarness();
+      subtest.after(() => harness.dispose());
+      const client = createClient();
+      const adapter = createAdapter({
+        stageFor() {
+          throw new Error(credentialCase.message);
+        },
+      });
+
+      const result = await execute({
+        db: harness.db,
+        client,
+        adapter,
+        apps: [CURRENT_APPS[0]],
+      });
+
+      const rows = await deploymentRows(harness.db);
+      const sinks = [result.error.message, rows[0].error, client.comments[0].text];
+      for (const sink of sinks) {
+        assert.match(sink, /\[REDACTED\]/);
+        for (const secret of credentialCase.secrets) {
+          assert.equal(String(sink).includes(secret), false, `${credentialCase.name} leaked ${secret}`);
+        }
+      }
+    });
+  }
+});
+
 test("both Apps uploaded but CN still processing fails the aggregate", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -187,6 +236,27 @@ test("both Apps processed but CN group membership missing fails the aggregate", 
   assert.equal(result.error.appId, "cn");
   assert.equal(result.error.stage, "internal_testing");
   assert.deepEqual(result.apps.map(({ id }) => id), ["au"]);
+});
+
+test("a real-shaped adapter testGroup error is classified as internal testing", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const client = createClient();
+  const adapter = createAdapter({
+    readbackFor() {
+      throw new Error("TestFlight readback evidence testGroup does not exactly match staged build");
+    },
+  });
+
+  const result = await execute({
+    db: harness.db,
+    client,
+    adapter,
+    apps: [CURRENT_APPS[0]],
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.stage, "internal_testing");
 });
 
 test("every enabled App fully confirmed completes with persistent per-App evidence and one structured comment", async (t) => {
@@ -262,6 +332,57 @@ test("every enabled App fully confirmed completes with persistent per-App eviden
   }
 });
 
+test("a success evidence comment delivery failure keeps the gate failed and retryable", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const client = {
+    async postComment() {
+      throw new Error("ClickUp unavailable token=comment-delivery-secret");
+    },
+  };
+
+  const result = await execute({
+    db: harness.db,
+    client,
+    adapter: createAdapter(),
+    apps: [CURRENT_APPS[0]],
+  });
+
+  assert.equal(result.status, "failed");
+  assert.deepEqual(
+    {
+      appId: result.error.appId,
+      stage: result.error.stage,
+      retryable: result.error.retryable,
+    },
+    { appId: "all", stage: "comment", retryable: true },
+  );
+  assert.match(result.error.message, /\[REDACTED\]/);
+  assert.doesNotMatch(result.error.message, /comment-delivery-secret/);
+  assert.deepEqual(result.apps.map(({ id }) => id), ["au"]);
+  assert.deepEqual(
+    (await deploymentRows(harness.db)).map(({ status }) => status),
+    ["succeeded"],
+  );
+  const retryClient = createClient();
+  const retryAdapter = createAdapter({
+    stageFor() {
+      throw new Error("comment retry must not upload again");
+    },
+  });
+
+  const retry = await execute({
+    db: harness.db,
+    client: retryClient,
+    adapter: retryAdapter,
+    apps: [CURRENT_APPS[0]],
+  });
+
+  assert.equal(retry.status, "completed");
+  assert.deepEqual(retryAdapter.calls, ["readback:au:upload-au-111111"]);
+  assert.equal(retryClient.comments.length, 1);
+});
+
 test("a third enabled App is staged in registry order without coordinator branching", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -301,6 +422,17 @@ test("retrying the exact Candidate reuses every fully confirmed App", async (t) 
     stageFor() {
       throw new Error("a reusable App must not be uploaded again");
     },
+    readbackFor({ app, staged }) {
+      assert.deepEqual(staged, {
+        appId: app.id,
+        scheme: app.scheme,
+        bundleId: app.bundleId,
+        marketingVersion: TARGET_VERSION,
+        buildNumber: app.id === "au" ? "41" : "52",
+        uploadId: `upload-${app.id}-111111`,
+      });
+      return confirmedReadback(app);
+    },
   });
 
   const retry = await execute({ db: harness.db, client, adapter: retryAdapter });
@@ -310,8 +442,52 @@ test("retrying the exact Candidate reuses every fully confirmed App", async (t) 
     { id: "au", reused: true },
     { id: "cn", reused: true },
   ]);
-  assert.deepEqual(retryAdapter.calls, []);
+  assert.deepEqual(retryAdapter.calls, [
+    "readback:au:upload-au-111111",
+    "readback:cn:upload-cn-111111",
+  ]);
   assert.equal((await deploymentRows(harness.db)).length, 2);
+});
+
+test("a persisted success fails closed when authoritative reuse readback is no longer confirmed", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const client = createClient();
+  const first = await execute({ db: harness.db, client, adapter: createAdapter() });
+  assert.equal(first.status, "completed");
+  const retryAdapter = createAdapter({
+    stageFor() {
+      throw new Error("persisted success must skip upload");
+    },
+    readbackFor({ app }) {
+      return app.id === "au"
+        ? {
+          processed: false,
+          processingStatus: "processing",
+          testGroup: app.testFlightGroup,
+          membershipConfirmed: false,
+          checkedAt: NOW,
+        }
+        : confirmedReadback(app);
+    },
+  });
+
+  const retry = await execute({ db: harness.db, client, adapter: retryAdapter });
+
+  assert.equal(retry.status, "failed");
+  assert.deepEqual(
+    { appId: retry.error.appId, stage: retry.error.stage },
+    { appId: "au", stage: "processing" },
+  );
+  assert.deepEqual(retryAdapter.calls, ["readback:au:upload-au-111111"]);
+  const rows = await deploymentRows(harness.db);
+  assert.deepEqual(
+    rows.map(({ app_id, status }) => ({ app_id, status })),
+    [
+      { app_id: "au", status: "failed" },
+      { app_id: "cn", status: "succeeded" },
+    ],
+  );
 });
 
 test("a success-shaped row without a complete lifecycle is not reusable", async (t) => {

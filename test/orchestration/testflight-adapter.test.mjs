@@ -134,14 +134,14 @@ test("readback accepts only matching processed Internal Testing evidence", async
   });
 });
 
-for (const [field, value] of [
-  ["bundleId", "online.365english.other"],
-  ["marketingVersion", "9.9.9"],
-  ["buildNumber", "99"],
-  ["testGroup", "External Testing"],
-  ["processed", false],
-  ["processingStatus", "processing"],
-  ["membershipConfirmed", false],
+for (const [field, value, stage] of [
+  ["bundleId", "online.365english.other", "processing"],
+  ["marketingVersion", "9.9.9", "processing"],
+  ["buildNumber", "99", "processing"],
+  ["testGroup", "External Testing", "internal_testing"],
+  ["processed", false, "processing"],
+  ["processingStatus", "processing", "processing"],
+  ["membershipConfirmed", false, "internal_testing"],
 ]) {
   test(`readback fails closed when ${field} is not the exact confirmed value`, async () => {
     const evidence = {
@@ -175,7 +175,11 @@ for (const [field, value] of [
           uploadId: "upload-42",
         },
       }),
-      /readback evidence/i,
+      (error) => {
+        assert.match(error.message, /readback evidence/i);
+        assert.equal(error.stage, stage);
+        return true;
+      },
     );
   });
 }
