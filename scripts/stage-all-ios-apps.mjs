@@ -697,6 +697,90 @@ export async function runCommand(command, label = command.file, {
   });
 }
 
+function canonicalFilesystemPath(value) {
+  const absolute = path.resolve(value);
+  try {
+    return fs.realpathSync(absolute);
+  } catch {
+    try {
+      return path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute));
+    } catch {
+      return absolute;
+    }
+  }
+}
+
+async function listRegisteredWorktreePaths(repoPath) {
+  const result = await runCommand({
+    file: "git",
+    args: ["-C", repoPath, "worktree", "list", "--porcelain", "-z"],
+  }, "Candidate worktree registration inspection");
+  return String(result.stdout)
+    .split("\0")
+    .filter((field) => field.startsWith("worktree "))
+    .map((field) => field.slice("worktree ".length));
+}
+
+async function removeExactWorktreeMetadata(repoPath, candidatePath) {
+  const commonDirectoryResult = await runCommand({
+    file: "git",
+    args: ["-C", repoPath, "rev-parse", "--git-common-dir"],
+  }, "Candidate worktree metadata inspection");
+  const commonDirectoryValue = requireString(
+    commonDirectoryResult.stdout,
+    "Git common directory",
+  );
+  const commonDirectory = path.isAbsolute(commonDirectoryValue)
+    ? commonDirectoryValue
+    : path.resolve(repoPath, commonDirectoryValue);
+  const metadataRoot = path.join(commonDirectory, "worktrees");
+  let entries;
+  try {
+    entries = await readdir(metadataRoot, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  const expectedPath = canonicalFilesystemPath(candidatePath);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const entryPath = path.join(metadataRoot, entry.name);
+    let gitDirectoryValue;
+    try {
+      gitDirectoryValue = (await readFile(path.join(entryPath, "gitdir"), "utf8")).trim();
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    const gitDirectoryPath = path.isAbsolute(gitDirectoryValue)
+      ? gitDirectoryValue
+      : path.resolve(entryPath, gitDirectoryValue);
+    if (canonicalFilesystemPath(path.dirname(gitDirectoryPath)) === expectedPath) {
+      await rm(entryPath, { recursive: true, force: true });
+    }
+  }
+}
+
+async function reconcileCandidateWorktree(repoPath, candidatePath) {
+  try {
+    await runCommand({
+      file: "git",
+      args: ["-C", repoPath, "worktree", "remove", "--force", candidatePath],
+    }, "Candidate worktree cleanup");
+  } catch {}
+
+  const expectedPath = canonicalFilesystemPath(candidatePath);
+  let registeredPaths = await listRegisteredWorktreePaths(repoPath);
+  if (!registeredPaths.some((registeredPath) => canonicalFilesystemPath(registeredPath) === expectedPath)) {
+    return;
+  }
+  await removeExactWorktreeMetadata(repoPath, candidatePath);
+  registeredPaths = await listRegisteredWorktreePaths(repoPath);
+  if (registeredPaths.some((registeredPath) => canonicalFilesystemPath(registeredPath) === expectedPath)) {
+    throw new Error("Candidate worktree cleanup left an exact Git registration behind");
+  }
+}
+
 export async function withCandidateWorktree({ repoPath, candidateCommit, temporaryRoot, operation, signal }) {
   const ownsTemporaryRoot = temporaryRoot === undefined;
   const root = temporaryRoot ?? await mkdtemp(path.join(os.tmpdir(), "ios-staging-"));
@@ -704,7 +788,7 @@ export async function withCandidateWorktree({ repoPath, candidateCommit, tempora
   if (fs.existsSync(candidatePath)) {
     throw new Error("Candidate worktree path already exists; refusing to overwrite it");
   }
-  let added = false;
+  let addAttempted = false;
   let operationError;
   let result;
   try {
@@ -715,21 +799,18 @@ export async function withCandidateWorktree({ repoPath, candidateCommit, tempora
     if (resolved.stdout.trim().toLowerCase() !== candidateCommit.toLowerCase()) {
       throw new Error("Candidate commit did not resolve to the exact requested commit");
     }
+    addAttempted = true;
     await runCommand({
       file: "git",
       args: ["-C", repoPath, "worktree", "add", "--detach", candidatePath, candidateCommit],
     }, "Candidate worktree creation", { signal });
-    added = true;
     result = await operation(candidatePath, root);
   } catch (error) {
     operationError = error;
   } finally {
-    if (added) {
+    if (addAttempted) {
       try {
-        await runCommand({
-          file: "git",
-          args: ["-C", repoPath, "worktree", "remove", "--force", candidatePath],
-        }, "Candidate worktree cleanup");
+        await reconcileCandidateWorktree(repoPath, candidatePath);
       } catch (cleanupError) {
         if (!operationError) operationError = cleanupError;
       }

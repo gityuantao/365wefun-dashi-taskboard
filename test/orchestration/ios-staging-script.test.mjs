@@ -700,6 +700,62 @@ test("Candidate worktree is detached at the requested commit and removed after f
   );
 });
 
+test("partial worktree add failure reconciles the exact Git registration before returning", async (t) => {
+  const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "ios-stage-partial-add-source-"));
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ios-stage-partial-add-worktree-"));
+  const wrapperRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ios-stage-partial-add-bin-"));
+  const candidatePath = path.join(temporaryRoot, "candidate");
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  const gitWrapper = path.join(wrapperRoot, "git");
+  const originalPath = process.env.PATH;
+  t.after(() => fs.rmSync(repoPath, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(temporaryRoot, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(wrapperRoot, { recursive: true, force: true }));
+  t.after(() => { process.env.PATH = originalPath; });
+  execFileSync(realGit, ["init", "--quiet", repoPath]);
+  execFileSync(realGit, ["-C", repoPath, "config", "user.email", "ios-gate@example.invalid"]);
+  execFileSync(realGit, ["-C", repoPath, "config", "user.name", "iOS Gate Test"]);
+  fs.writeFileSync(path.join(repoPath, "tracked.txt"), "candidate\n");
+  execFileSync(realGit, ["-C", repoPath, "add", "tracked.txt"]);
+  execFileSync(realGit, ["-C", repoPath, "commit", "--quiet", "-m", "candidate"]);
+  const candidateCommit = execFileSync(realGit, ["-C", repoPath, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  fs.writeFileSync(gitWrapper, [
+    "#!/bin/sh",
+    "if [ \"$3\" = \"worktree\" ] && [ \"$4\" = \"add\" ]; then",
+    `  ${JSON.stringify(realGit)} \"$@\"`,
+    "  /bin/rm -rf -- \"$6\"",
+    "  exit 73",
+    "fi",
+    "if [ \"$3\" = \"worktree\" ] && [ \"$4\" = \"remove\" ]; then",
+    "  exit 74",
+    "fi",
+    `exec ${JSON.stringify(realGit)} \"$@\"`,
+    "",
+  ].join("\n"), { mode: 0o700 });
+  process.env.PATH = `${wrapperRoot}${path.delimiter}${originalPath}`;
+  let operationRan = false;
+
+  await assert.rejects(
+    withCandidateWorktree({
+      repoPath,
+      candidateCommit,
+      temporaryRoot,
+      async operation() {
+        operationRan = true;
+      },
+    }),
+    /Candidate worktree creation failed/i,
+  );
+  process.env.PATH = originalPath;
+
+  assert.equal(operationRan, false);
+  assert.equal(fs.existsSync(candidatePath), false);
+  assert.doesNotMatch(
+    execFileSync(realGit, ["-C", repoPath, "worktree", "list", "--porcelain"], { encoding: "utf8" }),
+    new RegExp(candidatePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+  );
+});
+
 test("internal deadline kills a spawned process group and still removes the Candidate worktree", {
   skip: process.platform === "win32",
 }, async (t) => {
