@@ -45,6 +45,48 @@ test("runCodex streams output and resolves the exit code", async () => {
   assert.equal(calls[0].options.cwd, "/tmp");
 });
 
+test("runCodex attaches every comment image before an optional skill", async () => {
+  const child = mockChild();
+  let args;
+  const promise = runCodex({
+    workdir: "/tmp/worktree",
+    prompt: "inspect screenshots",
+    imagePaths: ["/tmp/a.png", "/tmp/b.jpg"],
+    skillPath: "/skills/manage-taskboard",
+    spawnImpl: (_bin, value) => {
+      args = value;
+      return child;
+    },
+  });
+  child.emit("close", 0);
+  await promise;
+
+  assert.deepEqual(args, [
+    "exec",
+    "--image", "/tmp/a.png",
+    "--image", "/tmp/b.jpg",
+    "--skill", "/skills/manage-taskboard",
+  ]);
+});
+
+test("runCodex rejects a relative comment image path before spawning", () => {
+  let spawned = false;
+
+  assert.throws(
+    () => runCodex({
+      workdir: "/tmp/worktree",
+      prompt: "inspect screenshot",
+      imagePaths: ["relative.png"],
+      spawnImpl: () => {
+        spawned = true;
+        return mockChild();
+      },
+    }),
+    (error) => error.code === "INVALID_IMAGE_PATH",
+  );
+  assert.equal(spawned, false);
+});
+
 test("runCodex preserves non-zero exits", async () => {
   const child = mockChild();
   const promise = runCodex({

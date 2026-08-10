@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import { DomainError } from "../domain/errors.mjs";
 
 const DEFAULT_TIMEOUT_MINUTES = 90;
@@ -9,6 +10,7 @@ export function runCodex({
   workdir,
   prompt,
   skillPath,
+  imagePaths = [],
   timeoutMinutes = DEFAULT_TIMEOUT_MINUTES,
   codexBin = process.env.CODEX_BIN ?? "codex",
   spawnImpl = spawn,
@@ -29,6 +31,14 @@ export function runCodex({
       "Codex abort grace and force-close timeouts must be non-negative numbers",
     );
   }
+  if (!Array.isArray(imagePaths) || imagePaths.some((imagePath) => (
+    typeof imagePath !== "string" || imagePath.trim() === "" || !path.isAbsolute(imagePath)
+  ))) {
+    throw new DomainError(
+      "INVALID_IMAGE_PATH",
+      "Codex image paths must be non-empty absolute paths",
+    );
+  }
   if (signal?.aborted) {
     return Promise.resolve({
       exitCode: null,
@@ -40,6 +50,7 @@ export function runCodex({
   }
   return new Promise((resolve, reject) => {
     const args = ["exec"];
+    for (const imagePath of imagePaths) args.push("--image", imagePath);
     if (skillPath) args.push("--skill", skillPath);
     let child;
     try {
