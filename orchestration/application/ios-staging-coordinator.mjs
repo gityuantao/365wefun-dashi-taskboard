@@ -187,6 +187,48 @@ async function failAttempt(db, { taskId, candidateCommit, appId, attempt, stage,
   `).bind(stage, error, completedAt, taskId, candidateCommit, appId, attempt).run();
 }
 
+async function recordReuseFailure(db, {
+  taskId,
+  candidateCommit,
+  app,
+  reusable,
+  observed,
+  stage,
+  classification,
+  error,
+  occurredAt,
+}) {
+  const attempt = await nextAttempt(db, { taskId, candidateCommit, appId: app.id });
+  await db.prepare(`
+    INSERT INTO ios_testflight_deployments (
+      task_id, candidate_commit, app_id, attempt, scheme, bundle_id,
+      marketing_version, build_number, upload_id, processing_status,
+      test_group, membership_confirmed, stage, status, failure_classification,
+      error, started_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?)
+  `).bind(
+    taskId,
+    candidateCommit,
+    app.id,
+    attempt,
+    app.scheme,
+    app.bundleId,
+    reusable.marketing_version,
+    reusable.build_number,
+    reusable.upload_id,
+    typeof observed?.processingStatus === "string" ? observed.processingStatus : null,
+    reusable.test_group,
+    typeof observed?.membershipConfirmed === "boolean"
+      ? (observed.membershipConfirmed ? 1 : 0)
+      : null,
+    stage,
+    classification,
+    error,
+    occurredAt,
+    occurredAt,
+  ).run();
+}
+
 function readbackFailureStage(error) {
   if (error?.stage === "processing" || error?.stage === "internal_testing") return error.stage;
   return /membership|internal[ _-]?testing|test(?:\s*|_)group/i.test(String(error?.message ?? error))
@@ -268,10 +310,12 @@ export async function executeIosStagingGate({
     let attempt = null;
     let stage = "prepare";
     let staged = null;
+    let reusable = null;
+    let observed = null;
     let failureClassification = null;
     let failureRetryable = null;
     try {
-      const reusable = await findReusableSuccess(db, {
+      reusable = await findReusableSuccess(db, {
         taskId,
         candidateCommit,
         targetVersion,
@@ -280,7 +324,6 @@ export async function executeIosStagingGate({
       if (reusable) {
         staged = reusableStagedEvidence(app, reusable);
         stage = "processing";
-        let observed;
         try {
           observed = await adapter.readback({ app, staged });
         } catch (error) {
@@ -327,7 +370,6 @@ export async function executeIosStagingGate({
       await recordUpload(db, { taskId, candidateCommit, appId: app.id, attempt, staged });
 
       stage = "processing";
-      let observed;
       try {
         observed = await adapter.readback({ app, staged });
       } catch (error) {
@@ -366,7 +408,19 @@ export async function executeIosStagingGate({
       confirmedApps.push(confirmedEvidence(app, staged, observed));
     } catch (error) {
       const message = concise(error?.message ?? error);
-      if (attempt !== null) {
+      if (reusable !== null && failureClassification !== null) {
+        await recordReuseFailure(db, {
+          taskId,
+          candidateCommit,
+          app,
+          reusable,
+          observed,
+          stage,
+          classification: failureClassification,
+          error: message,
+          occurredAt,
+        });
+      } else if (attempt !== null) {
         await failAttempt(db, {
           taskId,
           candidateCommit,

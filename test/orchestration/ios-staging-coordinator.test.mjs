@@ -77,7 +77,7 @@ async function deploymentRows(db) {
   return (await db.prepare(`
     SELECT task_id, candidate_commit, app_id, attempt, stage, status,
            build_number, upload_id, processing_status, test_group,
-           membership_confirmed, error, started_at, completed_at
+           membership_confirmed, failure_classification, error, started_at, completed_at
     FROM ios_testflight_deployments
     ORDER BY rowid
   `).all()).results;
@@ -449,7 +449,7 @@ test("retrying the exact Candidate reuses every fully confirmed App", async (t) 
   assert.equal((await deploymentRows(harness.db)).length, 2);
 });
 
-test("a transient reuse readback error preserves historical success and retries the same upload", async (t) => {
+test("a transient reuse readback error records a separate observation attempt and retries the same upload", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const client = createClient();
@@ -461,7 +461,7 @@ test("a transient reuse readback error preserves historical success and retries 
       throw new Error("persisted success must skip upload");
     },
     readbackFor() {
-      throw new Error("App Store Connect network timeout");
+      throw new Error("App Store Connect network timeout token=round-three-secret");
     },
   });
 
@@ -483,7 +483,26 @@ test("a transient reuse readback error preserves historical success and retries 
     },
   );
   assert.deepEqual(retryAdapter.calls, ["readback:au:upload-au-111111"]);
-  assert.deepEqual(await deploymentRows(harness.db), historicalRows);
+  assert.doesNotMatch(retry.error.message, /round-three-secret/);
+  const failedRows = await deploymentRows(harness.db);
+  assert.deepEqual(failedRows.slice(0, historicalRows.length), historicalRows);
+  assert.deepEqual(failedRows.at(-1), {
+    task_id: "task-ios-1",
+    candidate_commit: CANDIDATE_A,
+    app_id: "au",
+    attempt: 2,
+    stage: "processing",
+    status: "failed",
+    build_number: "41",
+    upload_id: "upload-au-111111",
+    processing_status: null,
+    test_group: "AU Internal Testing",
+    membership_confirmed: null,
+    failure_classification: "observation_error",
+    error: "App Store Connect network timeout token=[REDACTED]",
+    started_at: NOW,
+    completed_at: NOW,
+  });
   const recoveryAdapter = createAdapter({
     stageFor() {
       throw new Error("transient recovery must not upload again");
@@ -497,10 +516,10 @@ test("a transient reuse readback error preserves historical success and retries 
     "readback:au:upload-au-111111",
     "readback:cn:upload-cn-111111",
   ]);
-  assert.deepEqual(await deploymentRows(harness.db), historicalRows);
+  assert.deepEqual(await deploymentRows(harness.db), failedRows);
 });
 
-test("authoritative missing membership preserves historical success for later readback", async (t) => {
+test("authoritative missing membership records a separate stale attempt for later readback", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const client = createClient();
@@ -537,7 +556,25 @@ test("authoritative missing membership preserves historical success for later re
     },
   );
   assert.deepEqual(staleAdapter.calls, ["readback:au:upload-au-111111"]);
-  assert.deepEqual(await deploymentRows(harness.db), historicalRows);
+  const failedRows = await deploymentRows(harness.db);
+  assert.deepEqual(failedRows.slice(0, historicalRows.length), historicalRows);
+  assert.deepEqual(failedRows.at(-1), {
+    task_id: "task-ios-1",
+    candidate_commit: CANDIDATE_A,
+    app_id: "au",
+    attempt: 2,
+    stage: "internal_testing",
+    status: "failed",
+    build_number: "41",
+    upload_id: "upload-au-111111",
+    processing_status: "processed",
+    test_group: "AU Internal Testing",
+    membership_confirmed: 0,
+    failure_classification: "authoritative_stale",
+    error: "TestFlight build is not confirmed in AU Internal Testing",
+    started_at: NOW,
+    completed_at: NOW,
+  });
   const recoveryAdapter = createAdapter({
     stageFor() {
       throw new Error("membership recovery must not upload again");
@@ -551,7 +588,7 @@ test("authoritative missing membership preserves historical success for later re
     "readback:au:upload-au-111111",
     "readback:cn:upload-cn-111111",
   ]);
-  assert.deepEqual(await deploymentRows(harness.db), historicalRows);
+  assert.deepEqual(await deploymentRows(harness.db), failedRows);
 });
 
 test("a success-shaped row without a complete lifecycle is not reusable", async (t) => {

@@ -31,6 +31,7 @@ test("iOS TestFlight migration creates per-App evidence with a unique attempt ke
       "error",
       "started_at",
       "completed_at",
+      "failure_classification",
     ],
   );
   assert.deepEqual(
