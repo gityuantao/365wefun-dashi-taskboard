@@ -16,8 +16,14 @@ function invalid(field, message) {
 }
 
 function assertPlainObject(value, field) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    invalid(field, `iOS app config field "${field}" must be an object`);
+  const prototype = value === null || typeof value !== "object" ? null : Object.getPrototypeOf(value);
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    (prototype !== Object.prototype && prototype !== null)
+  ) {
+    invalid(field, `iOS app config field "${field}" must be a plain object`);
   }
 }
 
@@ -52,7 +58,7 @@ export function loadIosApps(value) {
     const prefix = `iosApps[${index}]`;
     assertPlainObject(app, prefix);
     for (const field of REQUIRED_FIELDS) {
-      if (!(field in app)) {
+      if (!Object.hasOwn(app, field)) {
         invalid(`${prefix}.${field}`, `iOS app config field "${prefix}.${field}" is required`);
       }
     }

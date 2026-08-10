@@ -74,6 +74,16 @@ test("registry rejects an unsupported build number source", () => {
   );
 });
 
+test("registry rejects required fields inherited through the prototype", () => {
+  assertInvalid([Object.create(CURRENT_APPS[0])], "iosApps[0]");
+});
+
+test("registry rejects entries with a non-plain prototype", () => {
+  const app = Object.assign(Object.create({ source: "inherited" }), CURRENT_APPS[0]);
+
+  assertInvalid([app], "iosApps[0]");
+});
+
 test("the public runtime example contains the two current iOS app identities", async () => {
   const configPath = fileURLToPath(
     new URL("../../orchestration/clickup/config.example.json", import.meta.url),
