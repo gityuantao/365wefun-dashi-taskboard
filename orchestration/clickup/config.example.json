@@ -1,6 +1,26 @@
 {
   "teamId": "90161712199",
   "spaceId": "90167718544",
+  "iosApps": [
+    {
+      "id": "au",
+      "name": "海外版",
+      "enabled": true,
+      "scheme": "E365AU",
+      "bundleId": "online.365english.app",
+      "testFlightGroup": "Internal Testing",
+      "buildNumberSource": "app-store-connect"
+    },
+    {
+      "id": "cn",
+      "name": "中国版",
+      "enabled": true,
+      "scheme": "E365CN",
+      "bundleId": "online.365english.china",
+      "testFlightGroup": "Internal Testing",
+      "buildNumberSource": "app-store-connect"
+    }
+  ],
   "lists": {
     "task": {
       "id": "901616282651",
