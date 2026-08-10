@@ -2,7 +2,11 @@ import { dispatchCommand } from "../application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { collectCommentMedia } from "../clickup/comment-media.mjs";
-import { buildAnalysisPrompt, formatCommentMediaError } from "./prompts.mjs";
+import {
+  buildAnalysisPrompt,
+  commentImageDecodeFailure,
+  formatCommentMediaError,
+} from "./prompts.mjs";
 
 function resolvePlatforms(task) {
   const field = task.custom_fields?.find(
@@ -85,6 +89,24 @@ async function currentAnalysis(db, taskId, expectedVersion) {
   };
 }
 
+async function parkAnalysisForCommentMedia({ db, client, taskId, jobId, now, reason }) {
+  const transitioned = await markNeedsHuman({ db, taskId, jobId, now, reason });
+  if (!transitioned) return staleAnalysisResult(await loadAggregate(db, "task", taskId));
+  try {
+    await client.postComment(
+      taskId,
+      `⚠️ 分析无法读取评论图片：${reason}\n请重新上传或补充评论，然后把任务状态改回「分析中」。`,
+    );
+  } catch {
+    // 评论失败不掩盖 needs_human 结论
+  }
+  return {
+    status: "failed",
+    classification: "needs_human",
+    error: `needs_human: ${reason}`,
+  };
+}
+
 export async function executeAnalysis({
   job,
   db,
@@ -104,36 +126,23 @@ export async function executeAnalysis({
   }
   const executionVersion = startAggregate.version;
   const task = await client.getTask(taskId);
-  const comments = await client.getComments(taskId);
   let mediaBundle;
   try {
+    const comments = await client.getComments(taskId);
     mediaBundle = await collectCommentMedia({ comments, client, taskId });
   } catch (error) {
-    const reason = formatCommentMediaError(error);
-    const transitioned = await markNeedsHuman({
+    return parkAnalysisForCommentMedia({
       db,
+      client,
       taskId,
       jobId: job.id,
       now,
-      reason,
+      reason: formatCommentMediaError(error),
     });
-    if (!transitioned) return staleAnalysisResult(await loadAggregate(db, "task", taskId));
-    try {
-      await client.postComment(
-        taskId,
-        `⚠️ 分析无法读取评论图片：${reason}\n请重新上传该图片，然后把任务状态改回「分析中」。`,
-      );
-    } catch {
-      // 评论失败不掩盖 needs_human 结论
-    }
-    return {
-      status: "failed",
-      classification: "needs_human",
-      error: `needs_human: ${reason}`,
-    };
   }
   let activity;
   let run;
+  let runError;
   try {
     activity = await currentAnalysis(db, taskId, executionVersion);
     if (!activity.active) return staleAnalysisResult(activity.aggregate);
@@ -143,9 +152,23 @@ export async function executeAnalysis({
       taskId,
       imagePaths: mediaBundle.images.map((image) => image.localPath),
     });
+  } catch (error) {
+    runError = error;
   } finally {
     await mediaBundle.cleanup();
   }
+  const decodeReason = commentImageDecodeFailure(runError ?? run, mediaBundle.images);
+  if (decodeReason) {
+    return parkAnalysisForCommentMedia({
+      db,
+      client,
+      taskId,
+      jobId: job.id,
+      now,
+      reason: decodeReason,
+    });
+  }
+  if (runError) throw runError;
   activity = await currentAnalysis(db, taskId, executionVersion);
   if (!activity.active) return staleAnalysisResult(activity.aggregate);
   if (run.exitCode !== 0) {

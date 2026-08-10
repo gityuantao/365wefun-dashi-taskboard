@@ -11,18 +11,40 @@ export function buildCommentContext(comments, limit = 12) {
   return lines.length > 0 ? lines : null;
 }
 
-export function formatCommentMediaError(error) {
-  const filename = String(error?.details?.filename ?? "unknown-attachment")
+function safeAttachmentFilename(value) {
+  return String(value ?? "unknown-attachment")
     .replace(/[\r\n]/g, " ")
     .split(/[\\/]/)
     .at(-1)
     .split(/[?#]/, 1)[0]
     .trim()
     .slice(0, 120) || "unknown-attachment";
+}
+
+export function formatCommentMediaError(error) {
+  if (!error?.details?.filename) {
+    return "comment history unavailable (COMMENTS_UNAVAILABLE)";
+  }
+  const filename = safeAttachmentFilename(error.details.filename);
   const code = String(error?.code ?? "UNKNOWN")
     .replace(/[^A-Za-z0-9_-]/g, "")
     .slice(0, 40) || "UNKNOWN";
   return `comment image unavailable: ${filename} (${code})`;
+}
+
+export function commentImageDecodeFailure(value, images = []) {
+  const diagnostic = [value?.stderr, value?.message]
+    .filter((part) => typeof part === "string")
+    .join("\n");
+  if (!(
+    /(?:decode|decoder|invalid|unsupported|corrupt|unreadable)[^\r\n]{0,100}image/i.test(diagnostic)
+    || /image[^\r\n]{0,100}(?:decode|decoder|invalid|unsupported|corrupt|unreadable)/i.test(diagnostic)
+  )) {
+    return null;
+  }
+  const image = images.find((candidate) => diagnostic.includes(candidate.localPath)) ?? images[0];
+  if (!image) return null;
+  return `comment image unavailable: ${safeAttachmentFilename(image.filename)} (IMAGE_DECODE_FAILED)`;
 }
 
 export function buildAnalysisPrompt(task, commentContext = null, platforms = null) {

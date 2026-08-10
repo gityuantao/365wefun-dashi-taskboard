@@ -2,7 +2,11 @@ import { dispatchCommand } from "../application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { collectCommentMedia } from "../clickup/comment-media.mjs";
-import { buildDevelopmentPrompt, formatCommentMediaError } from "./prompts.mjs";
+import {
+  buildDevelopmentPrompt,
+  commentImageDecodeFailure,
+  formatCommentMediaError,
+} from "./prompts.mjs";
 
 function resolvePlatforms(task) {
   const field = task.custom_fields?.find(
@@ -185,9 +189,9 @@ export async function executeDevelopment({
     }
     const executionVersion = startAggregate.version;
     const task = await client.getTask(taskId);
-    const comments = await client.getComments(taskId);
     let mediaBundle;
     try {
+      const comments = await client.getComments(taskId);
       mediaBundle = await collectCommentMedia({ comments, client, taskId });
     } catch (error) {
       const reason = formatCommentMediaError(error);
@@ -207,6 +211,7 @@ export async function executeDevelopment({
     let activity;
     let worktree;
     let run;
+    let runError;
     try {
       let commentContext = mediaBundle.textContext;
       const feedbackField = task.custom_fields?.find(
@@ -233,9 +238,31 @@ export async function executeDevelopment({
         taskId,
         imagePaths: mediaBundle.images.map((image) => image.localPath),
       });
+    } catch (error) {
+      runError = error;
     } finally {
       await mediaBundle.cleanup();
     }
+    const decodeReason = commentImageDecodeFailure(runError ?? run, mediaBundle.images);
+    if (decodeReason) {
+      const transitioned = await markDevelopmentNeedsInfo({
+        db,
+        client,
+        taskId,
+        jobId: job.id,
+        now,
+        reason: decodeReason,
+      });
+      if (!transitioned) {
+        return staleDevelopmentResult(await loadAggregate(db, "task", taskId));
+      }
+      return {
+        status: "failed",
+        classification: "needs_info",
+        error: `needs_info: ${decodeReason}`,
+      };
+    }
+    if (runError) throw runError;
     activity = await currentDevelopment(db, taskId, executionVersion);
     if (!activity.active) return staleDevelopmentResult(activity.aggregate);
     if (run.exitCode !== 0) {

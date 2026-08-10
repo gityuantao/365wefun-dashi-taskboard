@@ -4,15 +4,165 @@ import path from "node:path";
 import { DomainError } from "../domain/errors.mjs";
 
 const IMAGE_TYPES = [
-  { contentType: "image/png", extension: ".png", matches: (body) => startsWith(body, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
-  { contentType: "image/jpeg", extension: ".jpg", matches: (body) => startsWith(body, [0xff, 0xd8, 0xff]) },
-  { contentType: "image/webp", extension: ".webp", matches: (body) => startsWith(body, [0x52, 0x49, 0x46, 0x46]) && startsWith(body, [0x57, 0x45, 0x42, 0x50], 8) },
-  { contentType: "image/gif", extension: ".gif", matches: (body) => startsWith(body, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) || startsWith(body, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61]) },
+  { contentType: "image/png", extension: ".png", matches: (body) => startsWith(body, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), valid: validPng },
+  { contentType: "image/jpeg", extension: ".jpg", matches: (body) => startsWith(body, [0xff, 0xd8, 0xff]), valid: validJpeg },
+  { contentType: "image/webp", extension: ".webp", matches: (body) => startsWith(body, [0x52, 0x49, 0x46, 0x46]) && startsWith(body, [0x57, 0x45, 0x42, 0x50], 8), valid: validWebp },
+  { contentType: "image/gif", extension: ".gif", matches: (body) => startsWith(body, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) || startsWith(body, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61]), valid: validGif },
 ];
 
 function startsWith(body, signature, offset = 0) {
   return body.length >= offset + signature.length
     && signature.every((byte, index) => body[offset + index] === byte);
+}
+
+function uint32BigEndian(body, offset) {
+  return (
+    body[offset] * 0x1000000
+    + body[offset + 1] * 0x10000
+    + body[offset + 2] * 0x100
+    + body[offset + 3]
+  );
+}
+
+function uint32LittleEndian(body, offset) {
+  return (
+    body[offset]
+    + body[offset + 1] * 0x100
+    + body[offset + 2] * 0x10000
+    + body[offset + 3] * 0x1000000
+  );
+}
+
+function ascii(body, offset, length) {
+  return String.fromCharCode(...body.subarray(offset, offset + length));
+}
+
+function validPng(body) {
+  if (body.length < 45) return false;
+  let offset = 8;
+  let chunkIndex = 0;
+  let sawIdat = false;
+  while (offset + 12 <= body.length) {
+    const length = uint32BigEndian(body, offset);
+    const type = ascii(body, offset + 4, 4);
+    const chunkEnd = offset + 12 + length;
+    if (!Number.isSafeInteger(chunkEnd) || chunkEnd > body.length) return false;
+    if (chunkIndex === 0 && (type !== "IHDR" || length !== 13)) return false;
+    if (type === "IDAT") sawIdat = true;
+    if (type === "IEND") {
+      return length === 0 && sawIdat && chunkEnd === body.length;
+    }
+    offset = chunkEnd;
+    chunkIndex += 1;
+  }
+  return false;
+}
+
+function jpegFrameMarker(marker) {
+  return (marker >= 0xc0 && marker <= 0xc3)
+    || (marker >= 0xc5 && marker <= 0xc7)
+    || (marker >= 0xc9 && marker <= 0xcb)
+    || (marker >= 0xcd && marker <= 0xcf);
+}
+
+function validJpeg(body) {
+  if (body.length < 8 || body[0] !== 0xff || body[1] !== 0xd8) return false;
+  let offset = 2;
+  let sawFrame = false;
+  let sawScan = false;
+  while (offset < body.length) {
+    if (body[offset] !== 0xff) return false;
+    while (offset < body.length && body[offset] === 0xff) offset += 1;
+    if (offset >= body.length) return false;
+    const marker = body[offset];
+    offset += 1;
+    if (marker === 0xd9) return sawFrame && sawScan && offset === body.length;
+    if (marker === 0x00 || marker === 0xd8) return false;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 2 > body.length) return false;
+    const segmentLength = body[offset] * 0x100 + body[offset + 1];
+    if (segmentLength < 2 || offset + segmentLength > body.length) return false;
+    if (jpegFrameMarker(marker)) sawFrame = true;
+    const segmentEnd = offset + segmentLength;
+    offset = segmentEnd;
+    if (marker !== 0xda) continue;
+    sawScan = true;
+    while (offset < body.length) {
+      if (body[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      let markerOffset = offset + 1;
+      while (markerOffset < body.length && body[markerOffset] === 0xff) markerOffset += 1;
+      if (markerOffset >= body.length) return false;
+      const scanMarker = body[markerOffset];
+      if (scanMarker === 0x00 || (scanMarker >= 0xd0 && scanMarker <= 0xd7)) {
+        offset = markerOffset + 1;
+        continue;
+      }
+      break;
+    }
+  }
+  return false;
+}
+
+function validWebp(body) {
+  if (body.length < 20) return false;
+  if (uint32LittleEndian(body, 4) + 8 !== body.length) return false;
+  let offset = 12;
+  let sawImageData = false;
+  while (offset < body.length) {
+    if (offset + 8 > body.length) return false;
+    const type = ascii(body, offset, 4);
+    const length = uint32LittleEndian(body, offset + 4);
+    const chunkEnd = offset + 8 + length;
+    if (!Number.isSafeInteger(chunkEnd) || chunkEnd > body.length) return false;
+    if (type === "VP8 " || type === "VP8L" || type === "ANMF") sawImageData = true;
+    offset = chunkEnd + (length % 2);
+    if (offset > body.length) return false;
+  }
+  return sawImageData && offset === body.length;
+}
+
+function gifSubBlocksEnd(body, start) {
+  let offset = start;
+  while (offset < body.length) {
+    const length = body[offset];
+    offset += 1;
+    if (length === 0) return offset;
+    if (offset + length > body.length) return -1;
+    offset += length;
+  }
+  return -1;
+}
+
+function validGif(body) {
+  if (body.length < 14) return false;
+  let offset = 13;
+  const globalTable = (body[10] & 0x80) !== 0;
+  if (globalTable) offset += 3 * (2 ** ((body[10] & 0x07) + 1));
+  if (offset > body.length) return false;
+  let sawImage = false;
+  while (offset < body.length) {
+    const blockType = body[offset];
+    offset += 1;
+    if (blockType === 0x3b) return sawImage && offset === body.length;
+    if (blockType === 0x21) {
+      if (offset >= body.length) return false;
+      offset = gifSubBlocksEnd(body, offset + 1);
+      if (offset < 0) return false;
+      continue;
+    }
+    if (blockType !== 0x2c || offset + 9 > body.length) return false;
+    const packed = body[offset + 8];
+    offset += 9;
+    if ((packed & 0x80) !== 0) offset += 3 * (2 ** ((packed & 0x07) + 1));
+    if (offset >= body.length) return false;
+    offset = gifSubBlocksEnd(body, offset + 1);
+    if (offset < 0) return false;
+    sawImage = true;
+  }
+  return false;
 }
 
 function recentComments(comments, limit) {
@@ -218,6 +368,9 @@ export async function collectCommentMedia({
       const imageType = detectedImageType(body);
       if (!imageType) {
         throw new DomainError("INVALID_IMAGE", `Attachment ${filename} is not a supported image`, { commentId, filename });
+      }
+      if (!imageType.valid(body)) {
+        throw new DomainError("INVALID_IMAGE", `Attachment ${filename} is structurally invalid`, { commentId, filename });
       }
       if (downloaded.contentType !== imageType.contentType) {
         throw new DomainError("IMAGE_TYPE_MISMATCH", `Attachment ${filename} content type does not match its bytes`, { commentId, filename });

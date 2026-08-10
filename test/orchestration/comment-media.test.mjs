@@ -4,13 +4,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { collectCommentMedia } from "../../orchestration/clickup/comment-media.mjs";
+import {
+  VALID_GIF,
+  VALID_JPEG,
+  VALID_PNG,
+  VALID_WEBP,
+} from "../helpers/image-fixtures.mjs";
 
-const PNG = Uint8Array.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-]);
-const JPEG = Uint8Array.from([0xff, 0xd8, 0xff]);
-const WEBP = Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0x04, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]);
-const GIF = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
+const PNG = VALID_PNG;
+const JPEG = VALID_JPEG;
+const WEBP = VALID_WEBP;
+const GIF = VALID_GIF;
 
 async function makeTempRoot() {
   return mkdtemp(path.join(tmpdir(), "taskboard-comment-media-test-"));
@@ -78,9 +82,9 @@ test("keeps an image-only ClickUp comment as media context", async (t) => {
     }],
     client: {
       downloadAttachment: async () => ({
-        body: Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0x04, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]),
+        body: VALID_WEBP,
         contentType: "image/webp",
-        contentLength: 12,
+        contentLength: VALID_WEBP.byteLength,
       }),
     },
     taskId: "task-2",
@@ -204,6 +208,39 @@ test("accepts PNG, JPEG, WebP, and GIF bytes using their canonical media types",
     ],
   );
 });
+
+for (const [name, contentType, body] of [
+  ["PNG", "image/png", VALID_PNG],
+  ["JPEG", "image/jpeg", VALID_JPEG],
+  ["WebP", "image/webp", VALID_WEBP],
+  ["GIF", "image/gif", VALID_GIF],
+]) {
+  test(`rejects a structurally truncated ${name} before Codex`, async (t) => {
+    const tempRoot = await makeTempRoot();
+    t.after(() => rm(tempRoot, { recursive: true, force: true }));
+    const filename = `truncated.${name.toLowerCase()}`;
+
+    await assert.rejects(
+      () => collectCommentMedia({
+        comments: [{
+          id: `truncated-${name}`,
+          date: "1",
+          images: [{ filename, url: `https://attachments.clickup.com/${filename}` }],
+        }],
+        client: {
+          downloadAttachment: async () => ({
+            body: body.slice(0, -1),
+            contentType,
+            contentLength: body.byteLength - 1,
+          }),
+        },
+        taskId: `task-truncated-${name}`,
+        tempRoot,
+      }),
+      (error) => error.code === "INVALID_IMAGE" && error.details.filename === filename,
+    );
+  });
+}
 
 test("rejects an HTML response that claims to be a PNG", async (t) => {
   const tempRoot = await makeTempRoot();
@@ -347,11 +384,11 @@ test("passes the remaining per-image and total budget into each download", async
     },
     taskId: "task-remaining-budget",
     tempRoot,
-    maxImageBytes: 20,
-    maxTotalBytes: 12,
+    maxImageBytes: 100,
+    maxTotalBytes: PNG.byteLength + 4,
   });
 
-  assert.deepEqual(maxBytes, [12, 4]);
+  assert.deepEqual(maxBytes, [PNG.byteLength + 4, 4]);
   assert.deepEqual(bundle.images.map((image) => image.commentId), ["newest"]);
   assert.deepEqual(bundle.diagnostics, [
     { code: "IMAGE_LIMIT", commentId: "older", filename: "older.png" },

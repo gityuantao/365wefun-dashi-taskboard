@@ -7,10 +7,11 @@ import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import { dispatchCommand } from "../../orchestration/application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
 import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-store.mjs";
+import { VALID_PNG } from "../helpers/image-fixtures.mjs";
 import { executeDevelopment } from "../../orchestration/ai/developer.mjs";
 
 const NOW = "2026-08-04T00:02:00.000Z";
-const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG = VALID_PNG;
 const CORRUPT_IMAGE = Uint8Array.from([0x3c, 0x68, 0x74, 0x6d, 0x6c, 0x3e]);
 
 async function setupTask(harness) {
@@ -712,6 +713,66 @@ test("development waits for info when a selected comment image is corrupt", asyn
   assert.ok(diagnostic);
   assert.match(diagnostic, /comment image unavailable: development-evidence\.png \(INVALID_IMAGE\)/);
   assert.doesNotMatch(diagnostic, /attachment-secret|taskboard-clickup-images-|\/tmp\//);
+});
+
+test("development waits for info when ClickUp comments cannot be fetched", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const comments = [];
+  let codexCalled = false;
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      getComments: async () => {
+        throw new Error("https://api.clickup.com?token=secret Authorization: Bearer secret /tmp/private");
+      },
+      postComment: async (_taskId, body) => comments.push(body),
+    }),
+    codex: { run: async () => { codexCalled = true; return { exitCode: 0, stdout: validOutput(), stderr: "" }; } },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+
+  assert.equal(result.classification, "needs_info");
+  assert.equal(codexCalled, false);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "waiting_info");
+  assert.match(comments.at(-1), /comment history unavailable \(COMMENTS_UNAVAILABLE\)/);
+  assert.doesNotMatch(comments.at(-1), /secret|api\.clickup\.com|\/tmp\//);
+});
+
+test("development routes a Codex image decoder failure to waiting info", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const comments = [];
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      getComments: async () => [{
+        id: "decoder-development",
+        images: [{ filename: "decoder-development.png", url: "https://attachments.clickup.com/decoder-development.png" }],
+      }],
+      downloadAttachment: async () => ({ body: PNG, contentType: "image/png" }),
+      postComment: async (_taskId, body) => comments.push(body),
+    }),
+    codex: {
+      run: async ({ imagePaths }) => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: `invalid image decoder input ${imagePaths[0]}?token=decoder-secret`,
+      }),
+    },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+
+  assert.equal(result.classification, "needs_info");
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "waiting_info");
+  assert.match(comments.at(-1), /comment image unavailable: decoder-development\.png \(IMAGE_DECODE_FAILED\)/);
+  assert.doesNotMatch(comments.at(-1), /decoder-secret|taskboard-clickup-images-|\/tmp\//);
 });
 
 test("development keeps the newest ClickUp feedback when comments are newest-first", async (t) => {

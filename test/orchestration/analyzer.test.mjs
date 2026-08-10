@@ -5,10 +5,11 @@ import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import { dispatchCommand } from "../../orchestration/application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
 import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-store.mjs";
+import { VALID_PNG } from "../helpers/image-fixtures.mjs";
 import { executeAnalysis } from "../../orchestration/ai/analyzer.mjs";
 
 const NOW = "2026-08-04T00:01:00.000Z";
-const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG = VALID_PNG;
 const CORRUPT_IMAGE = Uint8Array.from([0x3c, 0x68, 0x74, 0x6d, 0x6c, 0x3e]);
 
 function validOutput() {
@@ -388,4 +389,62 @@ test("analysis waits for info when a selected comment image is corrupt", async (
   assert.ok(diagnostic);
   assert.match(diagnostic, /comment image unavailable: analysis-evidence\.png \(INVALID_IMAGE\)/);
   assert.doesNotMatch(diagnostic, /attachment-secret|taskboard-clickup-images-|\/tmp\//);
+});
+
+test("analysis waits for info when ClickUp comments cannot be fetched", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const comments = [];
+  let codexCalled = false;
+  const result = await executeAnalysis({
+    job: { id: "job-comments-analysis", payload: { taskId: "task-1" } },
+    db: harness.db,
+    client: makeClient({
+      getComments: async () => {
+        throw new Error("https://api.clickup.com?token=secret Authorization: Bearer secret /tmp/private");
+      },
+      postComment: async (_taskId, body) => comments.push(body),
+    }),
+    codex: { run: async () => { codexCalled = true; return { exitCode: 0, stdout: validOutput(), stderr: "" }; } },
+    now: NOW,
+  });
+
+  assert.equal(result.classification, "needs_human");
+  assert.equal(codexCalled, false);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "waiting_info");
+  assert.match(comments[0], /comment history unavailable \(COMMENTS_UNAVAILABLE\)/);
+  assert.doesNotMatch(comments[0], /secret|api\.clickup\.com|\/tmp\//);
+});
+
+test("analysis routes a Codex image decoder failure to waiting info", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const comments = [];
+  const result = await executeAnalysis({
+    job: { id: "job-decoder-analysis", payload: { taskId: "task-1" } },
+    db: harness.db,
+    client: makeClient({
+      getComments: async () => [{
+        id: "decoder-analysis",
+        images: [{ filename: "decoder-analysis.png", url: "https://attachments.clickup.com/decoder-analysis.png" }],
+      }],
+      downloadAttachment: async () => ({ body: PNG, contentType: "image/png" }),
+      postComment: async (_taskId, body) => comments.push(body),
+    }),
+    codex: {
+      run: async ({ imagePaths }) => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: `failed to decode image ${imagePaths[0]}?token=decoder-secret`,
+      }),
+    },
+    now: NOW,
+  });
+
+  assert.equal(result.classification, "needs_human");
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "waiting_info");
+  assert.match(comments[0], /comment image unavailable: decoder-analysis\.png \(IMAGE_DECODE_FAILED\)/);
+  assert.doesNotMatch(comments[0], /decoder-secret|taskboard-clickup-images-|\/tmp\//);
 });
