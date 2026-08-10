@@ -5,7 +5,8 @@ import {
 } from "../application/failure-handler.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
-import { buildAcceptancePrompt, buildCommentContext } from "./prompts.mjs";
+import { collectCommentMedia } from "../clickup/comment-media.mjs";
+import { buildAcceptancePrompt, formatCommentMediaError } from "./prompts.mjs";
 
 function extractJson(stdout) {
   const start = stdout.indexOf("{");
@@ -101,6 +102,31 @@ async function pauseForRemoteWaitingInfo({ db, client, taskId, jobId }) {
   return staleAcceptanceResult(await loadAggregate(db, "task", taskId));
 }
 
+async function markAcceptanceNeedsInfo({ db, taskId, jobId, reason }) {
+  const aggregate = await loadAggregate(db, "task", taskId);
+  if (aggregate.state !== "accepting") return false;
+  try {
+    await dispatchCommand({
+      db,
+      command: parseCommandEnvelope({
+        id: `acceptance-needs-info-${jobId}`,
+        type: "development_needs_info",
+        aggregateType: "task",
+        aggregateId: taskId,
+        expectedVersion: aggregate.version + 1,
+        actorId: "runner-acceptor",
+        issuedAt: new Date().toISOString(),
+        reason,
+        parameters: {},
+      }),
+      now: new Date().toISOString(),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function executeAcceptance({
   job,
   db,
@@ -121,18 +147,48 @@ export async function executeAcceptance({
     }
     const executionVersion = startAggregate.version;
     const task = await client.getTask(taskId);
-    let commentContext = null;
+    const comments = await client.getComments(taskId);
+    let mediaBundle;
     try {
-      commentContext = buildCommentContext(await client.getComments(taskId));
-    } catch {}
+      mediaBundle = await collectCommentMedia({ comments, client, taskId });
+    } catch (error) {
+      const reason = formatCommentMediaError(error);
+      const transitioned = await markAcceptanceNeedsInfo({
+        db,
+        taskId,
+        jobId: job.id,
+        reason,
+      });
+      if (!transitioned) return staleAcceptanceResult(await loadAggregate(db, "task", taskId));
+      try {
+        await client.postComment(
+          taskId,
+          `⚠️ 验收无法读取评论图片：${reason}\n请重新上传该图片，然后把任务状态改回「开发中」。`,
+        );
+      } catch {
+        // 评论失败不掩盖 needs_info 结论
+      }
+      return {
+        status: "failed",
+        classification: "needs_info",
+        error: `needs_info: ${reason}`,
+      };
+    }
     // 验收开始：任务保持「开发中」，通过后直接进入「待测试」
-    let activity = await currentAcceptance(db, taskId, executionVersion);
-    if (!activity.active) return staleAcceptanceResult(activity.aggregate);
-    const run = await codex.run({
-      prompt: buildAcceptancePrompt(task, acceptanceCriteria, commitSha, commentContext),
-      workdir: job.payload.workdir,
-      taskId,
-    });
+    let activity;
+    let run;
+    try {
+      activity = await currentAcceptance(db, taskId, executionVersion);
+      if (!activity.active) return staleAcceptanceResult(activity.aggregate);
+      run = await codex.run({
+        prompt: buildAcceptancePrompt(task, acceptanceCriteria, commitSha, mediaBundle.textContext),
+        workdir: job.payload.workdir,
+        taskId,
+        imagePaths: mediaBundle.images.map((image) => image.localPath),
+      });
+    } finally {
+      await mediaBundle.cleanup();
+    }
     activity = await currentAcceptance(db, taskId, executionVersion);
     if (!activity.active) return staleAcceptanceResult(activity.aggregate);
     if (run.exitCode !== 0) {

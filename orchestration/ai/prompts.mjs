@@ -11,6 +11,20 @@ export function buildCommentContext(comments, limit = 12) {
   return lines.length > 0 ? lines : null;
 }
 
+export function formatCommentMediaError(error) {
+  const filename = String(error?.details?.filename ?? "unknown-attachment")
+    .replace(/[\r\n]/g, " ")
+    .split(/[\\/]/)
+    .at(-1)
+    .split(/[?#]/, 1)[0]
+    .trim()
+    .slice(0, 120) || "unknown-attachment";
+  const code = String(error?.code ?? "UNKNOWN")
+    .replace(/[^A-Za-z0-9_-]/g, "")
+    .slice(0, 40) || "UNKNOWN";
+  return `comment image unavailable: ${filename} (${code})`;
+}
+
 export function buildAnalysisPrompt(task, commentContext = null, platforms = null) {
   return [
     "你是研发分析器。分析下面的 ClickUp 任务，输出严格的 JSON，不要输出其他文字。",

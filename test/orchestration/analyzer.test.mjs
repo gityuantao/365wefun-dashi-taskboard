@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { access } from "node:fs/promises";
 import test from "node:test";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import { dispatchCommand } from "../../orchestration/application/dispatch-command.mjs";
@@ -7,6 +8,8 @@ import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-stor
 import { executeAnalysis } from "../../orchestration/ai/analyzer.mjs";
 
 const NOW = "2026-08-04T00:01:00.000Z";
+const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const CORRUPT_IMAGE = Uint8Array.from([0x3c, 0x68, 0x74, 0x6d, 0x6c, 0x3e]);
 
 function validOutput() {
   return JSON.stringify({
@@ -310,22 +313,79 @@ test("analysis writes the description, execution summary and a comment", async (
   assert.match(descriptionCall[2], /提交录音后点击回放按钮，应能正常播放/);
 });
 
-test("analysis reads comments and includes them in the prompt", async (t) => {
+test("analysis sends comment images to Codex with their comment label and cleans them up", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await setupTask(harness);
-  let prompt = "";
+  let options;
+  let downloadedPath;
   const result = await executeAnalysis({
     job: { id: "job-a9", commandId: "cmd-a9", jobType: "analyze", payload: { taskId: "task-1" } },
     db: harness.db,
     client: makeClient({
       getComments: async () => [
-        { id: "c1", comment_text: "需求补充：移动端也要支持" },
+        {
+          id: "c1",
+          comment_text: "需求补充：移动端也要支持",
+          attachments: [{ title: "mobile-layout.png", url: "https://attachments.clickup.com/mobile-layout.png" }],
+        },
       ],
+      downloadAttachment: async () => ({
+        body: PNG,
+        contentType: "image/png",
+        contentLength: PNG.byteLength,
+      }),
     }),
-    codex: { run: async ({ prompt: p }) => { prompt = p; return { exitCode: 0, stdout: validOutput(), stderr: "" }; } },
+    codex: {
+      run: async (value) => {
+        options = value;
+        [downloadedPath] = value.imagePaths;
+        await access(downloadedPath);
+        return { exitCode: 0, stdout: validOutput(), stderr: "" };
+      },
+    },
     now: NOW,
   });
   assert.equal(result.status, "completed");
-  assert.match(prompt, /需求补充：移动端也要支持/);
+  assert.deepEqual(options.imagePaths, [downloadedPath]);
+  assert.match(options.prompt, /需求补充：移动端也要支持/);
+  assert.match(options.prompt, /评论 c1 图片：mobile-layout\.png/);
+  await assert.rejects(access(downloadedPath));
+});
+
+test("analysis waits for info when a selected comment image is corrupt", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const comments = [];
+  let codexCalled = false;
+  const result = await executeAnalysis({
+    job: { id: "job-a-image-failed", commandId: "cmd-a-image-failed", jobType: "analyze", payload: { taskId: "task-1" } },
+    db: harness.db,
+    client: makeClient({
+      getComments: async () => [{
+        id: "comment-corrupt-analysis",
+        attachments: [{
+          title: "analysis-evidence.png?token=attachment-secret",
+          url: "https://attachments.clickup.com/analysis-evidence.png?token=attachment-secret",
+        }],
+      }],
+      downloadAttachment: async () => ({
+        body: CORRUPT_IMAGE,
+        contentType: "image/png",
+        contentLength: CORRUPT_IMAGE.byteLength,
+      }),
+      postComment: async (_taskId, body) => comments.push(body),
+    }),
+    codex: { run: async () => { codexCalled = true; return { exitCode: 0, stdout: validOutput(), stderr: "" }; } },
+    now: NOW,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(codexCalled, false);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "waiting_info");
+  const diagnostic = comments.find((body) => String(body).includes("analysis-evidence.png"));
+  assert.ok(diagnostic);
+  assert.match(diagnostic, /comment image unavailable: analysis-evidence\.png \(INVALID_IMAGE\)/);
+  assert.doesNotMatch(diagnostic, /attachment-secret|taskboard-clickup-images-|\/tmp\//);
 });

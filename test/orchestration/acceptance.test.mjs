@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { access } from "node:fs/promises";
 import test from "node:test";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import { dispatchCommand } from "../../orchestration/application/dispatch-command.mjs";
@@ -8,6 +9,8 @@ import { executeAcceptance } from "../../orchestration/ai/acceptance.mjs";
 import { checkReworkBudget } from "../../orchestration/application/failure-handler.mjs";
 
 const NOW = "2026-08-04T00:04:00.000Z";
+const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const CORRUPT_IMAGE = Uint8Array.from([0x3c, 0x68, 0x74, 0x6d, 0x6c, 0x3e]);
 
 async function seedToAccepting(harness) {
   for (let index = 0; index < 4; index += 1) {
@@ -330,24 +333,81 @@ test("acceptance rejects invalid structured output", async (t) => {
   assert.equal(result.status, "failed");
 });
 
-test("acceptance reads comments and includes previous feedback in the prompt", async (t) => {
+test("acceptance sends comment images to Codex with their comment label and cleans them up", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedToAccepting(harness);
-  let prompt = "";
+  let options;
+  let downloadedPath;
   const result = await executeAcceptance({
     job: JOB,
     db: harness.db,
     client: makeClient("version-9", {
       getComments: async () => [
-        { id: "c1", comment_text: "❌ 验收不通过：按钮无法点击，已退回待开发。" },
+        {
+          id: "c1",
+          comment_text: "❌ 验收不通过：按钮无法点击，已退回待开发。",
+          attachments: [{ title: "acceptance-failure.png", url: "https://attachments.clickup.com/acceptance-failure.png" }],
+        },
       ],
+      downloadAttachment: async () => ({
+        body: PNG,
+        contentType: "image/png",
+        contentLength: PNG.byteLength,
+      }),
     }),
-    codex: { run: async ({ prompt: p }) => { prompt = p; return { exitCode: 0, stdout: acceptedOutput(), stderr: "" }; } },
+    codex: {
+      run: async (value) => {
+        options = value;
+        [downloadedPath] = value.imagePaths;
+        await access(downloadedPath);
+        return { exitCode: 0, stdout: acceptedOutput(), stderr: "" };
+      },
+    },
     now: NOW,
   });
   assert.equal(result.status, "completed");
-  assert.match(prompt, /验收不通过：按钮无法点击/);
+  assert.deepEqual(options.imagePaths, [downloadedPath]);
+  assert.match(options.prompt, /验收不通过：按钮无法点击/);
+  assert.match(options.prompt, /评论 c1 图片：acceptance-failure\.png/);
+  await assert.rejects(access(downloadedPath));
+});
+
+test("acceptance waits for info when a selected comment image is corrupt", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedToAccepting(harness);
+  const comments = [];
+  let codexCalled = false;
+  const result = await executeAcceptance({
+    job: JOB,
+    db: harness.db,
+    client: makeClient("version-9", {
+      getComments: async () => [{
+        id: "comment-corrupt-acceptance",
+        attachments: [{
+          title: "acceptance-evidence.png",
+          url: "https://attachments.clickup.com/acceptance-evidence.png?token=attachment-secret",
+        }],
+      }],
+      downloadAttachment: async () => ({
+        body: CORRUPT_IMAGE,
+        contentType: "image/png",
+        contentLength: CORRUPT_IMAGE.byteLength,
+      }),
+      postComment: async (_taskId, body) => comments.push(body),
+    }),
+    codex: { run: async () => { codexCalled = true; return { exitCode: 0, stdout: acceptedOutput(), stderr: "" }; } },
+    now: NOW,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(codexCalled, false);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "waiting_info");
+  const diagnostic = comments.find((body) => String(body).includes("acceptance-evidence.png"));
+  assert.ok(diagnostic);
+  assert.match(diagnostic, /comment image unavailable: acceptance-evidence\.png \(INVALID_IMAGE\)/);
+  assert.doesNotMatch(diagnostic, /attachment-secret|taskboard-clickup-images-|\/tmp\//);
 });
 
 test("acceptance rejection posts full findings and writes the feedback field", async (t) => {

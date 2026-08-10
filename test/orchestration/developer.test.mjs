@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { access } from "node:fs/promises";
 import test from "node:test";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import { dispatchCommand } from "../../orchestration/application/dispatch-command.mjs";
@@ -7,6 +8,8 @@ import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-stor
 import { executeDevelopment } from "../../orchestration/ai/developer.mjs";
 
 const NOW = "2026-08-04T00:02:00.000Z";
+const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const CORRUPT_IMAGE = Uint8Array.from([0x3c, 0x68, 0x74, 0x6d, 0x6c, 0x3e]);
 
 async function setupTask(harness) {
   for (let index = 0; index < 2; index += 1) {
@@ -501,11 +504,12 @@ test("development stores the PR as evidence without a premature comment", async 
   assert.equal(calls.some(([kind, , body]) => kind === "comment" && String(body).includes("pull/1")), false);
 });
 
-test("development reads comments and includes acceptance feedback in the prompt", async (t) => {
+test("development sends comment images to Codex with their comment label and cleans them up", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await setupTask(harness);
-  let prompt = "";
+  let options;
+  let downloadedPath;
   const result = await executeDevelopment({
     job: JOB,
     db: harness.db,
@@ -525,18 +529,75 @@ test("development reads comments and includes acceptance feedback in the prompt"
         ],
       }),
       getComments: async () => [
-        { id: "c1", comment_text: "❌ 验收不通过：按钮无法点击，已退回待开发。" },
+        {
+          id: "c1",
+          comment_text: "❌ 验收不通过：按钮无法点击，已退回待开发。",
+          attachments: [{ title: "broken-button.png", url: "https://attachments.clickup.com/broken-button.png" }],
+        },
         { id: "c2", comment_text: "需求补充：点击后需要跳转" },
       ],
+      downloadAttachment: async () => ({
+        body: PNG,
+        contentType: "image/png",
+        contentLength: PNG.byteLength,
+      }),
     }),
-    codex: { run: async ({ prompt: p }) => { prompt = p; return { exitCode: 0, stdout: validOutput(), stderr: "" }; } },
+    codex: {
+      run: async (value) => {
+        options = value;
+        [downloadedPath] = value.imagePaths;
+        await access(downloadedPath);
+        return { exitCode: 0, stdout: validOutput(), stderr: "" };
+      },
+    },
     gitOps: mockGitOps(),
     now: NOW,
   });
   assert.equal(result.status, "completed");
-  assert.match(prompt, /验收不通过：按钮无法点击/);
-  assert.match(prompt, /需求补充：点击后需要跳转/);
-  assert.match(prompt, /完整验收失败详情：按钮无法点击/);
+  assert.deepEqual(options.imagePaths, [downloadedPath]);
+  assert.match(options.prompt, /验收不通过：按钮无法点击/);
+  assert.match(options.prompt, /评论 c1 图片：broken-button\.png/);
+  assert.match(options.prompt, /需求补充：点击后需要跳转/);
+  assert.match(options.prompt, /完整验收失败详情：按钮无法点击/);
+  await assert.rejects(access(downloadedPath));
+});
+
+test("development waits for info when a selected comment image is corrupt", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const comments = [];
+  let codexCalled = false;
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      getComments: async () => [{
+        id: "comment-corrupt-development",
+        attachments: [{
+          title: "development-evidence.png",
+          url: "https://attachments.clickup.com/development-evidence.png?token=attachment-secret",
+        }],
+      }],
+      downloadAttachment: async () => ({
+        body: CORRUPT_IMAGE,
+        contentType: "image/png",
+        contentLength: CORRUPT_IMAGE.byteLength,
+      }),
+      postComment: async (_taskId, body) => comments.push(body),
+    }),
+    codex: { run: async () => { codexCalled = true; return { exitCode: 0, stdout: validOutput(), stderr: "" }; } },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(codexCalled, false);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "waiting_info");
+  const diagnostic = comments.find((body) => String(body).includes("development-evidence.png"));
+  assert.ok(diagnostic);
+  assert.match(diagnostic, /comment image unavailable: development-evidence\.png \(INVALID_IMAGE\)/);
+  assert.doesNotMatch(diagnostic, /attachment-secret|taskboard-clickup-images-|\/tmp\//);
 });
 
 test("development keeps the newest ClickUp feedback when comments are newest-first", async (t) => {

@@ -1,7 +1,8 @@
 import { dispatchCommand } from "../application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
-import { buildDevelopmentPrompt, buildCommentContext } from "./prompts.mjs";
+import { collectCommentMedia } from "../clickup/comment-media.mjs";
+import { buildDevelopmentPrompt, formatCommentMediaError } from "./prompts.mjs";
 
 function resolvePlatforms(task) {
   const field = task.custom_fields?.find(
@@ -183,10 +184,16 @@ export async function executeDevelopment({
     }
     const executionVersion = startAggregate.version;
     const task = await client.getTask(taskId);
-    let commentContext = null;
+    const comments = await client.getComments(taskId);
+    let mediaBundle;
     try {
-      commentContext = buildCommentContext(await client.getComments(taskId));
-    } catch {}
+      mediaBundle = await collectCommentMedia({ comments, client, taskId });
+    } catch (error) {
+      const reason = formatCommentMediaError(error);
+      await markDevelopmentNeedsInfo({ db, client, taskId, jobId: job.id, now, reason });
+      return { status: "failed", classification: "needs_info", error: `needs_info: ${reason}` };
+    }
+    let commentContext = mediaBundle.textContext;
     const feedbackField = task.custom_fields?.find(
       (field) => field.name === "验收反馈" || field.id === "field-acceptance-feedback",
     );
@@ -195,21 +202,29 @@ export async function executeDevelopment({
         .filter(Boolean)
         .join("\n");
     }
-    let activity = await currentDevelopment(db, taskId, executionVersion);
-    if (!activity.active) return staleDevelopmentResult(activity.aggregate);
-    const worktree = await gitOps.createWorktree({
-      repoPath,
-      taskId,
-      baseRef,
-      worktreesRoot,
-    });
-    activity = await currentDevelopment(db, taskId, executionVersion);
-    if (!activity.active) return staleDevelopmentResult(activity.aggregate);
-    const run = await codex.run({
-      prompt: buildDevelopmentPrompt(task, acceptanceCriteria, commentContext, resolvePlatforms(task)),
-      workdir: worktree.worktreePath,
-      taskId,
-    });
+    let activity;
+    let worktree;
+    let run;
+    try {
+      activity = await currentDevelopment(db, taskId, executionVersion);
+      if (!activity.active) return staleDevelopmentResult(activity.aggregate);
+      worktree = await gitOps.createWorktree({
+        repoPath,
+        taskId,
+        baseRef,
+        worktreesRoot,
+      });
+      activity = await currentDevelopment(db, taskId, executionVersion);
+      if (!activity.active) return staleDevelopmentResult(activity.aggregate);
+      run = await codex.run({
+        prompt: buildDevelopmentPrompt(task, acceptanceCriteria, commentContext, resolvePlatforms(task)),
+        workdir: worktree.worktreePath,
+        taskId,
+        imagePaths: mediaBundle.images.map((image) => image.localPath),
+      });
+    } finally {
+      await mediaBundle.cleanup();
+    }
     activity = await currentDevelopment(db, taskId, executionVersion);
     if (!activity.active) return staleDevelopmentResult(activity.aggregate);
     if (run.exitCode !== 0) {
