@@ -90,6 +90,7 @@ function makeClickUpTask(overrides = {}) {
     custom_fields: [
       { id: "field-managed", name: "自动化纳管", value: true },
       { id: "field-version", name: "目标版本", value: "version-e2e-1" },
+      { id: "field-platforms", name: "影响平台", value: ["Web", "iOS"] },
     ],
     updated_at: NOW,
     ...overrides,
@@ -224,7 +225,7 @@ test("complete MVP loop preserves an image-only rejection through development an
   };
   const gitOps = {
     createWorktree: async ({ taskId }) => ({ worktreePath: `/tmp/wt/${taskId}`, branch: `task/${taskId}` }),
-    commitAll: async () => ({}),
+    commitAll: async () => "2222222222222222222222222222222222222222",
     createPullRequest: async () => ({ url: "https://github.com/x/pull/99" }),
   };
   let publishedDeployment = null;
@@ -313,11 +314,15 @@ test("complete MVP loop preserves an image-only rejection through development an
     now: NOW,
   });
   assert.equal(devResult.status, "completed", JSON.stringify(devResult));
+  assert.deepEqual(devResult.platforms, ["web", "ios"]);
   assert.equal(developmentCodexOptions.imagePaths.length, 1);
   assert.match(developmentCodexOptions.prompt, /评论 comment-e2e-rejection 图片：e2e-rejection\.png/);
   await assert.rejects(access(developmentCodexOptions.imagePaths[0]));
   await assert.rejects(access(developmentImageDirectory));
   assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "accepting");
+  await harness.db.prepare(
+    "UPDATE runner_jobs SET status = 'completed', result = ?, completed_at = ? WHERE id = ?",
+  ).bind(JSON.stringify(devResult), NOW, developClaim.id).run();
 
   // 4) 系统自动验收通过 -> 部署测试环境 -> 待测试
   await pollClickUpOnce(env, { now: NOW });
@@ -335,17 +340,14 @@ test("complete MVP loop preserves an image-only rejection through development an
   await assert.rejects(access(acceptanceCodexOptions.imagePaths[0]));
   await assert.rejects(access(acceptanceImageDirectory));
   assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "accepting");
+  await harness.db.prepare(
+    "UPDATE runner_jobs SET status = 'completed', result = ?, completed_at = ? WHERE id = ?",
+  ).bind(JSON.stringify(acceptResult), NOW, acceptClaim.id).run();
+  await pollClickUpOnce(env, { now: NOW });
+  const stageClaim = await claimFromQueue(harness, "stage_task");
+  assert.deepEqual(stageClaim.payload.platforms, ["web", "ios"]);
   const stageResult = await executeStagingGate({
-    job: {
-      id: "task-e2e-1-stage-1",
-      payload: {
-        taskId: "task-e2e-1",
-        pr: { url: "https://github.com/x/pull/99" },
-        commitSha: "2222222222222222222222222222222222222222",
-        versionBranch: "version/version-e2e-1",
-        targetVersion: "version-e2e-1",
-      },
-    },
+    job: stageClaim,
     db: harness.db,
     client: await env.clientFactory({}),
     gitOps: {
@@ -367,9 +369,46 @@ test("complete MVP loop preserves an image-only rejection through development an
         deployedAt: NOW,
       }),
     },
+    iosApps: [
+      {
+        id: "au",
+        name: "海外版",
+        enabled: true,
+        scheme: "E365AU",
+        bundleId: "online.365english.app",
+        testFlightGroup: "Internal Testing AU",
+        buildNumberSource: "app-store-connect",
+      },
+      {
+        id: "cn",
+        name: "中国版",
+        enabled: true,
+        scheme: "E365CN",
+        bundleId: "online.365english.china",
+        testFlightGroup: "Internal Testing CN",
+        buildNumberSource: "app-store-connect",
+      },
+    ],
+    iosAdapter: {
+      stage: async ({ app, targetVersion }) => ({
+        appId: app.id,
+        scheme: app.scheme,
+        bundleId: app.bundleId,
+        marketingVersion: targetVersion,
+        buildNumber: app.id === "au" ? "101" : "202",
+        uploadId: `upload-${app.id}`,
+      }),
+      readback: async ({ app }) => ({
+        processed: true,
+        processingStatus: "processed",
+        testGroup: app.testFlightGroup,
+        membershipConfirmed: true,
+        checkedAt: NOW,
+      }),
+    },
     now: NOW,
   });
-  assert.equal(stageResult.status, "completed");
+  assert.equal(stageResult.status, "completed", JSON.stringify(stageResult));
   assert.equal((await loadAggregate(harness.db, "task", "task-e2e-1")).state, "ready_for_test");
 
   // 5) 人工测试通过 -> 待发布

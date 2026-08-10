@@ -16,6 +16,8 @@ import { executeAcceptance } from "../orchestration/ai/acceptance.mjs";
 import { executeAnalysis } from "../orchestration/ai/analyzer.mjs";
 import { executeDevelopment } from "../orchestration/ai/developer.mjs";
 import { executeStagingGate } from "../orchestration/application/staging-coordinator.mjs";
+import { loadIosApps } from "../orchestration/ios/app-registry.mjs";
+import { createTestFlightAdapter } from "../orchestration/ios/testflight-adapter.mjs";
 import {
   loadLastConfirmed,
   normalizeVersion,
@@ -81,9 +83,13 @@ function log(message) {
 const runtime = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
 const token = process.env.CLICKUP_API_TOKEN
   ?? readFileSync(runtime.tokenPath, "utf8").trim();
-const config = loadClickUpConfig(
-  JSON.parse(readFileSync(path.join(PROJECT_ROOT, runtime.clickupConfigPath), "utf8")),
+const rawClickUpConfig = JSON.parse(
+  readFileSync(path.join(PROJECT_ROOT, runtime.clickupConfigPath), "utf8"),
 );
+const config = loadClickUpConfig(rawClickUpConfig);
+const iosAppsValue = runtime.iosApps ?? rawClickUpConfig.iosApps;
+const iosApps = iosAppsValue === undefined ? null : loadIosApps(iosAppsValue);
+const iosAdapter = createTestFlightAdapter({ runtime, projectRoot: PROJECT_ROOT });
 
 const persistRoot = path.join(PROJECT_ROOT, ".data", "orchestration-d1");
 mkdirSync(persistRoot, { recursive: true });
@@ -362,6 +368,8 @@ const handlers = {
       client,
       gitOps: guardedGitOps,
       adapter,
+      iosApps,
+      iosAdapter,
       now: new Date().toISOString(),
     });
   },

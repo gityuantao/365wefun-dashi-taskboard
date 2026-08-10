@@ -3,6 +3,7 @@ import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { collectCommentMedia } from "../clickup/comment-media.mjs";
 import { redactCredentials } from "../domain/redaction.mjs";
+import { resolveTaskPlatforms } from "../domain/platforms.mjs";
 import {
   buildDevelopmentPrompt,
   commentImageDecodeFailure,
@@ -11,15 +12,6 @@ import {
   formatCodexMediaRunFailure,
 } from "./prompts.mjs";
 
-function resolvePlatforms(task) {
-  const field = task.custom_fields?.find(
-    (candidate) => candidate.name === "影响平台" || candidate.id === "field-platforms",
-  );
-  const value = field?.value;
-  if (Array.isArray(value)) return value.filter(Boolean).join("、");
-  if (typeof value === "string" && value.trim() !== "") return value.trim();
-  return null;
-}
 import { stateChangeText } from "../clickup/state-comments.mjs";
 
 function extractJson(stdout) {
@@ -177,6 +169,7 @@ export async function executeDevelopment({
     }
     const executionVersion = startAggregate.version;
     const task = await client.getTask(taskId);
+    const platforms = resolveTaskPlatforms(task);
     let mediaBundle;
     try {
       const comments = await client.getComments(taskId);
@@ -231,7 +224,12 @@ export async function executeDevelopment({
       if (!activity.active) return staleDevelopmentResult(activity.aggregate);
       codexStarted = true;
       run = await codex.run({
-        prompt: buildDevelopmentPrompt(task, acceptanceCriteria, commentContext, resolvePlatforms(task)),
+        prompt: buildDevelopmentPrompt(
+          task,
+          acceptanceCriteria,
+          commentContext,
+          platforms.length > 0 ? platforms.join("、") : null,
+        ),
         workdir: worktree.worktreePath,
         taskId,
         imagePaths: mediaBundle.images.map((image) => image.localPath),
@@ -363,6 +361,7 @@ export async function executeDevelopment({
       commandId: result.commandId,
       pr,
       commitSha,
+      platforms,
       changeSummary: parsed.change_summary,
     };
   } catch (error) {

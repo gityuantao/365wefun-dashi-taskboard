@@ -290,6 +290,7 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
       acceptanceCriteria,
       commitSha: acceptedResult?.commitSha ?? developmentResult?.commitSha ?? null,
       pr: developmentResult?.pr ?? null,
+      platforms: developmentResult?.platforms ?? [],
       targetVersion: snapshot.targetVersion ?? acceptedResult?.targetVersion ?? null,
       aggregateVersion: aggregate.version,
     },

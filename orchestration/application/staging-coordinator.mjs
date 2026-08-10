@@ -2,6 +2,8 @@ import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { dispatchCommand } from "./dispatch-command.mjs";
 import { recordFailure, resetRework } from "./failure-handler.mjs";
+import { executeIosStagingGate } from "./ios-staging-coordinator.mjs";
+import { requiresIosStaging } from "../domain/platforms.mjs";
 
 function concise(value, max = 300) {
   return String(value ?? "unknown error")
@@ -86,8 +88,38 @@ async function transitionFailure({ db, client, taskId, jobId, stage, error, now 
   return { status: "failed", classification: "staging_failure", stage, error: reason };
 }
 
-export async function executeStagingGate({ job, db, client, gitOps, adapter, now }) {
-  const { taskId, pr, commitSha, versionBranch, targetVersion } = job.payload;
+function successComment({ taskCommit, versionBranch, deployment, observed, iosEvidence }) {
+  return [
+    "✅ 测试环境已部署，进入待测试",
+    `任务提交：${taskCommit}`,
+    `版本分支：${versionBranch}`,
+    `运行版本：${observed.gitSha}`,
+    `Web/API Release：${observed.releaseId ?? deployment.releaseId ?? "未提供"}`,
+    `测试地址：${(observed.urls ?? [deployment.url]).filter(Boolean).join("、")}`,
+    `部署时间：${observed.deployedAt ?? new Date().toISOString()}`,
+    ...iosEvidence.map((app) => [
+      `TestFlight ${app.name} (${app.id})：`,
+      `scheme=${app.scheme}`,
+      `bundle=${app.bundleId}`,
+      `version=${app.marketingVersion}`,
+      `build=${app.buildNumber}`,
+      `upload=${app.uploadId}`,
+      `group=${app.testGroup}`,
+    ].join(" | ")),
+  ].join("\n");
+}
+
+export async function executeStagingGate({
+  job,
+  db,
+  client,
+  gitOps,
+  adapter,
+  iosApps = null,
+  iosAdapter = null,
+  now,
+}) {
+  const { taskId, pr, commitSha, versionBranch, targetVersion, platforms } = job.payload;
   let stage = "preflight";
   let attemptId = null;
   let fencingToken = null;
@@ -150,6 +182,28 @@ export async function executeStagingGate({ job, db, client, gitOps, adapter, now
       observed.deployedAt ?? new Date().toISOString(),
       attemptId,
     ).run();
+    let iosEvidence = [];
+    if (requiresIosStaging(platforms)) {
+      stage = "testflight:all:configuration";
+      if (!Array.isArray(iosApps)) throw new Error("iOS App registry is not configured");
+      const iosResult = await executeIosStagingGate({
+        db,
+        client,
+        taskId,
+        candidateCommit,
+        targetVersion,
+        apps: iosApps,
+        adapter: iosAdapter,
+        now,
+      });
+      if (iosResult.status !== "completed") {
+        const appId = iosResult.error?.appId ?? "unknown";
+        const iosStage = iosResult.error?.stage ?? "unknown";
+        stage = `testflight:${appId}:${iosStage}`;
+        throw new Error(iosResult.error?.message ?? "TestFlight gate failed");
+      }
+      iosEvidence = iosResult.apps;
+    }
     const current = await loadAggregate(db, "task", taskId);
     if (current.state !== "accepting") throw new Error(`task changed to ${current.state} before staging completion`);
     const command = parseCommandEnvelope({
@@ -165,16 +219,20 @@ export async function executeStagingGate({ job, db, client, gitOps, adapter, now
     });
     const result = await dispatchCommand({ db, command, now: new Date().toISOString() });
     await resetRework({ db, taskId });
-    await client.postComment(taskId, [
-      "✅ 测试环境已部署，进入待测试",
-      `任务提交：${taskCommit}`,
-      `版本分支：${versionBranch}`,
-      `运行版本：${observed.gitSha}`,
-      `Release：${observed.releaseId ?? deployment.releaseId ?? "未提供"}`,
-      `测试地址：${(observed.urls ?? [deployment.url]).filter(Boolean).join("、")}`,
-      `部署时间：${observed.deployedAt ?? new Date().toISOString()}`,
-    ].join("\n"));
-    return { status: "completed", commandId: result.commandId, deployment, observed };
+    await client.postComment(taskId, successComment({
+      taskCommit,
+      versionBranch,
+      deployment,
+      observed,
+      iosEvidence,
+    }));
+    return {
+      status: "completed",
+      commandId: result.commandId,
+      deployment,
+      observed,
+      ios: iosEvidence,
+    };
   } catch (error) {
     if (attemptId) {
       await db.prepare(
