@@ -19,6 +19,8 @@ function appSnapshot(apps) {
     id: app.id,
     name: app.name,
     scheme: app.scheme,
+    testScheme: app.testScheme,
+    testTarget: app.testTarget,
     bundleId: app.bundleId,
     testFlightGroup: app.testFlightGroup,
   }));

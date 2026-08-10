@@ -98,6 +98,51 @@ function createProductionReadbackAdapter(evidence) {
   });
 }
 
+function createProductionStageAdapter() {
+  const expectedTestFields = {
+    IOS_TEST_SCHEME: "E365AU",
+    IOS_TEST_TARGET: "E365StoreKitTests",
+  };
+  const stageSource = [
+    `const expected = ${JSON.stringify(expectedTestFields)};`,
+    "for (const [field, value] of Object.entries(expected)) {",
+    "  if (process.env[field] !== value) {",
+    "    console.error(`${field} was ${JSON.stringify(process.env[field])}, expected ${JSON.stringify(value)}`);",
+    "    process.exit(1);",
+    "  }",
+    "}",
+    "console.log(JSON.stringify({",
+    "  appId: process.env.IOS_APP_ID,",
+    "  scheme: process.env.IOS_SCHEME,",
+    "  bundleId: process.env.IOS_BUNDLE_ID,",
+    "  marketingVersion: process.env.IOS_MARKETING_VERSION,",
+    "  buildNumber: '77',",
+    "  uploadId: 'upload-production-77'",
+    "}));",
+  ].join("\n");
+  const readbackSource = [
+    "console.log(JSON.stringify({",
+    "  bundleId: process.env.IOS_BUNDLE_ID,",
+    "  marketingVersion: process.env.IOS_MARKETING_VERSION,",
+    "  buildNumber: process.env.IOS_BUILD_NUMBER,",
+    "  testGroup: process.env.IOS_TESTFLIGHT_GROUP,",
+    "  processed: true,",
+    "  processingStatus: 'processed',",
+    "  membershipConfirmed: true,",
+    `  checkedAt: ${JSON.stringify(NOW)}`,
+    "}));",
+  ].join("\n");
+  return createTestFlightAdapter({
+    runtime: {
+      repoPath: process.cwd(),
+      iosTestFlightTimeoutMs: 5_000,
+      iosTestFlightStageCommand: [process.execPath, "-e", stageSource],
+      iosTestFlightReadbackCommand: [process.execPath, "-e", readbackSource],
+    },
+    projectRoot: process.cwd(),
+  });
+}
+
 async function deploymentRows(db) {
   return (await db.prepare(`
     SELECT task_id, candidate_commit, app_id, attempt, stage, status,
@@ -120,6 +165,21 @@ async function execute({ db, client, adapter, apps = CURRENT_APPS, candidateComm
     now: NOW,
   });
 }
+
+test("registry test scheme and target reach the production stage adapter exactly", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+
+  const result = await execute({
+    db: harness.db,
+    client: createClient(),
+    adapter: createProductionStageAdapter(),
+    apps: [CURRENT_APPS[0]],
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.apps[0].buildNumber, "77");
+});
 
 test("AU success and CN upload failure fails the aggregate at only the CN upload", async (t) => {
   const harness = await createCloudWorkerHarness();
