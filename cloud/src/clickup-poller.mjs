@@ -29,6 +29,80 @@ function jobTypeForState(status) {
   return null;
 }
 
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim() !== "" && value !== "unknown";
+}
+
+function matchesStagingAttempt(payload, attempt, taskId) {
+  return payload?.taskId === taskId
+    && nonEmptyString(payload?.pr?.url)
+    && payload.pr.url === attempt.pr_url
+    && nonEmptyString(payload.commitSha)
+    && payload.commitSha === attempt.task_commit
+    && nonEmptyString(payload.versionBranch)
+    && payload.versionBranch === attempt.version_branch
+    && nonEmptyString(payload.targetVersion)
+    && payload.targetVersion === attempt.target_version
+    && Array.isArray(payload.platforms)
+    && payload.platforms.every(nonEmptyString);
+}
+
+async function loadStagingRecovery(db, taskId) {
+  const attempt = await db.prepare(
+    `SELECT status, failure_owner, pr_url, task_commit, version_branch, target_version
+     FROM staging_deployments WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`,
+  ).bind(taskId).first();
+  if (!attempt || attempt.status === "succeeded") return { kind: "product_rework" };
+  if (attempt.status !== "failed") {
+    return { kind: "blocked", reason: `latest staging attempt is ${attempt.status}` };
+  }
+  if (attempt.failure_owner === "product_rework") return { kind: "product_rework" };
+  if (attempt.failure_owner !== "staging_infrastructure") {
+    return { kind: "blocked", reason: "latest staging failure owner is unknown" };
+  }
+  const rows = await db.prepare(
+    `SELECT payload FROM runner_jobs
+     WHERE job_type = 'stage_task' AND json_extract(payload, '$.taskId') = ?
+     ORDER BY created_at DESC, id DESC`,
+  ).bind(taskId).all();
+  for (const row of rows.results ?? []) {
+    try {
+      const payload = JSON.parse(row.payload);
+      if (matchesStagingAttempt(payload, attempt, taskId)) {
+        return {
+          kind: "staging_infrastructure",
+          payload: {
+            taskId,
+            pr: { url: payload.pr.url },
+            commitSha: payload.commitSha,
+            versionBranch: payload.versionBranch,
+            targetVersion: payload.targetVersion,
+            platforms: [...payload.platforms],
+          },
+        };
+      }
+    } catch {
+      // Ignore malformed historical jobs and continue looking for matching evidence.
+    }
+  }
+  return { kind: "blocked", reason: "persisted stage task evidence is incomplete" };
+}
+
+async function postStagingRecoveryBlocked(env, taskId, reason) {
+  try {
+    const factory = env.clientFactory ?? createClickUpClient;
+    const client = await factory({ token: env.CLICKUP_API_TOKEN });
+    await client.postComment(taskId, [
+      "⚠️ 无法恢复测试环境部署",
+      "恢复证据不完整，编排状态保持「验收不通过」，未创建任何作业。",
+      "修复证据后，请先把 ClickUp 状态移回「验收不通过」，再改为「待开发」重新触发。",
+      `原因：${reason}`,
+    ].join("\n"));
+  } catch {
+    // 评论失败不改变 fail-closed 行为。
+  }
+}
+
 async function resumeAnalysisAfterInfo(env, snapshot, now, commands, config) {
   // 清除 needs_human 失败记录，恢复分析后允许重新入队
   await env.DB
@@ -153,7 +227,19 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
   const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   let jobType = jobTypeForState(aggregate.state ?? snapshot.status);
   let acceptedResult = null;
+  let stagingRecoveryPayload = null;
   if (aggregate.state === "accepting") {
+    const latestEvent = await env.DB.prepare(
+      `SELECT type FROM orchestration_events
+       WHERE aggregate_type = 'task' AND aggregate_id = ?
+       ORDER BY aggregate_version DESC LIMIT 1`,
+    ).bind(snapshot.id).first();
+    if (latestEvent?.type === "task.staging_retried") {
+      const recovery = await loadStagingRecovery(env.DB, snapshot.id);
+      if (recovery.kind !== "staging_infrastructure") return;
+      stagingRecoveryPayload = recovery.payload;
+      jobType = "stage_task";
+    }
     const accepted = await env.DB
       .prepare(
         `SELECT result FROM runner_jobs
@@ -164,7 +250,7 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
       )
       .bind(snapshot.id)
       .first();
-    if (accepted?.result) {
+    if (!stagingRecoveryPayload && accepted?.result) {
       acceptedResult = JSON.parse(accepted.result);
       jobType = "stage_task";
     }
@@ -269,31 +355,34 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
       .first();
     if (developed?.result) developmentResult = JSON.parse(developed.result);
   }
+  const payload = stagingRecoveryPayload
+    ? { ...stagingRecoveryPayload, aggregateVersion: aggregate.version }
+    : {
+        taskId: snapshot.id,
+        repoPath: env.CLICKUP_REPO_PATH,
+        worktreesRoot: env.CLICKUP_WORKTREES_ROOT,
+        baseRef: env.CLICKUP_BASE_REF ?? "main",
+        versionBranch: snapshot.targetVersion
+          ? `version/${snapshot.targetVersion}`
+          : undefined,
+        // 分析阶段只读，不需要任务工作区；开发/验收在任务工作区内执行
+        workdir: jobType === "develop" || jobType === "accept"
+          ? (env.CLICKUP_WORKTREES_ROOT
+              ? path.join(env.CLICKUP_WORKTREES_ROOT, `task-${snapshot.id}`)
+              : undefined)
+          : undefined,
+        acceptanceCriteria,
+        commitSha: acceptedResult?.commitSha ?? developmentResult?.commitSha ?? null,
+        pr: developmentResult?.pr ?? null,
+        platforms: developmentResult?.platforms ?? [],
+        targetVersion: snapshot.targetVersion ?? acceptedResult?.targetVersion ?? null,
+        aggregateVersion: aggregate.version,
+      };
   await enqueueJob(env.DB, {
     jobId,
     commandId: `auto-${jobType}-${snapshot.id}`,
     jobType,
-    payload: {
-      taskId: snapshot.id,
-      repoPath: env.CLICKUP_REPO_PATH,
-      worktreesRoot: env.CLICKUP_WORKTREES_ROOT,
-      baseRef: env.CLICKUP_BASE_REF ?? "main",
-      versionBranch: snapshot.targetVersion
-        ? `version/${snapshot.targetVersion}`
-        : undefined,
-      // 分析阶段只读，不需要任务工作区；开发/验收在任务工作区内执行
-      workdir: jobType === "develop" || jobType === "accept"
-        ? (env.CLICKUP_WORKTREES_ROOT
-            ? path.join(env.CLICKUP_WORKTREES_ROOT, `task-${snapshot.id}`)
-            : undefined)
-        : undefined,
-      acceptanceCriteria,
-      commitSha: acceptedResult?.commitSha ?? developmentResult?.commitSha ?? null,
-      pr: developmentResult?.pr ?? null,
-      platforms: developmentResult?.platforms ?? [],
-      targetVersion: snapshot.targetVersion ?? acceptedResult?.targetVersion ?? null,
-      aggregateVersion: aggregate.version,
-    },
+    payload,
     payloadHash: snapshot.fieldsHash,
     expiresAt: addMinutes(now, 90),
     createdAt: now,
@@ -425,8 +514,16 @@ export async function pollClickUpOnce(env, {
       }
       aggregate = await loadAggregate(env.DB, "task", snapshot.id);
     }
+    const explicitRejectedDevelopmentRecovery = aggregate.state === "acceptance_rejected"
+      && snapshot.status === "ready_for_development"
+      && changes.some((change) => (
+        change.field === "status"
+        && change.from === "acceptance_rejected"
+        && change.to === "ready_for_development"
+      ));
     await handleStatusDrivenFlow(env, snapshot, now, commands, config, {
       manualDevelopmentStart,
+      explicitRejectedDevelopmentRecovery,
     });
     await ensureInboxAnalysis(env, snapshot, now, commands, config);
     await ensureExternalTaskImport(env, snapshot, now, commands, config);
@@ -515,7 +612,10 @@ async function handleStatusDrivenFlow(
   now,
   commands,
   config,
-  { manualDevelopmentStart = false } = {},
+  {
+    manualDevelopmentStart = false,
+    explicitRejectedDevelopmentRecovery = false,
+  } = {},
 ) {
 
   let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
@@ -545,19 +645,33 @@ async function handleStatusDrivenFlow(
   }
 
   // 验收不通过：用户处理完原因后手动改回「待开发」（重新开发）或「待测试」（直接测试）
-  if (aggregate.state === "acceptance_rejected" && snapshot.status === "ready_for_development") {
-    await clearOrdinaryDevelopmentFailures(env.DB, snapshot.id);
-    const devId = "poller-rejected-to-dev-" + snapshot.id + "-" + (aggregate.version + 1);
-    if (!(await loadCommandResult(env.DB, devId))) {
+  if (
+    explicitRejectedDevelopmentRecovery
+    && aggregate.state === "acceptance_rejected"
+    && snapshot.status === "ready_for_development"
+  ) {
+    const recovery = await loadStagingRecovery(env.DB, snapshot.id);
+    if (recovery.kind === "blocked") {
+      await postStagingRecoveryBlocked(env, snapshot.id, recovery.reason);
+      return;
+    }
+    const retryStaging = recovery.kind === "staging_infrastructure";
+    if (!retryStaging) await clearOrdinaryDevelopmentFailures(env.DB, snapshot.id);
+    const commandId = retryStaging
+      ? "poller-retry-staging-" + snapshot.id + "-" + (aggregate.version + 1)
+      : "poller-rejected-to-dev-" + snapshot.id + "-" + (aggregate.version + 1);
+    if (!(await loadCommandResult(env.DB, commandId))) {
       commands.push(await runCommand(env, parseCommandEnvelope({
-        id: devId,
-        type: "acceptance_rejected_to_develop",
+        id: commandId,
+        type: retryStaging ? "retry_staging" : "acceptance_rejected_to_develop",
         aggregateType: "task",
         aggregateId: snapshot.id,
         expectedVersion: aggregate.version + 1,
         actorId: "system-poller",
         issuedAt: now,
-        reason: "user routed rejected task back to rework",
+        reason: retryStaging
+          ? "user explicitly retried staging infrastructure"
+          : "user routed rejected task back to rework",
         parameters: {},
       }), now, config));
     }

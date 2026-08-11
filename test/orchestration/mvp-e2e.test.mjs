@@ -17,6 +17,7 @@ import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-stor
 import { loadManifest } from "../../orchestration/release/version-aggregator.mjs";
 import { createDomainEvent } from "../../orchestration/domain/events.mjs";
 import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
+import { dispatchCommand } from "../../orchestration/application/dispatch-command.mjs";
 import { appendCommandResult } from "../../orchestration/persistence/d1-event-store.mjs";
 import { saveSnapshot } from "../../orchestration/clickup/snapshot.mjs";
 
@@ -176,6 +177,37 @@ async function seedActiveVersion(harness, versionId) {
     events: [event],
     projection: { state: "active", snapshot: { kind: "version" } },
   });
+}
+
+async function seedInfrastructureRejectedTask(harness, taskId) {
+  const types = [
+    "start_analysis",
+    "analysis_completed",
+    "start_development",
+    "development_completed",
+    "acceptance_rejected",
+  ];
+  for (let index = 0; index < types.length; index += 1) {
+    const type = types[index];
+    const aggregate = await loadAggregate(harness.db, "task", taskId);
+    await dispatchCommand({
+      db: harness.db,
+      command: parseCommandEnvelope({
+        id: `${taskId}-infra-rejected-${index}`,
+        type,
+        aggregateType: "task",
+        aggregateId: taskId,
+        expectedVersion: aggregate.version + 1,
+        actorId: "test",
+        issuedAt: NOW,
+        reason: "seed infrastructure rejection",
+        parameters: type === "acceptance_rejected"
+          ? { evidenceId: `staging-${taskId}-stage_task-4` }
+          : {},
+      }),
+      now: NOW,
+    });
+  }
 }
 
 async function inspectLiveCodexImage(options) {
@@ -551,4 +583,109 @@ test("failed development blocks without advancing the task", async (t) => {
     { aggregate_version: 3, type: "task.development_started" },
     { aggregate_version: 4, type: "task.development_failed" },
   ]);
+});
+
+test("explicit infrastructure recovery resumes staging and reaches ready for test", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const taskId = "task-e2e-1";
+  await seedInfrastructureRejectedTask(harness, taskId);
+  const persistedPayload = {
+    taskId,
+    pr: { url: "https://github.com/x/pull/99" },
+    commitSha: "2222222222222222222222222222222222222222",
+    versionBranch: "version/version-e2e-1",
+    targetVersion: "version-e2e-1",
+    platforms: ["web"],
+  };
+  await harness.db.prepare(
+    `INSERT INTO runner_jobs (
+       id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+     ) VALUES (?, ?, 'stage_task', ?, ?, 'completed', ?, ?, ?)`,
+  ).bind(
+    `${taskId}-stage_task-4`,
+    `auto-stage_task-${taskId}`,
+    JSON.stringify(persistedPayload),
+    "accepted-evidence",
+    JSON.stringify({ status: "failed", classification: "staging_infrastructure" }),
+    NOW,
+    NOW,
+  ).run();
+  await harness.db.prepare(
+    `INSERT INTO staging_deployments (
+       id, task_id, target_version, pr_url, task_commit, candidate_commit,
+       version_branch, stage, status, attempt, error, started_at, completed_at,
+       failure_owner, failure_classification, failure_fingerprint
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'deploy', 'failed', 1, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    `${taskId}-staging-1`,
+    taskId,
+    persistedPayload.targetVersion,
+    persistedPayload.pr.url,
+    persistedPayload.commitSha,
+    CANDIDATE_COMMIT,
+    persistedPayload.versionBranch,
+    "staging unavailable",
+    NOW,
+    NOW,
+    "staging_infrastructure",
+    "staging_infrastructure",
+    "infra-fingerprint-e2e",
+  ).run();
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: taskId,
+      listId: "901616314492",
+      status: "acceptance_rejected",
+      targetVersion: "version-e2e-1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:00.000Z",
+      fieldsHash: "rejected-snapshot",
+    },
+    readAt: NOW,
+  });
+  const clickUpTask = makeClickUpTask({
+    status: { status: "待开发" },
+    updated_at: "2026-08-04T00:10:30.000Z",
+  });
+  const env = await makeEnv(harness, () => clickUpTask);
+
+  const recovery = await pollClickUpOnce(env, { now: NOW });
+
+  assert.ok(recovery.commands.some((command) => command.type === "retry_staging"));
+  const developJob = await harness.db.prepare(
+    "SELECT id FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'",
+  ).first();
+  assert.equal(developJob, null);
+  const stageClaim = await claimFromQueue(harness, "stage_task");
+  assert.deepEqual(stageClaim.payload, { ...persistedPayload, aggregateVersion: 6 });
+  const stageResult = await executeStagingGate({
+    job: stageClaim,
+    db: harness.db,
+    client: await env.clientFactory({}),
+    gitOps: {
+      integrateTaskPr: async () => ({
+        merged: true,
+        candidateCommit: CANDIDATE_COMMIT,
+        taskHead: persistedPayload.commitSha,
+        prNumber: 99,
+      }),
+      persistCandidate: async () => ({ persisted: true }),
+    },
+    adapter: {
+      deploy: async () => ({ releaseId: "staging-retry", url: "https://test.example" }),
+      readback: async () => ({
+        confirmed: true,
+        releaseId: "staging-retry",
+        gitSha: CANDIDATE_COMMIT,
+        urls: ["https://test.example"],
+        deployedAt: NOW,
+      }),
+    },
+    now: NOW,
+  });
+
+  assert.equal(stageResult.status, "completed", JSON.stringify(stageResult));
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "ready_for_test");
 });
