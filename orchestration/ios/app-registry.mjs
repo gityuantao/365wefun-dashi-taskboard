@@ -11,6 +11,9 @@ const REQUIRED_FIELDS = [
   "bundleId",
   "testFlightGroup",
   "buildNumberSource",
+  "appStoreAppId",
+  "releaseMode",
+  "reviewConfigurationRef",
 ];
 
 function invalid(field, message) {
@@ -65,7 +68,7 @@ export function loadIosApps(value) {
       }
     }
 
-    for (const field of ["id", "name", "scheme", "testScheme", "testTarget", "bundleId", "testFlightGroup", "buildNumberSource"]) {
+    for (const field of ["id", "name", "scheme", "testScheme", "testTarget", "bundleId", "testFlightGroup", "buildNumberSource", "appStoreAppId", "releaseMode", "reviewConfigurationRef"]) {
       assertNonEmptyString(app[field], `${prefix}.${field}`);
     }
     if (typeof app.enabled !== "boolean") {
@@ -75,6 +78,12 @@ export function loadIosApps(value) {
       invalid(
         `${prefix}.buildNumberSource`,
         `iOS app config field "${prefix}.buildNumberSource" has an unsupported build number source`,
+      );
+    }
+    if (app.releaseMode !== "automatic") {
+      invalid(
+        `${prefix}.releaseMode`,
+        `iOS app config field "${prefix}.releaseMode" has an unsupported production release mode`,
       );
     }
 
@@ -93,6 +102,9 @@ export function loadIosApps(value) {
       bundleId: app.bundleId,
       testFlightGroup: app.testFlightGroup,
       buildNumberSource: app.buildNumberSource,
+      appStoreAppId: app.appStoreAppId,
+      releaseMode: app.releaseMode,
+      reviewConfigurationRef: app.reviewConfigurationRef,
     });
   });
 

@@ -17,6 +17,7 @@ const LEGACY_SENTINELS = new Map([
     table: "staging_deployments",
     column: "failure_owner",
   }],
+  ["0013_production_release_attempts.sql", { table: "production_release_attempts" }],
 ]);
 
 async function findLegacySentinel(db, sentinel) {

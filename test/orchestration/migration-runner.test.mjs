@@ -27,6 +27,7 @@ test("migration ledger applies 0008 and adopts staging failure ownership on an e
 
   assert.ok(result.applied.includes("0008_release_cleanup_attempts.sql"));
   assert.ok(result.adopted.includes("0012_staging_failure_ownership.sql"));
+  assert.ok(result.adopted.includes("0013_production_release_attempts.sql"));
   assert.deepEqual(await loadCleanupAttempts({
     db: harness.db,
     versionId: "version-1",

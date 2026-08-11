@@ -419,6 +419,9 @@ test("complete MVP loop preserves an image-only rejection through development an
         bundleId: "online.365english.app",
         testFlightGroup: "Internal Testing AU",
         buildNumberSource: "app-store-connect",
+        appStoreAppId: "0000000001",
+        releaseMode: "automatic",
+        reviewConfigurationRef: "app-store-review/au",
       },
       {
         id: "cn",
@@ -430,6 +433,9 @@ test("complete MVP loop preserves an image-only rejection through development an
         bundleId: "online.365english.china",
         testFlightGroup: "Internal Testing CN",
         buildNumberSource: "app-store-connect",
+        appStoreAppId: "0000000002",
+        releaseMode: "automatic",
+        reviewConfigurationRef: "app-store-review/cn",
       },
     ],
     iosAdapter: {

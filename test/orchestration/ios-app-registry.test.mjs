@@ -15,6 +15,9 @@ const CURRENT_APPS = [
     bundleId: "online.365english.app",
     testFlightGroup: "Internal Testing",
     buildNumberSource: "app-store-connect",
+    appStoreAppId: "0000000001",
+    releaseMode: "automatic",
+    reviewConfigurationRef: "app-store-review/au",
   },
   {
     id: "cn",
@@ -26,6 +29,9 @@ const CURRENT_APPS = [
     bundleId: "online.365english.china",
     testFlightGroup: "Internal Testing",
     buildNumberSource: "app-store-connect",
+    appStoreAppId: "0000000002",
+    releaseMode: "automatic",
+    reviewConfigurationRef: "app-store-review/cn",
   },
 ];
 
@@ -86,6 +92,45 @@ test("registry rejects an unsupported build number source", () => {
   );
 });
 
+test("registry requires own non-secret production release fields", () => {
+  for (const field of ["appStoreAppId", "releaseMode", "reviewConfigurationRef"]) {
+    const { [field]: _omitted, ...withoutField } = CURRENT_APPS[0];
+    assertInvalid([withoutField], `iosApps[0].${field}`);
+  }
+
+  const inheritedReleaseFields = Object.create(CURRENT_APPS[0]);
+  assertInvalid([inheritedReleaseFields], "iosApps[0]");
+});
+
+test("registry rejects blank production release field values", () => {
+  for (const field of ["appStoreAppId", "reviewConfigurationRef"]) {
+    assertInvalid([{ ...CURRENT_APPS[0], [field]: "   " }], `iosApps[0].${field}`);
+  }
+});
+
+test("registry permits only automatic production App Store release mode", () => {
+  assertInvalid([{ ...CURRENT_APPS[0], releaseMode: "manual" }], "iosApps[0].releaseMode");
+  assert.deepEqual(loadIosApps([CURRENT_APPS[0]])[0].releaseMode, "automatic");
+});
+
+test("registry returns a third enabled app without country-specific branching", () => {
+  const apps = loadIosApps([
+    ...CURRENT_APPS,
+    {
+      ...CURRENT_APPS[0],
+      id: "jp",
+      name: "日本版",
+      scheme: "E365JP",
+      testScheme: "E365JP",
+      bundleId: "online.365english.japan",
+      appStoreAppId: "0000000003",
+      reviewConfigurationRef: "app-store-review/jp",
+    },
+  ]);
+
+  assert.deepEqual(enabledIosApps(apps).map((app) => app.id), ["au", "cn", "jp"]);
+});
+
 test("registry rejects required fields inherited through the prototype", () => {
   assertInvalid([Object.create(CURRENT_APPS[0])], "iosApps[0]");
 });
@@ -96,18 +141,27 @@ test("registry rejects entries with a non-plain prototype", () => {
   assertInvalid([app], "iosApps[0]");
 });
 
-test("the public runtime example contains the two current iOS app identities", async () => {
+test("the public runtime example contains the current iOS production App identities", async () => {
   const configPath = fileURLToPath(
-    new URL("../../orchestration/clickup/config.example.json", import.meta.url),
+    new URL("../../orchestration/runtime.example.json", import.meta.url),
   );
   const config = JSON.parse(await readFile(configPath, "utf8"));
   const apps = loadIosApps(config.iosApps);
 
   assert.deepEqual(
-    apps.map(({ id, scheme, testScheme, testTarget, bundleId }) => ({ id, scheme, testScheme, testTarget, bundleId })),
+    apps.map(({ id, scheme, testScheme, testTarget, bundleId, appStoreAppId, releaseMode, reviewConfigurationRef }) => ({
+      id,
+      scheme,
+      testScheme,
+      testTarget,
+      bundleId,
+      appStoreAppId,
+      releaseMode,
+      reviewConfigurationRef,
+    })),
     [
-      { id: "au", scheme: "E365AU", testScheme: "E365AU", testTarget: "E365StoreKitTests", bundleId: "online.365english.app" },
-      { id: "cn", scheme: "E365CN", testScheme: "E365ChinaComplianceTests", testTarget: "E365ChinaComplianceTests", bundleId: "online.365english.china" },
+      { id: "au", scheme: "E365AU", testScheme: "E365AU", testTarget: "E365StoreKitTests", bundleId: "online.365english.app", appStoreAppId: "0000000001", releaseMode: "automatic", reviewConfigurationRef: "app-store-review/au" },
+      { id: "cn", scheme: "E365CN", testScheme: "E365ChinaComplianceTests", testTarget: "E365ChinaComplianceTests", bundleId: "online.365english.china", appStoreAppId: "0000000002", releaseMode: "automatic", reviewConfigurationRef: "app-store-review/cn" },
     ],
   );
 });

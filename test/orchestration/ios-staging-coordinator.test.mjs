@@ -21,6 +21,9 @@ const CURRENT_APPS = [
     bundleId: "online.365english.app",
     testFlightGroup: "AU Internal Testing",
     buildNumberSource: "app-store-connect",
+    appStoreAppId: "0000000001",
+    releaseMode: "automatic",
+    reviewConfigurationRef: "app-store-review/au",
   },
   {
     id: "cn",
@@ -32,6 +35,9 @@ const CURRENT_APPS = [
     bundleId: "online.365english.china",
     testFlightGroup: "CN Internal Testing",
     buildNumberSource: "app-store-connect",
+    appStoreAppId: "0000000002",
+    releaseMode: "automatic",
+    reviewConfigurationRef: "app-store-review/cn",
   },
 ];
 
@@ -519,6 +525,9 @@ test("a third enabled App is staged in registry order without coordinator branch
       bundleId: "online.365english.nz",
       testFlightGroup: "NZ Internal Testing",
       buildNumberSource: "app-store-connect",
+      appStoreAppId: "0000000003",
+      releaseMode: "automatic",
+      reviewConfigurationRef: "app-store-review/nz",
     },
   ];
 
