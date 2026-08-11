@@ -116,14 +116,47 @@ export function fetchAndMergeTaskPullRequest({
   const pr = githubPullRequest({ repository, pullRequest, versionBranch, run });
   if (!pr.ok) return { merged: false, conflict: false, error: pr.error };
   if (pr.state === "MERGED") {
-    const candidateCommit = pr.mergeCommit?.oid;
-    if (!/^[0-9a-f]{40,64}$/i.test(candidateCommit ?? "")) {
+    const taskHead = pr.headRefOid;
+    const mergeCommit = pr.mergeCommit?.oid;
+    if (
+      !/^[0-9a-f]{40,64}$/i.test(taskHead ?? "")
+      || !/^[0-9a-f]{40,64}$/i.test(mergeCommit ?? "")
+    ) {
       return { merged: false, conflict: false, error: "merged GitHub PR has no valid merge commit" };
     }
-    const remoteVersion = git(repoPath, ["ls-remote", "origin", `refs/heads/${versionBranch}`], run);
-    if (remoteVersion.status !== 0 || remoteVersion.stdout.trim().split(/\s+/)[0] !== candidateCommit) {
-      return { merged: false, conflict: false, error: "merged PR commit is not the current remote version branch" };
+    const fetchedBase = `refs/taskboard/base/${versionBranch}`;
+    const refreshedBase = git(repoPath, [
+      "fetch", "--force", "origin",
+      `refs/heads/${versionBranch}:${fetchedBase}`,
+    ], run);
+    if (refreshedBase.status !== 0) {
+      return {
+        merged: false,
+        conflict: false,
+        error: refreshedBase.stderr || "version branch refresh failed",
+      };
     }
+    const taskHeadContained = git(
+      repoPath,
+      ["merge-base", "--is-ancestor", taskHead, fetchedBase],
+      run,
+    );
+    if (taskHeadContained.status !== 0) {
+      return { merged: false, conflict: false, error: "merged PR head is not contained in refreshed version history" };
+    }
+    const mergeCommitContained = git(
+      repoPath,
+      ["merge-base", "--is-ancestor", mergeCommit, fetchedBase],
+      run,
+    );
+    if (mergeCommitContained.status !== 0) {
+      return { merged: false, conflict: false, error: "merged PR commit is not contained in refreshed version history" };
+    }
+    const refreshedHead = git(repoPath, ["rev-parse", fetchedBase], run);
+    if (refreshedHead.status !== 0 || !/^[0-9a-f]{40,64}$/i.test(refreshedHead.stdout.trim())) {
+      return { merged: false, conflict: false, error: "refreshed version branch head is invalid" };
+    }
+    const candidateCommit = refreshedHead.stdout.trim();
     return {
       merged: true,
       taskId,

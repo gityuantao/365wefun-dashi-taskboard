@@ -6,6 +6,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   createReleaseGitOps,
+  fetchAndMergeTaskPullRequest,
   mergeTaskPrToVersionBranch,
   verifyCandidateIntegration,
 } from "../../orchestration/git/merge.mjs";
@@ -25,6 +26,133 @@ async function makeRepo() {
   git(root, ["branch", "version/v-1"]);
   return root;
 }
+
+async function makeMergedPullRequestRepo() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "taskboard-merged-pr-"));
+  const remote = path.join(root, "remote.git");
+  const repo = path.join(root, "repo");
+  git(root, ["init", "--bare", remote]);
+  git(root, ["init", "-b", "main", repo]);
+  git(repo, ["config", "user.email", "test@example.com"]);
+  git(repo, ["config", "user.name", "Test"]);
+  git(repo, ["remote", "add", "origin", remote]);
+  await writeFile(path.join(repo, "file.txt"), "base\n");
+  git(repo, ["add", "."]);
+  git(repo, ["commit", "-m", "base"]);
+  git(repo, ["checkout", "-b", "version/v-1"]);
+  git(repo, ["push", "origin", "version/v-1"]);
+  git(repo, ["checkout", "-b", "task/task-1"]);
+  await writeFile(path.join(repo, "feature.txt"), "feature\n");
+  git(repo, ["add", "."]);
+  git(repo, ["commit", "-m", "feature"]);
+  const headRefOid = git(repo, ["rev-parse", "HEAD"]).trim();
+  git(repo, ["checkout", "version/v-1"]);
+  git(repo, ["merge", "--no-ff", "task/task-1", "-m", "Merge task PR"]);
+  const mergeCommit = git(repo, ["rev-parse", "HEAD"]).trim();
+  git(repo, ["push", "origin", "version/v-1"]);
+  return { root, repo, headRefOid, mergeCommit };
+}
+
+function mergedPullRequestRun({ headRefOid, mergeCommit }) {
+  return (command, args) => {
+    if (command === "gh") {
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          number: 42,
+          state: "MERGED",
+          baseRefName: "version/v-1",
+          headRefName: "task/task-1",
+          headRefOid,
+          mergeCommit: { oid: mergeCommit },
+        }),
+        stderr: "",
+      };
+    }
+    try {
+      return { status: 0, stdout: execFileSync(command, args, { encoding: "utf8" }), stderr: "" };
+    } catch (error) {
+      return {
+        status: error.status ?? 1,
+        stdout: error.stdout?.toString() ?? "",
+        stderr: error.stderr?.toString() ?? "",
+      };
+    }
+  };
+}
+
+test("fetchAndMergeTaskPullRequest accepts a merged PR whose merge commit equals remote HEAD", async (t) => {
+  const { root, repo, headRefOid, mergeCommit } = await makeMergedPullRequestRepo();
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const result = fetchAndMergeTaskPullRequest({
+    repoPath: repo,
+    repository: "owner/repo",
+    taskId: "task-1",
+    pullRequest: "https://github.com/owner/repo/pull/42",
+    versionBranch: "version/v-1",
+    run: mergedPullRequestRun({ headRefOid, mergeCommit }),
+  });
+
+  assert.equal(result.merged, true);
+  assert.equal(result.taskHead, headRefOid);
+  assert.equal(result.candidateCommit, mergeCommit);
+  assert.equal(result.alreadyMerged, true);
+});
+
+test("fetchAndMergeTaskPullRequest accepts a merged PR ancestor of a later remote HEAD", async (t) => {
+  const { root, repo, headRefOid, mergeCommit } = await makeMergedPullRequestRepo();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(repo, "later.txt"), "later\n");
+  git(repo, ["add", "."]);
+  git(repo, ["commit", "-m", "later version work"]);
+  git(repo, ["push", "origin", "version/v-1"]);
+  const laterRemoteHead = git(repo, ["rev-parse", "HEAD"]).trim();
+
+  const result = fetchAndMergeTaskPullRequest({
+    repoPath: repo,
+    repository: "owner/repo",
+    taskId: "task-1",
+    pullRequest: "https://github.com/owner/repo/pull/42",
+    versionBranch: "version/v-1",
+    run: mergedPullRequestRun({ headRefOid, mergeCommit }),
+  });
+
+  assert.equal(result.merged, true);
+  assert.equal(result.taskHead, headRefOid);
+  assert.equal(result.candidateCommit, laterRemoteHead);
+  assert.equal(result.alreadyMerged, true);
+});
+
+test("fetchAndMergeTaskPullRequest rejects merged PR SHAs absent from refreshed version history", async (t) => {
+  const { root, repo, headRefOid, mergeCommit } = await makeMergedPullRequestRepo();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  git(repo, ["checkout", "-b", "unrelated", "main"]);
+  await writeFile(path.join(repo, "unrelated.txt"), "unrelated\n");
+  git(repo, ["add", "."]);
+  git(repo, ["commit", "-m", "unrelated work"]);
+  const unrelatedCommit = git(repo, ["rev-parse", "HEAD"]).trim();
+
+  const absentHead = fetchAndMergeTaskPullRequest({
+    repoPath: repo,
+    repository: "owner/repo",
+    taskId: "task-1",
+    pullRequest: "https://github.com/owner/repo/pull/42",
+    versionBranch: "version/v-1",
+    run: mergedPullRequestRun({ headRefOid: unrelatedCommit, mergeCommit }),
+  });
+  assert.equal(absentHead.merged, false);
+
+  const absentMerge = fetchAndMergeTaskPullRequest({
+    repoPath: repo,
+    repository: "owner/repo",
+    taskId: "task-1",
+    pullRequest: "https://github.com/owner/repo/pull/42",
+    versionBranch: "version/v-1",
+    run: mergedPullRequestRun({ headRefOid, mergeCommit: unrelatedCommit }),
+  });
+  assert.equal(absentMerge.merged, false);
+});
 
 test("mergeTaskPrToVersionBranch merges with history preserved", async (t) => {
   const root = await makeRepo();
