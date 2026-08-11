@@ -85,7 +85,7 @@ function timeoutFor(runtime) {
   return Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_TIMEOUT_MS;
 }
 
-function marketingVersionForIos(targetVersion) {
+export function marketingVersionForIos(targetVersion) {
   return String(targetVersion ?? "").replace(/^v(?=\d+\.\d+\.\d+$)/, "");
 }
 

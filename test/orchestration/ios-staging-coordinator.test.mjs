@@ -153,18 +153,52 @@ async function deploymentRows(db) {
   `).all()).results;
 }
 
-async function execute({ db, client, adapter, apps = CURRENT_APPS, candidateCommit = CANDIDATE_A }) {
+async function execute({
+  db,
+  client,
+  adapter,
+  apps = CURRENT_APPS,
+  candidateCommit = CANDIDATE_A,
+  targetVersion = TARGET_VERSION,
+}) {
   return executeIosStagingGate({
     db,
     client,
     taskId: "task-ios-1",
     candidateCommit,
-    targetVersion: TARGET_VERSION,
+    targetVersion,
     apps: loadIosApps(apps),
     adapter,
     now: NOW,
   });
 }
+
+test("ClickUp v-prefixed target version accepts normalized iOS stage evidence", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+
+  const result = await execute({
+    db: harness.db,
+    client: createClient(),
+    adapter: createAdapter({
+      stageFor({ candidateCommit, app }) {
+        return {
+          appId: app.id,
+          scheme: app.scheme,
+          bundleId: app.bundleId,
+          marketingVersion: "1.2.3",
+          buildNumber: "41",
+          uploadId: `upload-au-${candidateCommit.slice(0, 6)}`,
+        };
+      },
+    }),
+    apps: [CURRENT_APPS[0]],
+    targetVersion: "v1.2.3",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.apps[0].marketingVersion, "1.2.3");
+});
 
 test("registry test scheme and target reach the production stage adapter exactly", async (t) => {
   const harness = await createCloudWorkerHarness();

@@ -1,4 +1,5 @@
 import { enabledIosApps } from "../ios/app-registry.mjs";
+import { marketingVersionForIos } from "../ios/testflight-adapter.mjs";
 import { redactCredentials, sanitizeObservedEvidenceString } from "../domain/redaction.mjs";
 
 function concise(value, max = 300) {
@@ -308,6 +309,7 @@ export async function executeIosStagingGate({
   const enabledApps = appSnapshot(apps);
   const confirmedApps = [];
   const occurredAt = timestamp(now);
+  const marketingVersion = marketingVersionForIos(targetVersion);
 
   for (const app of enabledApps) {
     let attempt = null;
@@ -321,7 +323,7 @@ export async function executeIosStagingGate({
       reusable = await findReusableSuccess(db, {
         taskId,
         candidateCommit,
-        targetVersion,
+        targetVersion: marketingVersion,
         app,
       });
       if (reusable) {
@@ -362,7 +364,7 @@ export async function executeIosStagingGate({
       await beginAttempt(db, {
         taskId,
         candidateCommit,
-        targetVersion,
+        targetVersion: marketingVersion,
         app,
         attempt,
         now: occurredAt,
@@ -370,8 +372,8 @@ export async function executeIosStagingGate({
 
       stage = "upload";
       staged = requireStagedEvidence(
-        await adapter.stage({ candidateCommit, targetVersion, app }),
-        { app, candidateCommit, targetVersion },
+        await adapter.stage({ candidateCommit, targetVersion: marketingVersion, app }),
+        { app, candidateCommit, targetVersion: marketingVersion },
       );
       await recordUpload(db, { taskId, candidateCommit, appId: app.id, attempt, staged });
 
@@ -440,7 +442,7 @@ export async function executeIosStagingGate({
       }
       await postFailureComment(client, taskId, failureComment({
         app,
-        targetVersion,
+        targetVersion: marketingVersion,
         staged,
         stage,
         error: message,
