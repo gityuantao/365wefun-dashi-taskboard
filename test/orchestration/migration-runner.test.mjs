@@ -38,7 +38,7 @@ test("migration ledger applies 0008 and adopts staging failure ownership on an e
   assert.equal(ledger.results.length, names.length);
 });
 
-test("migration ledger does not adopt a partial production release schema", async (t) => {
+test("migration ledger fails closed for a partial production release schema", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await harness.db.exec("DROP TABLE production_release_targets;");
@@ -47,11 +47,39 @@ test("migration ledger does not adopt a partial production release schema", asyn
     sql: await readFile(path.join(MIGRATIONS_DIR, "0013_production_release_attempts.sql"), "utf8"),
   }];
 
-  const result = await applyMigrations({ db: harness.db, migrations, now: "2026-08-11T00:00:00.000Z" });
+  await assert.rejects(
+    () => applyMigrations({ db: harness.db, migrations, now: "2026-08-11T00:00:00.000Z" }),
+    (error) => error.code === "PRODUCTION_RELEASE_SCHEMA_DRIFT",
+  );
+});
 
-  assert.deepEqual(result.adopted, []);
-  assert.deepEqual(result.applied, ["0013_production_release_attempts.sql"]);
-  assert.ok(await harness.db
-    .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'production_release_targets'")
-    .first());
+test("migration ledger validates an applied 0013 schema before skipping it", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await harness.db.exec("DROP TABLE production_release_targets; CREATE TABLE production_release_targets (manifest_id TEXT NOT NULL);");
+  await harness.db.exec("CREATE TABLE orchestration_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL, adopted INTEGER NOT NULL CHECK (adopted IN (0, 1))); INSERT INTO orchestration_migrations (name, applied_at, adopted) VALUES ('0013_production_release_attempts.sql', '2026-08-11T00:00:00.000Z', 0);");
+  const migrations = [{
+    name: "0013_production_release_attempts.sql",
+    sql: await readFile(path.join(MIGRATIONS_DIR, "0013_production_release_attempts.sql"), "utf8"),
+  }];
+
+  await assert.rejects(
+    () => applyMigrations({ db: harness.db, migrations, now: "2026-08-11T00:00:00.000Z" }),
+    (error) => error.code === "PRODUCTION_RELEASE_SCHEMA_DRIFT",
+  );
+});
+
+test("migration ledger fails closed for an unrecorded legacy manifest_id schema", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await harness.db.exec("DROP TABLE production_release_targets; DROP TABLE production_release_attempts; CREATE TABLE production_release_attempts (version_id TEXT NOT NULL, candidate_commit TEXT NOT NULL, manifest_id TEXT NOT NULL); CREATE TABLE production_release_targets (version_id TEXT NOT NULL, candidate_commit TEXT NOT NULL, manifest_id TEXT NOT NULL);");
+  const migrations = [{
+    name: "0013_production_release_attempts.sql",
+    sql: await readFile(path.join(MIGRATIONS_DIR, "0013_production_release_attempts.sql"), "utf8"),
+  }];
+
+  await assert.rejects(
+    () => applyMigrations({ db: harness.db, migrations, now: "2026-08-11T00:00:00.000Z" }),
+    (error) => error.code === "PRODUCTION_RELEASE_SCHEMA_DRIFT",
+  );
 });

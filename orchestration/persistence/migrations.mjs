@@ -29,6 +29,8 @@ async function hasCompleteProductionReleaseSchema(db) {
   const triggers = [
     "production_release_attempts_immutable_succeeded",
     "production_release_targets_immutable_succeeded",
+    "production_release_attempts_immutable_succeeded_delete",
+    "production_release_targets_immutable_succeeded_delete",
   ];
   const requiredColumns = new Map([
     ["production_release_attempts", ["version_id", "candidate_commit", "manifest_checksum", "idempotency_key"]],
@@ -37,9 +39,15 @@ async function hasCompleteProductionReleaseSchema(db) {
       "candidate_commit",
       "manifest_checksum",
       "platform",
+      "external_request_id",
+      "reconciliation_status",
+      "failure_classification",
+      "sanitized_error_summary",
       "artifact_identity",
       "production_readback_sha",
       "production_release_id",
+      "health_status",
+      "readback_status",
       "app_store_app_id",
       "bundle_id",
       "marketing_version",
@@ -47,12 +55,18 @@ async function hasCompleteProductionReleaseSchema(db) {
       "processing_status",
       "processing_id",
       "review_status",
+      "review_submission_id",
       "upload_id",
       "review_id",
       "release_status",
       "release_id",
       "live_status",
       "live_id",
+      "live_marketing_version",
+      "live_build_number",
+      "live_membership_confirmed",
+      "sanitized_readback_evidence",
+      "sanitized_live_evidence",
     ]],
   ]);
   for (const table of tables) {
@@ -73,6 +87,20 @@ async function hasCompleteProductionReleaseSchema(db) {
     if (!exists) return null;
   }
   return { name: "production_release_attempts" };
+}
+
+function productionSchemaDrift() {
+  throw new DomainError(
+    "PRODUCTION_RELEASE_SCHEMA_DRIFT",
+    "production release schema is incomplete or legacy; apply an explicit repair migration before continuing",
+  );
+}
+
+async function hasProductionReleaseTables(db) {
+  const rows = await db
+    .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN ('production_release_attempts', 'production_release_targets')")
+    .all();
+  return rows.results.length > 0;
 }
 
 async function findLegacySentinel(db, sentinel) {
@@ -100,10 +128,18 @@ export async function applyMigrations({ db, migrations, now = new Date().toISOSt
       .prepare("SELECT name FROM orchestration_migrations WHERE name = ?")
       .bind(migration.name)
       .first();
-    if (recorded) continue;
     const sentinel = LEGACY_SENTINELS.get(migration.name);
     const existing = await findLegacySentinel(db, sentinel);
+    if (recorded) {
+      if (migration.name === "0013_production_release_attempts.sql" && !existing) {
+        productionSchemaDrift();
+      }
+      continue;
+    }
     if (!existing) {
+      if (migration.name === "0013_production_release_attempts.sql" && await hasProductionReleaseTables(db)) {
+        productionSchemaDrift();
+      }
       await db.exec(migration.sql);
       applied.push(migration.name);
     } else {
@@ -116,3 +152,4 @@ export async function applyMigrations({ db, migrations, now = new Date().toISOSt
   }
   return { applied, adopted };
 }
+import { DomainError } from "../domain/errors.mjs";
