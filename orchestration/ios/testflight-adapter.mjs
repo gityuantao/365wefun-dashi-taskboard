@@ -85,6 +85,10 @@ function timeoutFor(runtime) {
   return Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_TIMEOUT_MS;
 }
 
+function marketingVersionForIos(targetVersion) {
+  return String(targetVersion ?? "").replace(/^v(?=\d+\.\d+\.\d+$)/, "");
+}
+
 async function runCommand({ runtime, commandField, projectRoot, environment }) {
   const [file, ...args] = requireCommand(runtime, commandField);
   const { stdout } = await execFile(file, args, {
@@ -160,13 +164,17 @@ function readbackEvidence(evidence, { app, staged }) {
 export function createTestFlightAdapter({ runtime = {}, projectRoot } = {}) {
   return {
     async stage({ candidateCommit, targetVersion, app }) {
+      const marketingVersion = marketingVersionForIos(targetVersion);
       const stdout = await runCommand({
         runtime,
         commandField: "iosTestFlightStageCommand",
         projectRoot,
-        environment: commandEnvironment({ runtime, app, marketingVersion: String(targetVersion ?? ""), candidateCommit }),
+        environment: commandEnvironment({ runtime, app, marketingVersion, candidateCommit }),
       });
-      return stageEvidence(parseLastJsonEvidence(stdout, "TestFlight stage command"), { app, targetVersion });
+      return stageEvidence(parseLastJsonEvidence(stdout, "TestFlight stage command"), {
+        app,
+        targetVersion: marketingVersion,
+      });
     },
     async readback({ app, staged }) {
       const stdout = await runCommand({

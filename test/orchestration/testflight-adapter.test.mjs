@@ -44,7 +44,7 @@ function requiredEnvironmentGuard(expected) {
   ].join("\n");
 }
 
-test("stage passes the frozen Candidate and App identity through command environment and reads only final JSON evidence", async () => {
+test("stage normalizes a ClickUp v-prefixed version and passes the frozen Candidate and App identity", async () => {
   const stageSource = [
     requiredEnvironmentGuard({
       IOS_APP_ID: "au",
@@ -75,7 +75,7 @@ test("stage passes the frozen Candidate and App identity through command environ
 
   const staged = await adapter.stage({
     candidateCommit: CANDIDATE_COMMIT,
-    targetVersion: TARGET_VERSION,
+    targetVersion: `v${TARGET_VERSION}`,
     app: APP,
   });
 
