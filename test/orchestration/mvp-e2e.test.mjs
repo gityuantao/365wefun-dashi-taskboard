@@ -179,13 +179,12 @@ async function seedActiveVersion(harness, versionId) {
   });
 }
 
-async function seedInfrastructureRejectedTask(harness, taskId) {
+async function seedAcceptingTask(harness, taskId) {
   const types = [
     "start_analysis",
     "analysis_completed",
     "start_development",
     "development_completed",
-    "acceptance_rejected",
   ];
   for (let index = 0; index < types.length; index += 1) {
     const type = types[index];
@@ -201,9 +200,7 @@ async function seedInfrastructureRejectedTask(harness, taskId) {
         actorId: "test",
         issuedAt: NOW,
         reason: "seed infrastructure rejection",
-        parameters: type === "acceptance_rejected"
-          ? { evidenceId: `staging-${taskId}-stage_task-4` }
-          : {},
+        parameters: {},
       }),
       now: NOW,
     });
@@ -585,11 +582,11 @@ test("failed development blocks without advancing the task", async (t) => {
   ]);
 });
 
-test("explicit infrastructure recovery resumes staging and reaches ready for test", async (t) => {
+test("missing adapter rejection resumes staging after configuration is restored", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const taskId = "task-e2e-1";
-  await seedInfrastructureRejectedTask(harness, taskId);
+  await seedAcceptingTask(harness, taskId);
   const persistedPayload = {
     taskId,
     pr: { url: "https://github.com/x/pull/99" },
@@ -611,27 +608,31 @@ test("explicit infrastructure recovery resumes staging and reaches ready for tes
     NOW,
     NOW,
   ).run();
-  await harness.db.prepare(
-    `INSERT INTO staging_deployments (
-       id, task_id, target_version, pr_url, task_commit, candidate_commit,
-       version_branch, stage, status, attempt, error, started_at, completed_at,
-       failure_owner, failure_classification, failure_fingerprint
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'deploy', 'failed', 1, ?, ?, ?, ?, ?, ?)`,
-  ).bind(
-    `${taskId}-staging-1`,
-    taskId,
-    persistedPayload.targetVersion,
-    persistedPayload.pr.url,
-    persistedPayload.commitSha,
-    CANDIDATE_COMMIT,
-    persistedPayload.versionBranch,
-    "staging unavailable",
-    NOW,
-    NOW,
-    "staging_infrastructure",
-    "staging_infrastructure",
-    "infra-fingerprint-e2e",
-  ).run();
+  const initialFailure = await executeStagingGate({
+    job: { id: `${taskId}-stage_task-4`, payload: persistedPayload },
+    db: harness.db,
+    client: { postComment: async () => ({}) },
+    gitOps: {
+      integrateTaskPr: async () => {
+        throw new Error("merge must not run without a staging adapter");
+      },
+      persistCandidate: async () => {
+        throw new Error("persist must not run without a staging adapter");
+      },
+    },
+    adapter: null,
+    now: NOW,
+  });
+  const failedAttempt = await harness.db.prepare(
+    `SELECT status, stage, failure_owner
+     FROM staging_deployments WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`,
+  ).bind(taskId).first();
+  assert.equal(initialFailure.status, "failed");
+  assert.equal(initialFailure.stage, "preflight");
+  assert.equal(failedAttempt.status, "failed");
+  assert.equal(failedAttempt.stage, "preflight");
+  assert.equal(failedAttempt.failure_owner, "staging_infrastructure");
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
   await saveSnapshot(harness.db, {
     type: "task",
     snapshot: {

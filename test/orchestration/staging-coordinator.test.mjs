@@ -143,6 +143,128 @@ async function retryStaging(db, taskId) {
   assert.equal(result.status, "succeeded");
 }
 
+test("a missing staging adapter persists infrastructure ownership before rejection", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const taskId = "task-missing-staging-adapter";
+  await seedAcceptingTask(harness.db, taskId);
+
+  const result = await executeStagingGate({
+    job: stagingJob(taskId, ["web"]),
+    db: harness.db,
+    client: { postComment: async () => ({}) },
+    gitOps: webGate().gitOps,
+    adapter: null,
+    now: NOW,
+  });
+  const attempt = await harness.db.prepare(
+    `SELECT status, stage, failure_owner, failure_classification, failure_fingerprint
+     FROM staging_deployments WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`,
+  ).bind(taskId).first();
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.stage, "preflight");
+  assert.equal(result.classification, "staging_infrastructure");
+  assert.equal(attempt.status, "failed");
+  assert.equal(attempt.stage, "preflight");
+  assert.equal(attempt.failure_owner, "staging_infrastructure");
+  assert.equal(attempt.failure_classification, "staging_infrastructure");
+  assert.equal(attempt.failure_fingerprint, result.fingerprint);
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
+});
+
+test("staging rejects a PR head that differs from the accepted commit before persistence or deploy", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const taskId = "task-unaccepted-pr-head";
+  await seedAcceptingTask(harness.db, taskId);
+  let persistCalls = 0;
+  let deployCalls = 0;
+  let readbackCalls = 0;
+  const changedHead = "3333333333333333333333333333333333333333";
+
+  const result = await executeStagingGate({
+    job: stagingJob(taskId, ["web"]),
+    db: harness.db,
+    client: { postComment: async () => ({}) },
+    gitOps: {
+      integrateTaskPr: async () => ({
+        merged: true,
+        candidateCommit: CANDIDATE_COMMIT,
+        taskHead: changedHead,
+        prNumber: 42,
+      }),
+      persistCandidate: async () => {
+        persistCalls += 1;
+        return { persisted: true };
+      },
+    },
+    adapter: {
+      deploy: async () => {
+        deployCalls += 1;
+        return { releaseId: "must-not-deploy" };
+      },
+      readback: async () => {
+        readbackCalls += 1;
+        return { confirmed: true, gitSha: CANDIDATE_COMMIT };
+      },
+    },
+    now: NOW,
+  });
+  const attempt = await harness.db.prepare(
+    `SELECT status, stage, task_commit, failure_owner
+     FROM staging_deployments WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`,
+  ).bind(taskId).first();
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.stage, "merge");
+  assert.match(result.error, /accepted commit.*does not match PR head/i);
+  assert.equal(persistCalls, 0);
+  assert.equal(deployCalls, 0);
+  assert.equal(readbackCalls, 0);
+  assert.equal(attempt.status, "failed");
+  assert.equal(attempt.stage, "merge");
+  assert.equal(attempt.task_commit, TASK_COMMIT);
+  assert.equal(attempt.failure_owner, "staging_infrastructure");
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
+});
+
+test("staging persists and deploys when the PR head equals the accepted commit", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const taskId = "task-accepted-pr-head";
+  await seedAcceptingTask(harness.db, taskId);
+  let persistCalls = 0;
+  let deployCalls = 0;
+  const gate = webGate();
+
+  const result = await executeStagingGate({
+    job: stagingJob(taskId, ["web"]),
+    db: harness.db,
+    client: { postComment: async () => ({}) },
+    gitOps: {
+      ...gate.gitOps,
+      persistCandidate: async (input) => {
+        persistCalls += 1;
+        return gate.gitOps.persistCandidate(input);
+      },
+    },
+    adapter: {
+      ...gate.adapter,
+      deploy: async (input) => {
+        deployCalls += 1;
+        return gate.adapter.deploy(input);
+      },
+    },
+    now: NOW,
+  });
+
+  assert.equal(result.status, "completed", JSON.stringify(result));
+  assert.equal(persistCalls, 1);
+  assert.equal(deployCalls, 1);
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "ready_for_test");
+});
+
 test("a repeated merge infrastructure failure is fingerprinted without consuming product rework", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

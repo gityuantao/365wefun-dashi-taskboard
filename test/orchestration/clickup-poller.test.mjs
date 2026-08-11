@@ -93,7 +93,14 @@ async function makeEnv(harness, tasks, versions = [], comments = [], fieldUpdate
   };
 }
 
-async function dispatchTask(harness, id, type, version, parameters = {}) {
+async function dispatchTask(
+  harness,
+  id,
+  type,
+  version,
+  parameters = {},
+  actorId = "subject-1",
+) {
   return dispatchCommand({
     db: harness.db,
     command: parseCommandEnvelope({
@@ -102,7 +109,7 @@ async function dispatchTask(harness, id, type, version, parameters = {}) {
       aggregateType: "task",
       aggregateId: "task-1",
       expectedVersion: version,
-      actorId: "subject-1",
+      actorId,
       issuedAt: NOW,
       reason: "poller test",
       parameters,
@@ -123,10 +130,18 @@ async function seedInfrastructureRejectedTask(harness, {
     "acceptance_rejected",
   ];
   for (let index = 0; index < types.length; index += 1) {
-    const parameters = types[index] === "acceptance_rejected"
+    const rejected = types[index] === "acceptance_rejected";
+    const parameters = rejected
       ? { evidenceId: "staging-task-1-stage_task-4" }
       : {};
-    await dispatchTask(harness, `infra-rejected-${index}`, types[index], index + 1, parameters);
+    await dispatchTask(
+      harness,
+      `infra-rejected-${index}`,
+      types[index],
+      index + 1,
+      parameters,
+      rejected ? "runner-staging" : "subject-1",
+    );
   }
   await harness.db.prepare(
     `INSERT INTO staging_deployments (
@@ -1310,8 +1325,16 @@ test("poller routes a rejected task back to rework when user moves it to 待开�
   const types = ["start_analysis", "analysis_completed", "start_development",
     "development_completed", "acceptance_rejected"];
   for (let index = 0; index < types.length; index += 1) {
-    const params = types[index] === "acceptance_rejected" ? { evidenceId: "ev-rej" } : {};
-    await dispatchTask(harness, `rej-dev-${index}`, types[index], index + 1, params);
+    const rejected = types[index] === "acceptance_rejected";
+    const params = rejected ? { evidenceId: "acceptance-product-rejection" } : {};
+    await dispatchTask(
+      harness,
+      `rej-dev-${index}`,
+      types[index],
+      index + 1,
+      params,
+      rejected ? "runner-acceptor" : "subject-1",
+    );
   }
   await enqueueJob(harness.db, {
     jobId: "task-1-develop-old",
@@ -1442,6 +1465,242 @@ test("poller does not treat a missing ClickUp snapshot as an explicit staging re
     "SELECT COUNT(*) AS count FROM runner_jobs WHERE status = 'queued'",
   ).first();
   assert.equal(queued.count, 0);
+});
+
+test("poller fails closed when a staging rejection has no persisted attempt", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const comments = [];
+  const types = [
+    "start_analysis",
+    "analysis_completed",
+    "start_development",
+    "development_completed",
+    "acceptance_rejected",
+  ];
+  for (let index = 0; index < types.length; index += 1) {
+    const rejected = types[index] === "acceptance_rejected";
+    await dispatchTask(
+      harness,
+      `missing-attempt-${index}`,
+      types[index],
+      index + 1,
+      rejected ? { evidenceId: "staging-task-1-stage_task-4" } : {},
+      rejected ? "runner-staging" : "subject-1",
+    );
+  }
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "acceptance_rejected",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:05.000Z",
+      fieldsHash: "missing-attempt-rejected",
+    },
+    readAt: "2026-08-04T00:00:05.000Z",
+  });
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ], comments);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.deepEqual(result.commands, []);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "acceptance_rejected");
+  const queued = await harness.db.prepare(
+    "SELECT COUNT(*) AS count FROM runner_jobs WHERE status = 'queued'",
+  ).first();
+  assert.equal(queued.count, 0);
+  assert.match(comments.at(-1), /无法恢复测试环境部署/);
+  assert.match(comments.at(-1), /ownership cannot be proven/);
+});
+
+test("current staging rejection is not routed to development by a historical product attempt", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const comments = [];
+  const initialTypes = [
+    "start_analysis",
+    "analysis_completed",
+    "start_development",
+    "development_completed",
+  ];
+  for (let index = 0; index < initialTypes.length; index += 1) {
+    await dispatchTask(harness, `stale-product-${index}`, initialTypes[index], index + 1);
+  }
+  await harness.db.prepare(
+    `INSERT INTO staging_deployments (
+       id, task_id, target_version, pr_url, task_commit, version_branch,
+       stage, status, attempt, error, started_at, completed_at,
+       failure_owner, failure_classification, failure_fingerprint
+     ) VALUES (?, ?, ?, ?, ?, ?, 'acceptance', 'failed', 1, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    "task-1-staging-1",
+    "task-1",
+    "1.0.1",
+    "https://github.com/example/repo/pull/old-product",
+    "2222222222222222222222222222222222222222",
+    "version/1.0.1",
+    "old product rejection",
+    "2026-08-04T00:00:00.000Z",
+    "2026-08-04T00:00:01.000Z",
+    "product_rework",
+    "product_rework",
+    "old-product-fingerprint",
+  ).run();
+  await dispatchTask(
+    harness,
+    "old-product-rejection",
+    "acceptance_rejected",
+    5,
+    { evidenceId: "acceptance-old-product" },
+    "runner-acceptor",
+  );
+  await dispatchTask(harness, "old-product-retry", "retry_staging", 6);
+  await dispatchTask(
+    harness,
+    "current-staging-rejection",
+    "acceptance_rejected",
+    7,
+    { evidenceId: "staging-current-without-attempt" },
+    "runner-staging",
+  );
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "acceptance_rejected",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:05.000Z",
+      fieldsHash: "current-staging-rejected",
+    },
+    readAt: "2026-08-04T00:00:05.000Z",
+  });
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ], comments);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.deepEqual(result.commands, []);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "acceptance_rejected");
+  const queued = await harness.db.prepare(
+    "SELECT COUNT(*) AS count FROM runner_jobs WHERE status = 'queued'",
+  ).first();
+  assert.equal(queued.count, 0);
+  assert.match(comments.at(-1), /ownership cannot be proven/);
+});
+
+test("current product rejection is not restaged because of a historical infrastructure attempt", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const initialTypes = [
+    "start_analysis",
+    "analysis_completed",
+    "start_development",
+    "development_completed",
+  ];
+  for (let index = 0; index < initialTypes.length; index += 1) {
+    await dispatchTask(harness, `stale-infra-${index}`, initialTypes[index], index + 1);
+  }
+  const historicalPayload = {
+    taskId: "task-1",
+    pr: { url: "https://github.com/example/repo/pull/old-infra" },
+    commitSha: "2222222222222222222222222222222222222222",
+    versionBranch: "version/1.0.1",
+    targetVersion: "1.0.1",
+    platforms: ["web"],
+  };
+  await enqueueJob(harness.db, {
+    jobId: "task-1-stage_task-old",
+    commandId: "auto-stage_task-task-1",
+    jobType: "stage_task",
+    payload: historicalPayload,
+    payloadHash: "old-infra-evidence",
+    expiresAt: "2026-08-04T01:00:00.000Z",
+    createdAt: "2026-08-04T00:00:00.000Z",
+  });
+  await harness.db.prepare(
+    `UPDATE runner_jobs SET status = 'completed', result = ?, completed_at = ? WHERE id = ?`,
+  ).bind(
+    JSON.stringify({ status: "failed", classification: "staging_infrastructure" }),
+    "2026-08-04T00:00:01.000Z",
+    "task-1-stage_task-old",
+  ).run();
+  await harness.db.prepare(
+    `INSERT INTO staging_deployments (
+       id, task_id, target_version, pr_url, task_commit, version_branch,
+       stage, status, attempt, error, started_at, completed_at,
+       failure_owner, failure_classification, failure_fingerprint
+     ) VALUES (?, ?, ?, ?, ?, ?, 'deploy', 'failed', 1, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    "task-1-staging-1",
+    "task-1",
+    historicalPayload.targetVersion,
+    historicalPayload.pr.url,
+    historicalPayload.commitSha,
+    historicalPayload.versionBranch,
+    "old infrastructure rejection",
+    "2026-08-04T00:00:00.000Z",
+    "2026-08-04T00:00:01.000Z",
+    "staging_infrastructure",
+    "staging_infrastructure",
+    "old-infra-fingerprint",
+  ).run();
+  await dispatchTask(
+    harness,
+    "old-infra-rejection",
+    "acceptance_rejected",
+    5,
+    { evidenceId: "staging-old-infra" },
+    "runner-staging",
+  );
+  await dispatchTask(harness, "old-infra-retry", "retry_staging", 6);
+  await dispatchTask(
+    harness,
+    "current-product-rejection",
+    "acceptance_rejected",
+    7,
+    { evidenceId: "acceptance-current-product" },
+    "runner-acceptor",
+  );
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "acceptance_rejected",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-04T00:00:05.000Z",
+      fieldsHash: "current-product-rejected",
+    },
+    readAt: "2026-08-04T00:00:05.000Z",
+  });
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+  ]);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.ok(result.commands.some((command) => command.type === "acceptance_rejected_to_develop"));
+  assert.equal(result.commands.some((command) => command.type === "retry_staging"), false);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "ready_for_development");
+  const jobs = await harness.db.prepare(
+    "SELECT job_type FROM runner_jobs WHERE status = 'queued' ORDER BY job_type",
+  ).all();
+  assert.deepEqual(jobs.results, [{ job_type: "develop" }]);
 });
 
 test("poller fails closed when infrastructure recovery evidence is missing", async (t) => {

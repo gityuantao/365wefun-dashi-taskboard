@@ -185,11 +185,10 @@ export async function executeStagingGate({
   let fencingToken = null;
   let candidateCommit = null;
   try {
-    if (!adapter || typeof adapter.deploy !== "function" || typeof adapter.readback !== "function") {
-      throw new Error("staging adapter is not configured");
-    }
-    if (!pr?.url || !versionBranch || !targetVersion) {
-      throw new Error("staging evidence is incomplete: PR, version branch and target version are required");
+    if (!pr?.url || !commitSha || !versionBranch || !targetVersion) {
+      throw new Error(
+        "staging evidence is incomplete: PR, accepted commit, version branch and target version are required",
+      );
     }
     const aggregate = await loadAggregate(db, "task", taskId);
     if (aggregate.state !== "accepting") {
@@ -201,14 +200,23 @@ export async function executeStagingGate({
       `INSERT INTO staging_deployments (
          id, task_id, target_version, pr_url, task_commit, version_branch,
          stage, status, attempt, started_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'preflight', 'running', ?, ?)`,
-    ).bind(attemptId, taskId, targetVersion, pr.url, commitSha ?? "unknown", versionBranch, attempt, now).run();
+      ) VALUES (?, ?, ?, ?, ?, ?, 'preflight', 'running', ?, ?)`,
+    ).bind(attemptId, taskId, targetVersion, pr.url, commitSha, versionBranch, attempt, now).run();
+
+    if (!adapter || typeof adapter.deploy !== "function" || typeof adapter.readback !== "function") {
+      throw new Error("staging adapter is not configured");
+    }
 
     stage = "merge";
     const integrated = await gitOps.integrateTaskPr({ taskId, pullRequest: pr.url, versionBranch });
     if (!integrated.merged) throw new Error(integrated.error ?? "task PR merge failed");
     candidateCommit = integrated.candidateCommit;
     const taskCommit = integrated.taskHead;
+    if (taskCommit !== commitSha) {
+      throw new Error(
+        `accepted commit ${commitSha} does not match PR head ${taskCommit ?? "missing"}`,
+      );
+    }
     await db.prepare(
       "UPDATE staging_deployments SET stage = ?, task_commit = ?, candidate_commit = ? WHERE id = ?",
     ).bind(stage, taskCommit, candidateCommit, attemptId).run();

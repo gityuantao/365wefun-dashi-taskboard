@@ -48,17 +48,49 @@ function matchesStagingAttempt(payload, attempt, taskId) {
 }
 
 async function loadStagingRecovery(db, taskId) {
+  const rejectionRows = await db.prepare(
+    `SELECT actor_id, occurred_at, json_extract(data, '$.evidenceId') AS evidence_id
+     FROM orchestration_events
+     WHERE aggregate_type = 'task' AND aggregate_id = ?
+       AND type = 'task.acceptance_rejected'
+     ORDER BY aggregate_version DESC LIMIT 2`,
+  ).bind(taskId).all();
+  const [rejection, previousRejection] = rejectionRows.results ?? [];
+  const productRejection = rejection?.actor_id === "runner-acceptor"
+    && typeof rejection.evidence_id === "string"
+    && rejection.evidence_id.startsWith("acceptance-");
+  if (productRejection) return { kind: "product_rework" };
+  const stagingRejection = rejection?.actor_id === "runner-staging"
+    && typeof rejection.evidence_id === "string"
+    && rejection.evidence_id.startsWith("staging-");
+  if (!stagingRejection) {
+    return { kind: "blocked", reason: "rejection ownership cannot be proven" };
+  }
   const attempt = await db.prepare(
-    `SELECT status, failure_owner, pr_url, task_commit, version_branch, target_version
+    `SELECT status, completed_at, failure_owner, pr_url, task_commit, version_branch, target_version
      FROM staging_deployments WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`,
   ).bind(taskId).first();
-  if (!attempt || attempt.status === "succeeded") return { kind: "product_rework" };
+  if (!attempt || attempt.status === "succeeded") {
+    return { kind: "blocked", reason: "rejection ownership cannot be proven" };
+  }
   if (attempt.status !== "failed") {
     return { kind: "blocked", reason: `latest staging attempt is ${attempt.status}` };
   }
-  if (attempt.failure_owner === "product_rework") return { kind: "product_rework" };
   if (attempt.failure_owner !== "staging_infrastructure") {
-    return { kind: "blocked", reason: "latest staging failure owner is unknown" };
+    return {
+      kind: "blocked",
+      reason: "latest staging failure owner is unknown; current staging failure ownership cannot be proven",
+    };
+  }
+  if (
+    !nonEmptyString(attempt.completed_at)
+    || attempt.completed_at > rejection.occurred_at
+    || (
+      previousRejection?.occurred_at
+      && attempt.completed_at <= previousRejection.occurred_at
+    )
+  ) {
+    return { kind: "blocked", reason: "staging failure does not match the current rejection" };
   }
   const rows = await db.prepare(
     `SELECT payload FROM runner_jobs
