@@ -673,9 +673,20 @@ test("development uses the latest 12 comments and images", async (t) => {
   });
 
   assert.equal(result.status, "completed");
-  assert.match(options.prompt, /最新验收不通过：支付按钮仍然无响应/);
+  const latestCommentWindow = [
+    "- 评论 comment-12：❌ 最新验收不通过：支付按钮仍然无响应",
+    ...Array.from({ length: 11 }, (_, index) => {
+      const commentIndex = 11 - index;
+      return `- 评论 comment-${commentIndex}：评论-${commentIndex}`;
+    }),
+  ];
+  const commentPositions = latestCommentWindow.map((comment) => options.prompt.indexOf(comment));
+  for (const [index, comment] of latestCommentWindow.entries()) {
+    assert.equal(options.prompt.split(comment).length - 1, 1);
+    if (index > 0) assert.ok(commentPositions[index - 1] < commentPositions[index]);
+  }
   assert.match(options.prompt, /验收字段：测试环境支付仍失败/);
-  assert.doesNotMatch(options.prompt, /评论-0/);
+  assert.equal(options.prompt.includes("- 评论 comment-0：评论-0"), false);
   assert.equal(downloadedUrls.some((url) => url.includes("latest-rejection.png")), true);
   assert.equal(downloadedUrls.some((url) => url.includes("old-outside-window.png")), false);
   assert.equal(options.imagePaths.length, 1);
