@@ -258,6 +258,51 @@ test("a repeated merge infrastructure failure is fingerprinted without consuming
   }
 });
 
+test("staging fingerprints distinguish normalized errors that differ after the display limit", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const taskId = "task-long-staging-errors";
+  await seedAcceptingTask(harness.db, taskId);
+  const sharedPrefix = "merge infrastructure unavailable ".padEnd(340, "x");
+  const errors = [`${sharedPrefix}first-tail`, `${sharedPrefix}second-tail`];
+  let mergeAttempt = 0;
+  const run = () => executeStagingGate({
+    job: stagingJob(taskId, ["web"]),
+    db: harness.db,
+    client: { postComment: async () => ({}) },
+    gitOps: {
+      integrateTaskPr: async () => ({
+        merged: false,
+        error: errors[mergeAttempt++],
+      }),
+      persistCandidate: async () => {
+        throw new Error("candidate must not be persisted after a merge failure");
+      },
+    },
+    adapter: webGate().adapter,
+    now: NOW,
+  });
+
+  const first = await run();
+  await retryStaging(harness.db, taskId);
+  const second = await run();
+  const attempts = await harness.db.prepare(
+    `SELECT error, failure_fingerprint
+     FROM staging_deployments WHERE task_id = ? ORDER BY attempt`,
+  ).bind(taskId).all();
+
+  assert.equal(first.repeated, false);
+  assert.equal(second.repeated, false);
+  assert.notEqual(second.fingerprint, first.fingerprint);
+  assert.equal(first.error.length, 300);
+  assert.equal(second.error, first.error);
+  assert.deepEqual(attempts.results.map((attempt) => attempt.error), [first.error, second.error]);
+  assert.deepEqual(attempts.results.map((attempt) => attempt.failure_fingerprint), [
+    first.fingerprint,
+    second.fingerprint,
+  ]);
+});
+
 test("an iOS task advances exactly once only after Web and every TestFlight App succeed", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

@@ -9,11 +9,14 @@ import { loadIosApps } from "../ios/app-registry.mjs";
 
 const DEFAULT_STAGING_LEASE_MS = 45 * 60_000;
 
-function concise(value, max = 300) {
+function normalizeRedactedError(value) {
   return redactCredentials(value ?? "unknown error")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, max);
+    .trim();
+}
+
+function concise(value, max = 300) {
+  return normalizeRedactedError(value).slice(0, max);
 }
 
 async function sha256Hex(value) {
@@ -77,14 +80,15 @@ async function transitionFailure({
   error,
   now,
 }) {
-  const reason = concise(error?.message ?? error);
+  const normalizedError = normalizeRedactedError(error?.message ?? error);
+  const reason = normalizedError.slice(0, 300);
   const candidateIdentity = candidateCommit ?? "unknown";
   const fingerprint = await sha256Hex([
     taskId,
     candidateIdentity,
     stage,
     "staging_infrastructure",
-    reason,
+    normalizedError,
   ].join("|"));
   const previous = await db.prepare(
     `SELECT id FROM staging_deployments
