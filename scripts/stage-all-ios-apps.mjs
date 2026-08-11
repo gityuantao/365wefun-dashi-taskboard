@@ -928,6 +928,7 @@ export async function createAppStoreConnectClient(apple, {
   }
 
   return {
+    request,
     async findApp(bundleId) {
       const query = new URLSearchParams({ "filter[bundleId]": bundleId, limit: "2" });
       const apps = await listAll(`/v1/apps?${query}`);
@@ -1126,7 +1127,7 @@ async function findForbiddenStoreKitConfiguration(root) {
   return null;
 }
 
-async function verifyAppBundle(appBundlePath, context, source, signal) {
+export async function verifyAppBundle(appBundlePath, context, source, signal) {
   const plist = await readPlist(path.join(appBundlePath, "Info.plist"), signal);
   const identity = verifyArtifactIdentity({
     bundleId: plist.CFBundleIdentifier,

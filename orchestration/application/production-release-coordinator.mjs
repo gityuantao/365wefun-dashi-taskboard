@@ -525,7 +525,8 @@ async function executeTarget({
           ...fencing,
         }),
       );
-      if (descriptor.platform === "ios" && !isDeepStrictEqual(recordedStages, [
+      const distinctRecordedStages = recordedStages.filter((stage, index) => index === 0 || recordedStages[index - 1] !== stage);
+      if (descriptor.platform === "ios" && !isDeepStrictEqual(distinctRecordedStages, [
         "test", "archive", "upload", "processing", "review_submit", "review_wait",
       ])) {
         throw postEffectContractFailure("iOS production release adapter omitted the mandatory staged lifecycle");
