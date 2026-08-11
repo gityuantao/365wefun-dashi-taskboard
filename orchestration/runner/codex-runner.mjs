@@ -216,6 +216,45 @@ export function createProductionCodexAdapter({ runtime, runCodexImpl = runCodex,
   };
 }
 
+function safeAiExecution(value) {
+  if (
+    typeof value?.role !== "string"
+    || typeof value?.model !== "string"
+    || typeof value?.reasoningEffort !== "string"
+  ) {
+    return null;
+  }
+  return {
+    role: value.role,
+    model: value.model,
+    reasoningEffort: value.reasoningEffort,
+  };
+}
+
+export function createAuditedCodex({ codex, signal, role, audit }) {
+  return {
+    run: async (options) => {
+      const result = await codex.run({ ...options, role, signal });
+      const safe = safeAiExecution(result.aiExecution);
+      if (safe) audit.aiExecution = safe;
+      return result;
+    },
+  };
+}
+
+export async function executeWithCodexAudit(execute) {
+  const audit = {};
+  let result;
+  try {
+    result = await execute(audit);
+  } catch (error) {
+    result = { status: "failed", error: error.message };
+  }
+  return audit.aiExecution
+    ? { ...result, aiExecution: audit.aiExecution }
+    : result;
+}
+
 export function guardDurableMethods(target, { methods, assertActive }) {
   const guarded = new Set(methods);
   return new Proxy(target, {

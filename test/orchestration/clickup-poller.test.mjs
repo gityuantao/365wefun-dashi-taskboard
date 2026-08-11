@@ -93,6 +93,48 @@ async function makeEnv(harness, tasks, versions = [], comments = [], fieldUpdate
   };
 }
 
+async function seedCompletedRunnerJob(harness, {
+  jobId,
+  commandId,
+  jobType,
+  payload,
+  result,
+  createdAt,
+  completedAt,
+}) {
+  await enqueueJob(harness.db, {
+    jobId,
+    commandId,
+    jobType,
+    payload,
+    payloadHash: `${jobId}-hash`,
+    expiresAt: "2026-08-11T03:00:00.000Z",
+    createdAt,
+  });
+  await harness.db.prepare(
+    "UPDATE runner_jobs SET status = 'completed', result = ?, completed_at = ? WHERE id = ?",
+  ).bind(JSON.stringify(result), completedAt, jobId).run();
+}
+
+async function seedCompletedAnalysis(harness) {
+  await seedCompletedRunnerJob(harness, {
+    jobId: "task-1-analyze-exact",
+    commandId: "auto-analyze-task-1",
+    jobType: "analyze",
+    payload: { taskId: "task-1" },
+    result: {
+      status: "completed",
+      summary: {
+        acceptance_criteria: [
+          { id: "ac-1", criterion: "exact criterion", verification: "focused check" },
+        ],
+      },
+    },
+    createdAt: "2026-08-11T00:00:00.000Z",
+    completedAt: "2026-08-11T00:00:01.000Z",
+  });
+}
+
 async function dispatchTask(
   harness,
   id,
@@ -1391,6 +1433,191 @@ test("poller routes a rejected task back to rework when user moves it to 待开�
     .prepare("SELECT id FROM runner_jobs WHERE job_type = 'stage_task' AND status = 'queued'")
     .first();
   assert.equal(stagingJob, null, "product rejection must not bypass rework");
+});
+
+test("invalid context failures stay terminal for develop and accept jobs", async (t) => {
+  const cases = [
+    {
+      jobType: "develop",
+      transitions: ["start_analysis", "analysis_completed"],
+      initialStatus: "待开发",
+      laterStatus: "开发中",
+    },
+    {
+      jobType: "accept",
+      transitions: ["start_analysis", "analysis_completed", "start_development", "development_completed"],
+      initialStatus: "开发中",
+      laterStatus: "开发中",
+    },
+  ];
+  for (const testCase of cases) {
+    await t.test(testCase.jobType, async (t) => {
+      const harness = await createCloudWorkerHarness();
+      t.after(() => harness.dispose());
+      for (let index = 0; index < testCase.transitions.length; index += 1) {
+        await dispatchTask(
+          harness,
+          `invalid-context-${testCase.jobType}-${index}`,
+          testCase.transitions[index],
+          index + 1,
+        );
+      }
+      const versions = [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }];
+      await pollClickUpOnce(await makeEnv(harness, [
+        sandboxTask({ status: testCase.initialStatus, version: "1.0.1" }),
+      ], versions), { now: NOW });
+      const initial = await harness.db.prepare(
+        "SELECT id, payload FROM runner_jobs WHERE job_type = ? AND status = 'queued'",
+      ).bind(testCase.jobType).first();
+      assert.ok(initial);
+      assert.match(JSON.parse(initial.payload).contextError, /completed analysis/);
+      await harness.db.prepare(
+        "UPDATE runner_jobs SET status = 'failed', result = ?, completed_at = ? WHERE id = ?",
+      ).bind(
+        JSON.stringify({
+          status: "failed",
+          classification: "invalid_context",
+          error: `${testCase.jobType} context unavailable`,
+        }),
+        NOW,
+        initial.id,
+      ).run();
+
+      await pollClickUpOnce(await makeEnv(harness, [
+        sandboxTask({ status: testCase.laterStatus, version: "1.0.1" }),
+      ], versions), { now: "2026-08-04T00:20:10.000Z" });
+
+      const jobs = await harness.db.prepare(
+        "SELECT id, status FROM runner_jobs WHERE command_id = ? ORDER BY created_at, id",
+      ).bind(`auto-${testCase.jobType}-task-1`).all();
+      assert.deepEqual(jobs.results, [{ id: initial.id, status: "failed" }]);
+    });
+  }
+});
+
+test("rework findings come from the exact acceptance job named by current rejection evidence", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const evidenceId = "acceptance-task-1-accept-current";
+  const transitions = ["start_analysis", "analysis_completed", "start_development", "development_completed"];
+  for (let index = 0; index < transitions.length; index += 1) {
+    await dispatchTask(harness, `exact-rework-${index}`, transitions[index], index + 1);
+  }
+  await dispatchTask(
+    harness,
+    evidenceId,
+    "acceptance_rejected",
+    5,
+    { evidenceId },
+    "runner-acceptor",
+  );
+  await seedCompletedAnalysis(harness);
+  await seedCompletedRunnerJob(harness, {
+    jobId: "task-1-accept-old",
+    commandId: "auto-accept-task-1",
+    jobType: "accept",
+    payload: { taskId: "task-1" },
+    result: { status: "completed", result: "rejected", findings: [{ description: "old finding" }] },
+    createdAt: "2026-08-11T00:01:00.000Z",
+    completedAt: "2026-08-11T00:01:01.000Z",
+  });
+  await seedCompletedRunnerJob(harness, {
+    jobId: "task-1-accept-current",
+    commandId: "auto-accept-task-1",
+    jobType: "accept",
+    payload: { taskId: "task-1" },
+    result: { status: "completed", result: "rejected", findings: [{ description: "current finding" }] },
+    createdAt: "2026-08-11T00:02:00.000Z",
+    completedAt: "2026-08-11T00:02:01.000Z",
+  });
+  await seedCompletedRunnerJob(harness, {
+    jobId: "task-1-accept-unrelated-later",
+    commandId: "auto-accept-task-1",
+    jobType: "accept",
+    payload: { taskId: "task-1" },
+    result: { status: "completed", result: "accepted", findings: [] },
+    createdAt: "2026-08-11T00:03:00.000Z",
+    completedAt: "2026-08-11T00:03:01.000Z",
+  });
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "acceptance_rejected",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-11T00:04:00.000Z",
+      fieldsHash: "exact-rejection-snapshot",
+    },
+    readAt: "2026-08-11T00:04:00.000Z",
+  });
+
+  await pollClickUpOnce(await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]), { now: NOW });
+
+  const job = await harness.db.prepare(
+    "SELECT payload FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'",
+  ).first();
+  const payload = JSON.parse(job.payload);
+  assert.deepEqual(payload.acceptanceCriteria, [
+    { id: "ac-1", criterion: "exact criterion", verification: "focused check" },
+  ]);
+  assert.deepEqual(payload.rejectionFindings, [{ description: "current finding" }]);
+  assert.equal(payload.contextError, undefined);
+});
+
+test("missing exact acceptance evidence fails closed without historical findings", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const evidenceId = "acceptance-task-1-accept-missing";
+  const transitions = ["start_analysis", "analysis_completed", "start_development", "development_completed"];
+  for (let index = 0; index < transitions.length; index += 1) {
+    await dispatchTask(harness, `missing-exact-${index}`, transitions[index], index + 1);
+  }
+  await dispatchTask(
+    harness,
+    evidenceId,
+    "acceptance_rejected",
+    5,
+    { evidenceId },
+    "runner-acceptor",
+  );
+  await seedCompletedAnalysis(harness);
+  await seedCompletedRunnerJob(harness, {
+    jobId: "task-1-accept-historical",
+    commandId: "auto-accept-task-1",
+    jobType: "accept",
+    payload: { taskId: "task-1" },
+    result: { status: "completed", result: "rejected", findings: [{ description: "historical" }] },
+    createdAt: "2026-08-11T00:01:00.000Z",
+    completedAt: "2026-08-11T00:01:01.000Z",
+  });
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "acceptance_rejected",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-11T00:04:00.000Z",
+      fieldsHash: "missing-exact-snapshot",
+    },
+    readAt: "2026-08-11T00:04:00.000Z",
+  });
+
+  await pollClickUpOnce(await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]), { now: NOW });
+
+  const job = await harness.db.prepare(
+    "SELECT payload FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'",
+  ).first();
+  const payload = JSON.parse(job.payload);
+  assert.deepEqual(payload.rejectionFindings, []);
+  assert.match(payload.contextError, /exact acceptance job.*missing/i);
 });
 
 test("poller retries staging from persisted evidence after an infrastructure rejection", async (t) => {

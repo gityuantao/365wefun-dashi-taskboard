@@ -37,8 +37,10 @@ import {
   targetVersionOfTask,
 } from "../orchestration/application/version-gate.mjs";
 import {
+  createAuditedCodex,
   createProductionCodexAdapter,
   createOrchestratorLifecycle,
+  executeWithCodexAudit,
   guardDurableMethods,
 } from "../orchestration/runner/codex-runner.mjs";
 import { recoverExpiredRunnerJobsOnTick } from "../orchestration/runner/tick-recovery.mjs";
@@ -228,22 +230,6 @@ function jobGitOps(job) {
   };
 }
 
-function jobCodex(signal, role, audit) {
-  return {
-    run: async (options) => {
-      const result = await codex.run({ ...options, role, signal });
-      audit.aiExecution = result.aiExecution;
-      return result;
-    },
-  };
-}
-
-function withAiExecution(result, audit) {
-  return audit.aiExecution
-    ? { ...result, aiExecution: audit.aiExecution }
-    : result;
-}
-
 const taskListKey = (runtime.listSet ?? "sandbox") === "production" ? "task" : "taskSandbox";
 const versionListKey = (runtime.listSet ?? "sandbox") === "production" ? "version" : "versionSandbox";
 
@@ -263,27 +249,23 @@ const lifecycle = createOrchestratorLifecycle({ dashboardServer, miniflare, log 
 lifecycle.installSignalHandlers(process);
 
 const handlers = {
-  assign_version: async (job, { signal } = {}) => {
+  assign_version: async (job, { signal, audit } = {}) => {
     const client = await jobClient(job);
-    const audit = {};
     const assignment = await assignTaskVersion({
       taskId: job.payload.taskId,
       client,
       config,
       taskListKey,
       versionListKey,
-      codex: jobCodex(signal, "version_assignment", audit),
+      codex: createAuditedCodex({ codex, signal, role: "version_assignment", audit }),
       log,
     });
     if (assignment.error) {
-      return withAiExecution(
-        { status: "failed", error: `version assignment failed: ${assignment.error}` },
-        audit,
-      );
+      return { status: "failed", error: `version assignment failed: ${assignment.error}` };
     }
-    return withAiExecution({ status: "completed", assignment }, audit);
+    return { status: "completed", assignment };
   },
-  analyze: async (job, { signal } = {}) => {
+  analyze: async (job, { signal, audit } = {}) => {
     const client = await jobClient(job);
     const task = await client.getTask(job.payload.taskId);
     const targetVersion = targetVersionOfTask(task, config, taskListKey);
@@ -296,23 +278,25 @@ const handlers = {
     if (gate.blocked) {
       return { status: "failed", error: `waiting_version: ${gate.reason}` };
     }
-    const audit = {};
-    const result = await executeAnalysis({
+    return executeAnalysis({
       job,
       db,
       client,
-      codex: jobCodex(signal, "analysis", audit),
+      codex: createAuditedCodex({ codex, signal, role: "analysis", audit }),
       now: new Date().toISOString(),
       fieldIds: {
         summary: fieldId(config, taskListKey, "执行摘要"),
         acceptance: fieldId(config, taskListKey, "验收标准"),
       },
     });
-    return withAiExecution(result, audit);
   },
-  develop: async (job, { signal } = {}) => {
+  develop: async (job, { signal, audit } = {}) => {
     if (job.payload.contextError) {
-      return { status: "failed", error: `development context unavailable: ${job.payload.contextError}` };
+      return {
+        status: "failed",
+        classification: "invalid_context",
+        error: `development context unavailable: ${job.payload.contextError}`,
+      };
     }
     const client = await jobClient(job);
     const gate = await checkDevelopmentOrder({
@@ -333,23 +317,25 @@ const handlers = {
     if (versionGate.blocked) {
       return { status: "failed", error: `waiting_version: ${versionGate.reason}` };
     }
-    const audit = {};
-    const result = await executeDevelopment({
+    return executeDevelopment({
       job,
       db,
       client,
-      codex: jobCodex(signal, "development", audit),
+      codex: createAuditedCodex({ codex, signal, role: "development", audit }),
       gitOps: jobGitOps(job),
       now: new Date().toISOString(),
       fieldIds: {
         evidence: fieldId(config, taskListKey, "证据链接"),
       },
     });
-    return withAiExecution(result, audit);
   },
-  accept: async (job, { signal } = {}) => {
+  accept: async (job, { signal, audit } = {}) => {
     if (job.payload.contextError) {
-      return { status: "failed", error: `acceptance context unavailable: ${job.payload.contextError}` };
+      return {
+        status: "failed",
+        classification: "invalid_context",
+        error: `acceptance context unavailable: ${job.payload.contextError}`,
+      };
     }
     const client = await jobClient(job);
     const task = await client.getTask(job.payload.taskId);
@@ -366,16 +352,14 @@ const handlers = {
     } catch {
       // 未配置「验收反馈」字段时只发完整评论
     }
-    const audit = {};
-    const result = await executeAcceptance({
+    return executeAcceptance({
       job,
       db,
       client,
-      codex: jobCodex(signal, "acceptance", audit),
+      codex: createAuditedCodex({ codex, signal, role: "acceptance", audit }),
       now: new Date().toISOString(),
       fieldIds: { feedback: acceptanceFeedbackField },
     });
-    return withAiExecution(result, audit);
   },
   stage_task: async (job) => {
     const client = await jobClient(job);
@@ -680,12 +664,9 @@ async function tick() {
 
 async function runJob(job, now, signal) {
   const handler = handlers[job.jobType];
-  let result;
-  try {
-    result = await handler(job, { signal });
-  } catch (error) {
-    result = { status: "failed", error: error.message };
-  }
+  const result = await executeWithCodexAudit(
+    (audit) => handler(job, { signal, audit }),
+  );
   const finalStatus = result.status === "completed" ? "completed" : "failed";
   try {
     await completeJob(db, {

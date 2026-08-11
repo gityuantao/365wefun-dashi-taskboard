@@ -119,6 +119,43 @@ test("production Codex adapter forwards comment images into spawned CLI argument
   ]);
 });
 
+test("job-scoped audit survives an exception after every role returns", async () => {
+  const runner = await import("../../orchestration/runner/codex-runner.mjs");
+  assert.equal(typeof runner.createAuditedCodex, "function");
+  assert.equal(typeof runner.executeWithCodexAudit, "function");
+  const cases = [
+    { role: "analysis", model: "gpt-5.6-terra", reasoningEffort: "high" },
+    { role: "version_assignment", model: "gpt-5.6-terra", reasoningEffort: "medium" },
+    { role: "development", model: "gpt-5.6-sol", reasoningEffort: "xhigh" },
+    { role: "acceptance", model: "gpt-5.6-sol", reasoningEffort: "high" },
+  ];
+  for (const aiExecution of cases) {
+    const result = await runner.executeWithCodexAudit(async (audit) => {
+      const codex = runner.createAuditedCodex({
+        codex: {
+          run: async () => ({
+            exitCode: 0,
+            stdout: '{"secret":"must-not-persist"}',
+            aiExecution,
+          }),
+        },
+        signal: null,
+        role: aiExecution.role,
+        audit,
+      });
+      await codex.run({ prompt: "prompt must not persist" });
+      throw new Error("post-Codex ClickUp write failed");
+    });
+
+    assert.deepEqual(result, {
+      status: "failed",
+      error: "post-Codex ClickUp write failed",
+      aiExecution,
+    });
+    assert.doesNotMatch(JSON.stringify(result), /must-not-persist/);
+  }
+});
+
 test("runCodex rejects a relative comment image path before spawning", () => {
   let spawned = false;
 

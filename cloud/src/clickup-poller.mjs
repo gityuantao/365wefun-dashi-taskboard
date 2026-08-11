@@ -214,7 +214,8 @@ async function clearOrdinaryDevelopmentFailures(db, taskId) {
          AND COALESCE(result, '') NOT LIKE '%waiting_version%'
          AND COALESCE(result, '') NOT LIKE '%waiting:%'
          AND COALESCE(result, '') NOT LIKE '%needs_human%'
-         AND COALESCE(result, '') NOT LIKE '%needs_info%'`,
+         AND COALESCE(result, '') NOT LIKE '%needs_info%'
+         AND COALESCE(json_extract(result, '$.classification'), '') <> 'invalid_context'`,
     )
     .bind(`auto-develop-${taskId}`)
     .run();
@@ -255,26 +256,89 @@ async function loadAnalysisCriteria(db, taskId) {
   return { criteria };
 }
 
-async function loadRejectedAcceptanceFindings(db, taskId) {
-  const row = await db
+async function loadCurrentReworkFindings(db, taskId) {
+  const source = await db
     .prepare(
-      `SELECT result FROM runner_jobs
-       WHERE job_type = 'accept' AND status = 'completed'
-         AND json_extract(payload, '$.taskId') = ?
-       ORDER BY completed_at DESC, created_at DESC LIMIT 1`,
+      `SELECT type, aggregate_version, command_id, actor_id, data
+       FROM orchestration_events
+       WHERE aggregate_type = 'task' AND aggregate_id = ?
+         AND type IN (
+           'task.analysis_completed',
+           'task.acceptance_failed',
+           'task.acceptance_rejected_to_develop',
+           'task.development_failed',
+           'task.test_failed'
+         )
+       ORDER BY aggregate_version DESC LIMIT 1`,
     )
     .bind(taskId)
     .first();
-  if (!row?.result) return { findings: [] };
+  if (!source || !new Set([
+    "task.acceptance_failed",
+    "task.acceptance_rejected_to_develop",
+  ]).has(source.type)) {
+    return { findings: [] };
+  }
+  let rejection = source;
+  if (source.type === "task.acceptance_rejected_to_develop") {
+    rejection = await db
+      .prepare(
+        `SELECT type, aggregate_version, command_id, actor_id, data
+         FROM orchestration_events
+         WHERE aggregate_type = 'task' AND aggregate_id = ?
+           AND aggregate_version = ? AND type = 'task.acceptance_rejected'
+         LIMIT 1`,
+      )
+      .bind(taskId, source.aggregate_version - 1)
+      .first();
+    if (!rejection) {
+      return { error: `current rework has no preceding acceptance rejection for exact task ${taskId}` };
+    }
+  }
+  let eventData;
+  try {
+    eventData = JSON.parse(rejection.data);
+  } catch {
+    return { error: `current acceptance rejection evidence is malformed for exact task ${taskId}` };
+  }
+  const evidenceId = eventData?.evidenceId;
+  if (
+    rejection.actor_id !== "runner-acceptor"
+    || !nonEmptyString(evidenceId)
+    || rejection.command_id !== evidenceId
+    || !evidenceId.startsWith("acceptance-")
+  ) {
+    return { error: `current acceptance rejection evidence is invalid for exact task ${taskId}` };
+  }
+  const jobId = evidenceId.slice("acceptance-".length);
+  const row = await db
+    .prepare(
+      `SELECT job_type, status, payload, result FROM runner_jobs
+       WHERE id = ? LIMIT 1`,
+    )
+    .bind(jobId)
+    .first();
+  if (!row) {
+    return { error: `exact acceptance job ${jobId} is missing for task ${taskId}` };
+  }
+  if (row.job_type !== "accept" || row.status !== "completed") {
+    return { error: `exact acceptance job ${jobId} is not a completed accept job for task ${taskId}` };
+  }
+  let payload;
   let parsed;
   try {
+    payload = JSON.parse(row.payload);
     parsed = JSON.parse(row.result);
   } catch {
-    return { error: `latest acceptance result is malformed for exact task ${taskId}` };
+    return { error: `exact acceptance job ${jobId} is malformed for task ${taskId}` };
   }
-  if (parsed?.result !== "rejected") return { findings: [] };
-  if (!Array.isArray(parsed.findings)) {
-    return { error: `latest rejected acceptance has no structured findings for exact task ${taskId}` };
+  if (
+    payload?.taskId !== taskId
+    || parsed?.status !== "completed"
+    || parsed?.result !== "rejected"
+    || !Array.isArray(parsed.findings)
+  ) {
+    return { error: `exact acceptance job ${jobId} does not match current rejection for task ${taskId}` };
   }
   return { findings: parsed.findings };
 }
@@ -364,6 +428,18 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
     const paused = await env.DB.prepare("SELECT id FROM runner_jobs WHERE id = ?").bind("acceptance-paused-" + snapshot.id).first();
     if (paused) return;
   }
+  if (jobType === "develop" || jobType === "accept") {
+    const invalidContext = await env.DB
+      .prepare(
+        `SELECT id FROM runner_jobs
+         WHERE command_id = ? AND status = 'failed'
+           AND json_extract(result, '$.classification') = 'invalid_context'
+         ORDER BY completed_at DESC, created_at DESC LIMIT 1`,
+      )
+      .bind(`auto-${jobType}-${snapshot.id}`)
+      .first();
+    if (invalidContext) return;
+  }
   const jobId = `${snapshot.id}-${jobType}-${aggregate.version}`;
   const existing = await env.DB
     .prepare("SELECT status, completed_at, result FROM runner_jobs WHERE id = ?")
@@ -390,6 +466,7 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
            AND COALESCE(result, '') NOT LIKE '%waiting:%'
            AND COALESCE(result, '') NOT LIKE '%needs_human%'
            AND COALESCE(result, '') NOT LIKE '%needs_info%'
+           AND COALESCE(json_extract(result, '$.classification'), '') <> 'invalid_context'
          ORDER BY completed_at DESC, created_at DESC LIMIT 1`,
       )
       .bind(`auto-develop-${snapshot.id}`)
@@ -437,7 +514,7 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
     if (analysis.error) contextErrors.push(analysis.error);
   }
   if (jobType === "develop") {
-    const rejectedAcceptance = await loadRejectedAcceptanceFindings(env.DB, snapshot.id);
+    const rejectedAcceptance = await loadCurrentReworkFindings(env.DB, snapshot.id);
     rejectionFindings = rejectedAcceptance.findings;
     if (rejectedAcceptance.error) contextErrors.push(rejectedAcceptance.error);
   }
