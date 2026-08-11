@@ -1861,7 +1861,7 @@ async function routeApi(request, env, actor, url) {
     pathname === "/api/orchestration/dashboard"
     || pathname.startsWith("/api/orchestration/dashboard/")
   ) {
-    return routeDashboardRequest(request, env);
+    return routeDashboardRequest(request, env, actor);
   }
 
   if (

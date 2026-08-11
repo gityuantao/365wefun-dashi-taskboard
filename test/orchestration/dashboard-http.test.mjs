@@ -129,23 +129,26 @@ test("orchestrator dashboard server enqueues a publish mutation when releasable"
     `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
     {
       method: "POST",
-      headers: { authorization: `Bearer ${mutationSecret}` },
+      headers: { authorization: `Bearer ${mutationSecret}`, "content-type": "application/json", "x-orchestration-actor-roles": '["release_manager"]' },
+      body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "request-1" }),
     },
   );
   assert.equal(publish.status, 200);
-  assert.deepEqual(await publish.json(), { ok: true, status: "releasing" });
+  assert.deepEqual(await publish.json(), { ok: true, status: "releasing", requestId: "request-1" });
   const mutation = await harness.db
-    .prepare("SELECT target FROM outbox_mutations WHERE object_id = ? AND field = 'status'")
+    .prepare("SELECT target, expected_before FROM outbox_mutations WHERE object_id = ? AND field = 'status'")
     .bind("version-1")
     .first();
   assert.ok(mutation);
   assert.deepEqual(JSON.parse(mutation.target), "发布中");
+  assert.deepEqual(JSON.parse(mutation.expected_before), "active");
 
   const notReady = await fetch(
     `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-2/publish`,
     {
       method: "POST",
-      headers: { authorization: `Bearer ${mutationSecret}` },
+      headers: { authorization: `Bearer ${mutationSecret}`, "content-type": "application/json", "x-orchestration-actor-roles": '["release_manager"]' },
+      body: JSON.stringify({ confirmationVersion: "1.0.2", requestId: "not-ready-request" }),
     },
   );
   assert.equal(notReady.status, 409);
@@ -158,6 +161,88 @@ test("orchestrator dashboard server enqueues a publish mutation when releasable"
   assert.equal(method.status, 405);
   const methodBody = await method.json();
   assert.deepEqual(methodBody.error.details.allowed, ["POST"]);
+});
+
+test("publish confirmation is role-bound, exact, and idempotent", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  const common = {
+    db: harness.db, port: 0, mutationSecret: "confirmation-secret",
+    versionStatusMap: { 发布中: "releasing" }, productionReadiness: { ready: true },
+  };
+  const denied = await startDashboardServer(common);
+  let response = await fetch(`http://127.0.0.1:${denied.port}/api/orchestration/dashboard/versions/version-1/publish`, {
+    method: "POST", headers: { authorization: "Bearer confirmation-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["viewer"]' },
+    body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "same-request" }),
+  });
+  assert.equal(response.status, 403);
+  await denied.close();
+
+  const allowed = await startDashboardServer(common);
+  t.after(() => allowed.close());
+  response = await fetch(`http://127.0.0.1:${allowed.port}/api/orchestration/dashboard/versions/version-1/publish`, {
+    method: "POST", headers: { authorization: "Bearer confirmation-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["admin"]' },
+    body: JSON.stringify({ confirmationVersion: "1.0.2", requestId: "same-request" }),
+  });
+  assert.equal(response.status, 409);
+  for (let index = 0; index < 2; index += 1) {
+    response = await fetch(`http://127.0.0.1:${allowed.port}/api/orchestration/dashboard/versions/version-1/publish`, {
+      method: "POST", headers: { authorization: "Bearer confirmation-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["admin"]' },
+      body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "same-request" }),
+    });
+    assert.equal(response.status, 200);
+  }
+  const row = await harness.db.prepare("SELECT COUNT(*) AS count FROM outbox_mutations WHERE object_id = 'version-1'").first();
+  assert.equal(row.count, 1);
+  await harness.db.exec("UPDATE outbox_mutations SET expires_at = '2000-01-01T00:00:00.000Z' WHERE object_id = 'version-1'");
+  response = await fetch(`http://127.0.0.1:${allowed.port}/api/orchestration/dashboard/versions/version-1/publish`, {
+    method: "POST", headers: { authorization: "Bearer confirmation-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["admin"]' },
+    body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "same-request" }),
+  });
+  assert.equal(response.status, 409);
+  await harness.db.exec("UPDATE outbox_mutations SET status = 'confirmed' WHERE object_id = 'version-1'; UPDATE orchestration_aggregates SET state = 'releasing' WHERE aggregate_type = 'version' AND aggregate_id = 'version-1';");
+  response = await fetch(`http://127.0.0.1:${allowed.port}/api/orchestration/dashboard/versions/version-1/publish`, {
+    method: "POST", headers: { authorization: "Bearer confirmation-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["admin"]' },
+    body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "same-request" }),
+  });
+  assert.equal(response.status, 200);
+});
+
+test("publish rejects unsupported task platforms before enqueue", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  const snapshotRow = await harness.db.prepare("SELECT snapshot FROM clickup_snapshots WHERE object_type = 'task' AND object_id = 'task-1'").first();
+  const snapshot = JSON.parse(snapshotRow.snapshot);
+  snapshot.platforms = ["web", "android"];
+  await harness.db.prepare("UPDATE clickup_snapshots SET snapshot = ? WHERE object_type = 'task' AND object_id = 'task-1'").bind(JSON.stringify(snapshot)).run();
+  const dashboard = await startDashboardServer({
+    db: harness.db, port: 0, mutationSecret: "platform-secret",
+    versionStatusMap: { 发布中: "releasing" }, productionReadiness: { ready: true },
+  });
+  t.after(() => dashboard.close());
+  const response = await fetch(`http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`, {
+    method: "POST", headers: { authorization: "Bearer platform-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["admin"]' },
+    body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "platform-request" }),
+  });
+  assert.equal(response.status, 409);
+  assert.equal((await harness.db.prepare("SELECT COUNT(*) AS count FROM outbox_mutations").first()).count, 0);
+});
+
+test("publish rejects an open task blocker and preserves expected prior status", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare("INSERT INTO blockers (id, object_type, object_id, type, reason, status, created_at) VALUES ('release-blocker', 'task', 'task-1', 'blocked', 'hold', 'open', ?)").bind("2026-08-06T08:00:00.000Z").run();
+  const dashboard = await startDashboardServer({ db: harness.db, port: 0, mutationSecret: "blocker-secret", versionStatusMap: { 发布中: "releasing" }, productionReadiness: { ready: true } });
+  t.after(() => dashboard.close());
+  const response = await fetch(`http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`, {
+    method: "POST", headers: { authorization: "Bearer blocker-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["admin"]' },
+    body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "blocked-request" }),
+  });
+  assert.equal(response.status, 409);
+  assert.equal((await harness.db.prepare("SELECT COUNT(*) AS count FROM outbox_mutations").first()).count, 0);
 });
 
 test("dashboard exposes production readiness and rejects publish before enqueue when runtime is invalid", async (t) => {
@@ -180,7 +265,7 @@ test("dashboard exposes production readiness and rejects publish before enqueue 
   });
   const publish = await fetch(
     `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
-    { method: "POST", headers: { authorization: "Bearer runtime-readiness-secret" } },
+    { method: "POST", headers: { authorization: "Bearer runtime-readiness-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["admin"]' }, body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "runtime-request" }) },
   );
   assert.equal(publish.status, 503);
   assert.equal((await publish.json()).error.code, "PRODUCTION_RUNTIME_NOT_READY");
@@ -207,7 +292,7 @@ test("publish re-probes lazy adapter factories before enqueueing ClickUp releasi
 
   const publish = await fetch(
     `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
-    { method: "POST", headers: { authorization: "Bearer factory-readiness-secret" } },
+    { method: "POST", headers: { authorization: "Bearer factory-readiness-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["admin"]' }, body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "factory-request" }) },
   );
   assert.equal(publish.status, 503);
   assert.equal(probes, 1);
@@ -226,7 +311,7 @@ test("publish fails closed when no production readiness probe was configured", a
   t.after(() => dashboard.close());
   const publish = await fetch(
     `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
-    { method: "POST", headers: { authorization: "Bearer missing-probe-secret" } },
+    { method: "POST", headers: { authorization: "Bearer missing-probe-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["admin"]' }, body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "probe-request" }) },
   );
   assert.equal(publish.status, 503);
   assert.match((await publish.json()).error.message, /readiness probe was not configured/);

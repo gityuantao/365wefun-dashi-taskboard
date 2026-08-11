@@ -118,6 +118,12 @@ test("detail drawer supports task and version bodies", () => {
   assert.match(drawerSource, /Manifest/);
   assert.match(drawerSource, /发布/);
   assert.match(drawerSource, /publishOrchestrationVersion/);
+  assert.match(drawerSource, /确认正式发布/);
+  assert.match(drawerSource, /输入版本号/);
+  assert.match(drawerSource, /App Store/);
+  assert.match(drawerSource, /releaseTargets/);
+  assert.match(drawerSource, /重试失败目标/);
+  assert.doesNotMatch(drawerSource, /force.success|跳过目标|强制成功/i);
 });
 
 test("dashboard styles define the approved desktop grid and responsive fallbacks", () => {

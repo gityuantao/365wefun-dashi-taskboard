@@ -1,0 +1,11 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-08-11-production-version-release.md
+Task 1: fix round 1/5 (9 addressed, 4 open; commits 5cb9191..e9d8516)
+Task 1: fix round 2/5 (4 addressed, 3 open; commits e9d8516..2e031df)
+Task 1: fix round 3/5 (3 addressed, 2 open; commits 2e031df..dfd9794)
+Task 1: fix round 4/5 (2 addressed, 0 open; commits dfd9794..04b2aa3)
+Task 1: complete (commits 7a54e14..04b2aa3, review clean)
+Task 6: fix round 1/5 (4 Critical and 4 Important addressed; 5 Important remained)
+Task 6: fix round 2/5 (5 Important and 2 Minor addressed; 1 Critical and 3 Important remained)
+Task 6: fix round 3/5 (1 Critical and 3 Important addressed; 1 Important remained)
+Task 6: fix round 4/5 (1 Important addressed; 0 open)
+Task 6: complete (base 965fa41, independent review clean)

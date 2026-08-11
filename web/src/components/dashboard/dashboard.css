@@ -709,6 +709,54 @@
   font-size: 11px;
 }
 
+.release-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--text-primary) 38%, transparent);
+}
+
+.release-confirm-dialog {
+  width: min(520px, 100%);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface-raised);
+  box-shadow: var(--dialog-shadow);
+  padding: 20px;
+}
+
+.release-confirm-dialog header,
+.release-confirm-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.release-confirm-dialog h4 { margin: 4px 0 0; }
+.release-confirm-dialog footer { justify-content: flex-end; margin-top: 18px; }
+.release-confirm-eyebrow { color: var(--text-tertiary); font-size: 11px; letter-spacing: .08em; }
+.release-confirm-warning { margin: 16px 0; color: var(--text-secondary); line-height: 1.55; }
+.release-confirm-targets { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted); }
+.release-confirm-targets ul { margin: 8px 0 0; padding-left: 18px; }
+.release-confirm-targets span { display: block; margin-top: 6px; color: var(--text-tertiary); }
+.release-confirm-field { display: grid; gap: 8px; margin-top: 16px; }
+.release-confirm-field input { width: 100%; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text-primary); padding: 9px 10px; }
+.release-target-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.release-target-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 10px; border: 1px solid var(--border); border-radius: 9px; }
+.release-target-list span:first-child { display: grid; gap: 2px; }
+.release-target-list small { color: var(--text-tertiary); }
+.release-target-list p { grid-column: 1 / -1; margin: 0; color: var(--danger); }
+.release-target-readback { grid-column: 1 / -1; color: var(--text-tertiary); }
+.release-readiness-gaps { color: var(--danger); }
+.badge-release-target-pending { color: var(--text-tertiary); background: var(--surface-muted); }
+.badge-release-target-running { color: var(--accent); background: var(--accent-soft); }
+.badge-release-target-succeeded { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
+.badge-release-target-failed { color: var(--danger); background: var(--danger-soft); }
+
 .detail-status-text,
 .detail-progress-cell dd {
   font-weight: 600;

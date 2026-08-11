@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
-import { seedDashboardFixture } from "../helpers/dashboard-fixture.mjs";
+import { DASHBOARD_NOW, seedDashboardFixture } from "../helpers/dashboard-fixture.mjs";
 import {
   buildDashboard,
   buildTaskDetail,
@@ -77,6 +77,60 @@ test("buildDashboard aggregates releasable versions, pipeline, versions and acti
     develop.summary,
     "任务 任务一 开发完成，PR：https://github.com/example/pr/1",
   );
+});
+
+test("version detail returns safe readiness gaps and per-target release progress", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare("UPDATE release_manifests SET manifest = ? WHERE version_id = 'version-1'").bind(JSON.stringify({
+    versionId: "version-1", taskIds: ["task-1"], candidateCommit: "candidate-1", checksum: "abc",
+    productionTargetPlan: {
+      schemaVersion: 1,
+      taskPlatforms: [{ taskId: "task-1", platforms: ["web", "ios"] }],
+      platforms: { web: true, api: false, ios: true },
+      iosApps: [{ id: "global", name: "海外版", appStoreAppId: "123", bundleId: "online.example.app", marketingVersion: "1.0.1", reviewConfigurationRef: "/private/review.json" }],
+    },
+  })).run();
+  await harness.db.prepare(`INSERT INTO production_release_targets (
+    version_id,candidate_commit,manifest_checksum,platform,app_id,attempt,stage,status,
+    app_store_app_id,bundle_id,marketing_version,build_number,review_status,live_status,
+    started_at,created_at,updated_at,sanitized_error_summary
+  ) VALUES ('version-1','candidate-1','abc','ios','global',1,'review_wait','failed',
+    '123','online.example.app','1.0.1','42','rejected','not_live',
+    '${DASHBOARD_NOW}','${DASHBOARD_NOW}','${DASHBOARD_NOW}','review rejected')`).run();
+
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.deepEqual(detail.releaseReadiness, { ready: true, gaps: [] });
+  assert.deepEqual(detail.releaseTargets, [{
+    platform: "web", appId: null, label: "WEB", stage: "pending", status: "pending",
+    attempt: 0, updatedAt: DASHBOARD_NOW, error: null, reviewStatus: null,
+    liveStatus: null, buildNumber: null, reconciliationStatus: null, readbackStatus: null,
+  }, {
+    platform: "ios", appId: "global", label: "海外版", stage: "review_wait", status: "failed",
+    appStoreAppId: "123", scheme: undefined, bundleId: "online.example.app", marketingVersion: "1.0.1",
+    attempt: 1, updatedAt: DASHBOARD_NOW, error: "review rejected", reviewStatus: "rejected",
+    liveStatus: "not_live", buildNumber: "42", reconciliationStatus: "not_required", readbackStatus: null,
+  }]);
+  assert.equal(JSON.stringify(detail).includes("reviewConfigurationRef"), false);
+  assert.equal(JSON.stringify(detail).includes("/private/review.json"), false);
+});
+
+test("first-release iOS target preview derives the exact marketing version", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare("DELETE FROM release_manifests WHERE version_id = 'version-1'").run();
+  const row = await harness.db.prepare("SELECT snapshot FROM clickup_snapshots WHERE object_type = 'task' AND object_id = 'task-1'").first();
+  const task = JSON.parse(row.snapshot);
+  task.platforms = ["ios"];
+  await harness.db.prepare("UPDATE clickup_snapshots SET snapshot = ? WHERE object_type = 'task' AND object_id = 'task-1'").bind(JSON.stringify(task)).run();
+  const detail = await buildVersionDetail(harness.db, "version-1", { iosApps: [{
+    id: "global", name: "海外版", enabled: true, appStoreAppId: "123", scheme: "Global",
+    bundleId: "online.example.app",
+  }] });
+  assert.equal(detail.releaseTargets[0].marketingVersion, "1.0.1");
+  assert.equal(JSON.stringify(detail).includes("undefined"), false);
 });
 
 test("activity correlates the development PR by command id even when the job completes later", async (t) => {

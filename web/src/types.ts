@@ -371,7 +371,36 @@ export interface VersionDetail {
     taskIds: string[];
     createdAt: string;
     checksum: string;
+    candidateCommit?: string | null;
+    productionTargetPlan?: {
+      iosApps: Array<{ id: string; name: string; appStoreAppId: string; scheme: string; bundleId: string; marketingVersion: string }>;
+    } | null;
   } | null;
+  releaseReadiness: {
+    ready: boolean;
+    gaps: string[];
+  };
+  releaseTargets: ReleaseTargetProgress[];
+}
+
+export interface ReleaseTargetProgress {
+  platform: "web" | "api" | "ios";
+  appId: string | null;
+  label: string;
+  appStoreAppId?: string;
+  scheme?: string;
+  bundleId?: string;
+  marketingVersion?: string;
+  stage: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  attempt: number;
+  updatedAt: string | null;
+  error: string | null;
+  reviewStatus: string | null;
+  liveStatus: string | null;
+  buildNumber: string | null;
+  reconciliationStatus: string | null;
+  readbackStatus: string | null;
 }
 
 export interface OrchestrationControl {

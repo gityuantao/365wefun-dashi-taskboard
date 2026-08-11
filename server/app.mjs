@@ -1617,6 +1617,14 @@ export function createTaskboardServer(options = {}) {
             && orchestrationMutationSecret.length > 0) {
             init.headers.authorization = `Bearer ${orchestrationMutationSecret}`;
           }
+          const isBuiltInLocalOwner = request.headers["x-taskboard-client"] !== "taskctl";
+          const actor = isBuiltInLocalOwner
+            ? { type: "user", id: "local-user", name: "本地用户", avatarUrl: null }
+            : actorFromRequest(request);
+          init.headers["x-orchestration-actor-id"] = actor.id;
+          init.headers["x-orchestration-actor-roles"] = JSON.stringify(
+            isBuiltInLocalOwner ? ["admin"] : [],
+          );
           init.headers["content-type"] = "application/json";
           const body = await readBody(
             request,

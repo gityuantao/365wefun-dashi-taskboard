@@ -6,8 +6,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readControl, writeControl } from "../control.mjs";
-import { enqueueMutation } from "../clickup/outbox.mjs";
 import { buildDashboard, buildTaskDetail, buildVersionDetail } from "./queries.mjs";
+import {
+  DashboardReleaseError,
+  assertReleaseRole,
+  enqueueReleaseRequest,
+  parseReleaseConfirmation,
+  readReleaseRequest,
+} from "./release-api.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const SECRET_PATTERN = /^[a-f0-9]{64}$/;
@@ -172,6 +178,7 @@ export async function startDashboardServer({
   mutationSecret,
   mutationSecretPath = null,
   productionReadiness = { ready: false, error: "production readiness probe was not configured" },
+  productionTargetApps = [],
 }) {
   const currentProductionReadiness = async () => (
     typeof productionReadiness === "function"
@@ -244,14 +251,14 @@ export async function startDashboardServer({
       if (versionPublishMatch) {
         if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
         if (!authorizedMutation(request, resolvedMutationSecret)) return unauthorized(response);
-        const releaseReadiness = await currentProductionReadiness();
-        if (releaseReadiness?.ready !== true) {
-          return sendJson(response, 503, {
-            error: {
-              code: "PRODUCTION_RUNTIME_NOT_READY",
-              message: releaseReadiness?.error ?? "Production release runtime is not ready",
-            },
-          });
+        try {
+          const actorRoles = JSON.parse(request.headers["x-orchestration-actor-roles"] ?? "[]");
+          assertReleaseRole(actorRoles);
+        } catch (error) {
+          if (error instanceof DashboardReleaseError) {
+            return sendJson(response, error.status, { error: { code: error.code, message: error.message } });
+          }
+          throw error;
         }
         let versionId;
         try {
@@ -261,26 +268,28 @@ export async function startDashboardServer({
             error: { code: "INVALID_PATH", message: "Version id contains invalid encoding" },
           });
         }
-        const detail = await buildVersionDetail(db, versionId);
+        const detail = await buildVersionDetail(db, versionId, { iosApps: productionTargetApps });
         if (!detail) {
           return sendJson(response, 404, {
             error: { code: "NOT_FOUND", message: "Version not found" },
           });
         }
-        if (!detail.releasable) {
-          return sendJson(response, 409, {
-            error: {
-              code: "NOT_RELEASABLE",
-              message: "版本任务未全部就绪或版本已发布",
-            },
-          });
+        let body;
+        try {
+          body = JSON.parse(await readRequestBody(request));
+        } catch {
+          return sendJson(response, 400, { error: { code: "INVALID_BODY", message: "Request body must be JSON" } });
         }
-        if (!versionStatusMap) {
-          return sendJson(response, 500, {
-            error: { code: "NO_RELEASING_STATUS", message: "版本状态配置缺少发布中" },
-          });
+        let confirmation;
+        try {
+          confirmation = parseReleaseConfirmation(body, detail.name);
+        } catch (error) {
+          if (error instanceof DashboardReleaseError) {
+            return sendJson(response, error.status, { error: { code: error.code, message: error.message } });
+          }
+          throw error;
         }
-        const statusName = Object.entries(versionStatusMap)
+        const statusName = versionStatusMap && Object.entries(versionStatusMap)
           .find(([, canonical]) => canonical === "releasing")?.[0];
         if (!statusName) {
           return sendJson(response, 500, {
@@ -288,18 +297,30 @@ export async function startDashboardServer({
           });
         }
         const now = new Date().toISOString();
-        await enqueueMutation(db, {
-          mutationId: `publish-${versionId}-${Date.now()}`,
-          objectType: "version",
-          objectId: versionId,
-          field: "status",
-          expectedBefore: null,
-          target: statusName,
-          actor: "dashboard",
-          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-          createdAt: now,
-        });
-        return sendJson(response, 200, { ok: true, status: "releasing" });
+        try {
+          const existing = await readReleaseRequest(db, {
+            versionId, requestId: confirmation.requestId, statusName, now,
+          });
+          if (existing) return sendJson(response, 200, existing);
+        } catch (error) {
+          if (error instanceof DashboardReleaseError) return sendJson(response, error.status, { error: { code: error.code, message: error.message } });
+          throw error;
+        }
+        const releaseReadiness = await currentProductionReadiness();
+        if (releaseReadiness?.ready !== true) {
+          return sendJson(response, 503, {
+            error: { code: "PRODUCTION_RUNTIME_NOT_READY", message: releaseReadiness?.error ?? "Production release runtime is not ready" },
+          });
+        }
+        if (!detail.releaseReadiness.ready) {
+          return sendJson(response, 409, {
+            error: { code: "NOT_RELEASABLE", message: "版本任务未全部就绪或版本已发布" },
+          });
+        }
+        return sendJson(response, 200, await enqueueReleaseRequest(db, {
+          versionId, requestId: confirmation.requestId, statusName, expectedBefore: detail.status,
+          actor: request.headers["x-orchestration-actor-id"] ?? "unknown", now,
+        }));
       }
 
       const versionMatch = pathname.match(/^\/api\/orchestration\/dashboard\/versions\/([^/]+)$/);
@@ -313,13 +334,21 @@ export async function startDashboardServer({
             error: { code: "INVALID_PATH", message: "Version id contains invalid encoding" },
           });
         }
-        const detail = await buildVersionDetail(db, versionId);
+        const detail = await buildVersionDetail(db, versionId, { iosApps: productionTargetApps });
         if (!detail) {
           return sendJson(response, 404, {
             error: { code: "NOT_FOUND", message: "Version not found" },
           });
         }
-        return sendJson(response, 200, detail);
+        const runtimeReadiness = await currentProductionReadiness();
+        const runtimeGaps = runtimeReadiness?.ready === true ? [] : [runtimeReadiness?.error ?? "生产发布运行配置未就绪"];
+        return sendJson(response, 200, {
+          ...detail,
+          releaseReadiness: {
+            ready: detail.releaseReadiness.ready && runtimeGaps.length === 0,
+            gaps: [...detail.releaseReadiness.gaps, ...runtimeGaps],
+          },
+        });
       }
 
       return sendJson(response, 404, {

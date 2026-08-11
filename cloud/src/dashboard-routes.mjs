@@ -4,7 +4,10 @@ import {
   buildVersionDetail,
 } from "../../orchestration/dashboard/queries.mjs";
 import { loadClickUpConfig } from "../../orchestration/clickup/config-registry.mjs";
-import { enqueueMutation } from "../../orchestration/clickup/outbox.mjs";
+import {
+  DashboardReleaseError,
+  assertReleaseRole,
+} from "../../orchestration/dashboard/release-api.mjs";
 
 function json(status, value, extraHeaders = {}) {
   return new Response(JSON.stringify(value), {
@@ -39,7 +42,16 @@ function versionListUrlFromConfig(configJson) {
   }
 }
 
-export async function routeDashboardRequest(request, env) {
+function releaseRoles(env, actor) {
+  try {
+    const mapping = JSON.parse(env.ORCHESTRATION_RELEASE_ROLES ?? "{}");
+    return Array.isArray(mapping?.[actor?.username]) ? mapping[actor.username] : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function routeDashboardRequest(request, env, actor) {
   if (env.ORCHESTRATION_DIAGNOSTIC_ENABLED !== "true") {
     return json(404, {
       error: {
@@ -80,47 +92,13 @@ export async function routeDashboardRequest(request, env) {
   const versionPublishMatch = pathname.match(/^\/api\/orchestration\/dashboard\/versions\/([^/]+)\/publish$/);
   if (versionPublishMatch) {
     if (request.method !== "POST") return methodNotAllowed(["POST"]);
-    let versionId;
     try {
-      versionId = decodeURIComponent(versionPublishMatch[1]);
-    } catch {
-      return json(400, {
-        error: { code: "INVALID_PATH", message: "Version id contains invalid encoding" },
-      });
+      assertReleaseRole(releaseRoles(env, actor));
+    } catch (error) {
+      if (error instanceof DashboardReleaseError) return json(error.status, { error: { code: error.code, message: error.message } });
+      throw error;
     }
-    const detail = await buildVersionDetail(env.DB, versionId);
-    if (!detail) {
-      return json(404, { error: { code: "NOT_FOUND", message: "Version not found" } });
-    }
-    if (!detail.releasable) {
-      return json(409, {
-        error: {
-          code: "NOT_RELEASABLE",
-          message: "版本任务未全部就绪或版本已发布",
-        },
-      });
-    }
-    const config = loadClickUpConfig(JSON.parse(env.CLICKUP_CONFIG));
-    const statusName = Object.entries(config.versionStatusMap)
-      .find(([, canonical]) => canonical === "releasing")?.[0];
-    if (!statusName) {
-      return json(500, {
-        error: { code: "NO_RELEASING_STATUS", message: "版本状态配置缺少发布中" },
-      });
-    }
-    const now = new Date().toISOString();
-    await enqueueMutation(env.DB, {
-      mutationId: `publish-${versionId}-${Date.now()}`,
-      objectType: "version",
-      objectId: versionId,
-      field: "status",
-      expectedBefore: null,
-      target: statusName,
-      actor: "dashboard",
-      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-      createdAt: now,
-    });
-    return json(200, { ok: true, status: "releasing" });
+    return json(503, { error: { code: "LOCAL_ORCHESTRATOR_REQUIRED", message: "Production releases must be confirmed through the local orchestrator runtime" } });
   }
   if (versionMatch) {
     if (request.method !== "GET") return methodNotAllowed(["GET"]);
@@ -136,7 +114,14 @@ export async function routeDashboardRequest(request, env) {
     if (!detail) {
       return json(404, { error: { code: "NOT_FOUND", message: "Version not found" } });
     }
-    return json(200, detail);
+    const runtimeGaps = ["正式发布必须通过本地编排器运行环境确认"];
+    return json(200, {
+      ...detail,
+      releaseReadiness: {
+        ready: detail.releaseReadiness.ready && runtimeGaps.length === 0,
+        gaps: [...detail.releaseReadiness.gaps, ...runtimeGaps],
+      },
+    });
   }
 
   return json(404, { error: { code: "NOT_FOUND", message: "API route not found" } });

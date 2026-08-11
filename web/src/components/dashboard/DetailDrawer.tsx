@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ApiError, getOrchestrationVersionDetail, publishOrchestrationVersion } from "../../api";
 import type { TaskDetail, VersionDetail } from "../../types";
 
@@ -184,10 +185,50 @@ function VersionDetailBody({
   const statusLabel = VERSION_STATUS_LABELS[detail.status ?? ""] ?? detail.status ?? "未知";
   const [publishState, setPublishState] = useState<"idle" | "submitting" | "submitted">("idle");
   const [publishError, setPublishError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [confirmationVersion, setConfirmationVersion] = useState("");
+  const releaseRequestIdRef = useRef(crypto.randomUUID());
+  const confirmDialogRef = useRef<HTMLElement>(null);
+  const confirmTriggerRef = useRef<HTMLButtonElement>(null);
   const transitionedRef = useRef(false);
   const readyCount = detail.tasks.filter((task) => task.ready).length;
   const totalCount = detail.tasks.length;
   const percent = totalCount === 0 ? 0 : Math.round((readyCount / totalCount) * 100);
+
+  useEffect(() => {
+    if (!confirming) return;
+    const focusable = () => [...(confirmDialogRef.current?.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled])") ?? [])];
+    focusable()[0]?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && publishState !== "submitting") {
+        event.preventDefault();
+        setConfirming(false);
+        window.setTimeout(() => confirmTriggerRef.current?.focus(), 0);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = focusable();
+      if (controls.length === 0) return;
+      const first = controls[0];
+      const last = controls.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    const containFocus = (event: FocusEvent) => {
+      if (!confirmDialogRef.current?.contains(event.target as Node)) focusable()[0]?.focus();
+    };
+    document.addEventListener("keydown", handleKeyDown, true);
+    document.addEventListener("focusin", containFocus, true);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown, true);
+      document.removeEventListener("focusin", containFocus, true);
+    };
+  }, [confirming, publishState]);
+
+  function closeConfirmation() {
+    setConfirming(false);
+    window.setTimeout(() => confirmTriggerRef.current?.focus(), 0);
+  }
 
   // 提交发布后轮询版本状态，直到编排器/ClickUp 同步为「发布中/已发布/发布失败」
   useEffect(() => {
@@ -211,7 +252,7 @@ function VersionDetailBody({
     setPublishState("submitting");
     setPublishError(null);
     try {
-      await publishOrchestrationVersion(detail.id);
+      await publishOrchestrationVersion(detail.id, confirmationVersion, releaseRequestIdRef.current);
       setPublishState("submitted");
       onChanged?.();
     } catch (caught) {
@@ -221,9 +262,11 @@ function VersionDetailBody({
   }
   const submitting = publishState === "submitting";
   const submitted = publishState === "submitted";
+  const exactConfirmation = confirmationVersion === detail.name;
+  const retrying = detail.status === "release_failed";
   return (
     <div className="form-body detail-dialog-body">
-      {detail.releasable && (
+      {detail.releaseReadiness.ready && (
         <div className={`detail-publish-band${submitted ? " is-submitted" : ""}`}>
           <div className="detail-publish-copy">
             <strong>{submitted ? "发布已提交" : "此版本可以发布"}</strong>
@@ -236,14 +279,53 @@ function VersionDetailBody({
           <button
             className={`button primary detail-publish-button${submitted ? " is-submitted" : ""}`}
             type="button"
+            ref={confirmTriggerRef}
             disabled={submitting || submitted}
-            onClick={() => void publish()}
+            onClick={() => setConfirming(true)}
           >
-            {submitting ? "发布中…" : submitted ? "已提交" : "发布版本"}
+            {submitting ? "发布中…" : submitted ? "已提交" : retrying ? "重试失败目标" : "发布版本"}
           </button>
         </div>
       )}
       {publishError && <p className="detail-publish-error" role="alert">{publishError}</p>}
+
+      {confirming && !submitted && createPortal(
+        <div className="release-confirm-backdrop" role="presentation">
+          <section ref={confirmDialogRef} tabIndex={-1} className="release-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="release-confirm-title">
+            <header>
+              <div>
+                <span className="release-confirm-eyebrow">PRODUCTION RELEASE</span>
+                <h4 id="release-confirm-title">确认正式发布</h4>
+              </div>
+              <button className="button icon-button" type="button" aria-label="取消发布" disabled={submitting} onClick={closeConfirmation}>×</button>
+            </header>
+            <p className="release-confirm-warning">
+              将部署 Web/API 生产环境，并把全部启用的 iOS App 提交 App Store 审核；审核通过后自动上架。
+            </p>
+            <div className="release-confirm-targets">
+              <strong>生产目标</strong>
+              <span>Candidate：{detail.manifest?.candidateCommit ?? "将在确认后冻结"} · 任务 {detail.tasks.length} 个</span>
+              {detail.releaseTargets.length > 0 ? (
+                <ul>{detail.releaseTargets.map((target) => {
+                  return <li key={`${target.platform}:${target.appId ?? ""}`}>
+                    {target.label}{target.appStoreAppId ? ` · App ${target.appStoreAppId} · ${target.scheme} · ${target.bundleId} · ${target.marketingVersion}` : ""}
+                  </li>;
+                })}</ul>
+              ) : <span>目标将在冻结 Manifest 后按任务平台和 iOS 注册表确定</span>}
+            </div>
+            <label className="release-confirm-field">
+              <span>输入版本号 <strong>{detail.name}</strong> 以确认</span>
+              <input autoFocus value={confirmationVersion} onChange={(event) => setConfirmationVersion(event.target.value)} placeholder={detail.name} />
+            </label>
+            <footer>
+              <button className="button secondary" type="button" disabled={submitting} onClick={closeConfirmation}>取消</button>
+              <button className="button primary" type="button" disabled={!exactConfirmation || submitting} onClick={() => void publish()}>
+                {submitting ? "正在提交…" : retrying ? "确认重试失败目标" : "确认发布到生产环境"}
+              </button>
+            </footer>
+          </section>
+        </div>, document.body,
+      )}
 
       <div className="detail-info-grid">
         <div className="detail-info-cell">
@@ -269,6 +351,27 @@ function VersionDetailBody({
           </span>
         </div>
       </div>
+
+      <section className="detail-section">
+        <h4>发布进度 <span className="detail-section-count">{detail.releaseTargets.length}</span></h4>
+        {detail.releaseTargets.length === 0 ? <p className="detail-empty">尚未创建生产发布目标</p> : (
+          <ul className="release-target-list">
+            {detail.releaseTargets.map((target) => (
+              <li key={`${target.platform}:${target.appId ?? ""}`}>
+                <span><strong>{target.label}</strong><small>{target.platform.toUpperCase()}{target.buildNumber ? ` · Build ${target.buildNumber}` : ""}</small></span>
+                <span className={`badge badge-release-target-${target.status}`}>{target.stage} · {target.status}</span>
+                <small className="release-target-readback">
+                  {target.updatedAt ? `${target.readbackStatus || target.stage === "readback" || target.stage === "live_readback" ? "最近权威回读" : "阶段更新"} ${new Date(target.updatedAt).toLocaleString("zh-CN")}` : "尚无权威回读"}
+                  {target.reconciliationStatus ? ` · ${target.reconciliationStatus}` : ""}
+                  {target.readbackStatus ? ` · ${target.readbackStatus}` : ""}
+                </small>
+                {target.error && <p>{target.error}</p>}
+              </li>
+            ))}
+          </ul>
+        )}
+        {detail.releaseReadiness.gaps.length > 0 && <ul className="release-readiness-gaps">{detail.releaseReadiness.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul>}
+      </section>
 
       <section className="detail-section">
         <h4>任务清单 <span className="detail-section-count">{totalCount}</span></h4>

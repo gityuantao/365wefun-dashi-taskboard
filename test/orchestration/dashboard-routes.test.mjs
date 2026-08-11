@@ -99,10 +99,12 @@ test("task detail and version detail routes return payloads and reject bad ids",
   assert.equal(malformed.body.error.code, "INVALID_PATH");
 });
 
-test("version publish route enqueues the releasing status when releasable", async (t) => {
+test("cloud publish route fails closed in favor of the local production runtime", async (t) => {
   const harness = await createCloudWorkerHarness({
     bindings: {
       ORCHESTRATION_DIAGNOSTIC_ENABLED: "true",
+      ORCHESTRATION_RELEASE_ROLES: JSON.stringify({ owner: ["release_manager"] }),
+      ORCHESTRATION_PRODUCTION_RELEASE_READY: "true",
       CLICKUP_CONFIG: JSON.stringify({
         teamId: "90161712199",
         spaceId: "90167718544",
@@ -137,23 +139,21 @@ test("version publish route enqueues the releasing status when releasable", asyn
 
   const publish = await harness.request(
     "/api/orchestration/dashboard/versions/version-1/publish",
-    { method: "POST", actorName: "owner" },
+    { method: "POST", actorName: "owner", json: { confirmationVersion: "1.0.1", requestId: "cloud-request-1" } },
   );
-  assert.equal(publish.response.status, 200);
-  assert.deepEqual(publish.body, { ok: true, status: "releasing" });
+  assert.equal(publish.response.status, 503);
+  assert.equal(publish.body.error.code, "LOCAL_ORCHESTRATOR_REQUIRED");
   const mutation = await harness.db
     .prepare("SELECT target FROM outbox_mutations WHERE object_id = ? AND field = 'status'")
     .bind("version-1")
     .first();
-  assert.ok(mutation);
-  assert.deepEqual(JSON.parse(mutation.target), "发布中");
+  assert.equal(mutation, null);
 
   const notReady = await harness.request(
     "/api/orchestration/dashboard/versions/version-2/publish",
     { method: "POST", actorName: "owner" },
   );
-  assert.equal(notReady.response.status, 409);
-  assert.equal(notReady.body.error.code, "NOT_RELEASABLE");
+  assert.equal(notReady.response.status, 503);
 
   const method = await harness.request(
     "/api/orchestration/dashboard/versions/version-1/publish",
@@ -161,4 +161,19 @@ test("version publish route enqueues the releasing status when releasable", asyn
   );
   assert.equal(method.response.status, 405);
   assert.deepEqual(method.body.error.details.allowed, ["POST"]);
+});
+
+test("cloud publish rejects a valid user without a release role", async (t) => {
+  const harness = await createCloudWorkerHarness({ bindings: {
+    ORCHESTRATION_DIAGNOSTIC_ENABLED: "true",
+    ORCHESTRATION_RELEASE_ROLES: JSON.stringify({ owner: ["viewer"] }),
+    CLICKUP_CONFIG: JSON.stringify({ teamId: "1", spaceId: "1", lists: { task: { id: "t" }, version: { id: "v" }, taskSandbox: { id: "ts" }, versionSandbox: { id: "vs" } }, taskStatusMap: {}, versionStatusMap: { 发布中: "releasing" }, fields: { task: {}, version: {}, taskSandbox: {}, versionSandbox: {} } }),
+  }});
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  const response = await harness.request("/api/orchestration/dashboard/versions/version-1/publish", {
+    method: "POST", actorName: "owner", json: { confirmationVersion: "1.0.1", requestId: "denied-request" },
+  });
+  assert.equal(response.response.status, 403);
+  assert.equal((await harness.db.prepare("SELECT COUNT(*) AS count FROM outbox_mutations").first()).count, 0);
 });

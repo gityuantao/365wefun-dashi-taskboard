@@ -143,10 +143,15 @@ export async function getOrchestrationVersionDetail(
 
 export async function publishOrchestrationVersion(
   versionId: string,
-): Promise<{ ok: boolean; status: string }> {
+  confirmationVersion: string,
+  requestId: string,
+): Promise<{ ok: boolean; status: string; requestId: string }> {
   return request(
     `/api/orchestration/dashboard/versions/${encodeURIComponent(versionId)}/publish`,
-    { method: "POST" },
+    {
+      method: "POST",
+      body: JSON.stringify({ confirmationVersion, requestId }),
+    },
   );
 }
 

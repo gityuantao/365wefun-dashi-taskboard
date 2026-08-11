@@ -14,6 +14,7 @@ export async function seedDashboardFixture(db) {
       assignee: "狗哥",
       updatedAt: DASHBOARD_NOW,
       fieldsHash: "h1",
+      platforms: ["web"],
     }), DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
@@ -27,6 +28,7 @@ export async function seedDashboardFixture(db) {
       assignee: null,
       updatedAt: DASHBOARD_NOW,
       fieldsHash: "h2",
+      platforms: ["web"],
     }), DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
@@ -40,6 +42,7 @@ export async function seedDashboardFixture(db) {
       assignee: null,
       updatedAt: DASHBOARD_NOW,
       fieldsHash: "h5",
+      platforms: ["web"],
     }), DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)
@@ -53,6 +56,7 @@ export async function seedDashboardFixture(db) {
       assignee: null,
       updatedAt: DASHBOARD_NOW,
       fieldsHash: "h6",
+      platforms: ["web"],
     }), DASHBOARD_NOW),
     db.prepare(`
       INSERT INTO clickup_snapshots (object_type, object_id, list_id, status, snapshot, fields_hash, read_at)

@@ -303,8 +303,8 @@ export async function buildTaskDetail(db, taskId) {
   };
 }
 
-export async function buildVersionDetail(db, versionId) {
-  const [snapshotRow, aggregateRow, manifestRow, tasks] = await Promise.all([
+export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
+  const [snapshotRow, aggregateRow, manifestRow, tasks, targetRowsResult, openTaskBlockers] = await Promise.all([
     db
       .prepare(`
         SELECT snapshot, status FROM clickup_snapshots
@@ -324,6 +324,11 @@ export async function buildVersionDetail(db, versionId) {
       .bind(versionId)
       .first(),
     loadTasks(db),
+    db.prepare(`SELECT platform, app_id, attempt, stage, status, sanitized_error_summary,
+      review_status, live_status, build_number, reconciliation_status, readback_status, updated_at
+      FROM production_release_targets WHERE version_id = ?
+      ORDER BY platform, app_id, attempt DESC`).bind(versionId).all(),
+    loadOpenTaskBlockers(db),
   ]);
   if (!snapshotRow) return null;
   const snapshot = JSON.parse(snapshotRow.snapshot);
@@ -332,10 +337,30 @@ export async function buildVersionDetail(db, versionId) {
     (task) => task.targetVersion === (snapshot.name ?? versionId),
   );
   const byTaskId = new Map(tasks.map((task) => [task.id, task]));
-  const manifest = manifestRow ? JSON.parse(manifestRow.manifest) : null;
-  const orderedTaskIds = manifest
-    ? [...new Set([...manifest.taskIds, ...matchingTasks.map((task) => task.id)])]
+  const storedManifest = manifestRow ? JSON.parse(manifestRow.manifest) : null;
+  const safePlan = storedManifest?.productionTargetPlan ? {
+    schemaVersion: storedManifest.productionTargetPlan.schemaVersion,
+    taskPlatforms: storedManifest.productionTargetPlan.taskPlatforms,
+    platforms: storedManifest.productionTargetPlan.platforms,
+    iosApps: storedManifest.productionTargetPlan.iosApps.map((app) => ({
+      id: app.id, name: app.name, appStoreAppId: app.appStoreAppId,
+      scheme: app.scheme, bundleId: app.bundleId, marketingVersion: app.marketingVersion,
+    })),
+  } : null;
+  const manifest = storedManifest ? {
+    versionId: storedManifest.versionId,
+    taskIds: storedManifest.taskIds,
+    createdAt: storedManifest.createdAt,
+    checksum: storedManifest.checksum,
+    candidateCommit: storedManifest.candidateCommit ?? null,
+    productionTargetPlan: safePlan,
+  } : null;
+  const orderedTaskIds = storedManifest
+    ? [...new Set(storedManifest.taskIds)]
     : matchingTasks.map((task) => task.id);
+  const missingManifestTaskIds = storedManifest
+    ? orderedTaskIds.filter((taskId) => !byTaskId.has(taskId))
+    : [];
   const versionTasks = orderedTaskIds
     .map((taskId) => byTaskId.get(taskId))
     .filter(Boolean)
@@ -353,6 +378,72 @@ export async function buildVersionDetail(db, versionId) {
     && status !== "canceled"
     && status !== "releasing";
 
+  const gaps = [];
+  if (versionTasks.length === 0) gaps.push("版本内至少需要一个任务");
+  if (missingManifestTaskIds.length > 0) gaps.push(`Manifest 任务快照缺失：${missingManifestTaskIds.join("、")}`);
+  if (versionTasks.some((task) => !task.ready)) gaps.push("版本任务必须全部处于待发布");
+  if (snapshot.blocked === true) gaps.push("版本存在开放阻塞项");
+  const blockedTasks = versionTasks.filter((task) => openTaskBlockers.has(task.id));
+  if (blockedTasks.length > 0) gaps.push(`任务存在开放阻塞项：${blockedTasks.map((task) => task.id).join("、")}`);
+  if (["published", "canceled", "releasing"].includes(status)) gaps.push("当前版本状态不可发起发布");
+  const platformScope = storedManifest?.productionTargetPlan?.taskPlatforms
+    ?? matchingTasks.map((task) => ({ taskId: task.id, platforms: task.platforms }));
+  const taskPlatforms = platformScope.flatMap((task) => Array.isArray(task.platforms) ? task.platforms : []);
+  const missingPlatformTasks = platformScope.filter((task) => !Array.isArray(task.platforms) || task.platforms.length === 0);
+  if (missingPlatformTasks.length > 0) gaps.push(`任务缺少影响平台：${missingPlatformTasks.map((task) => task.taskId).join("、")}`);
+  const invalidPlatformTasks = platformScope.filter((task) => Array.isArray(task.platforms)
+    && task.platforms.some((value) => typeof value !== "string" || value.trim() === ""));
+  if (invalidPlatformTasks.length > 0) gaps.push(`任务影响平台格式无效：${invalidPlatformTasks.map((task) => task.taskId).join("、")}`);
+  const supported = new Set(["web", "api", "ios"]);
+  const unsupported = [...new Set(taskPlatforms.filter((value) => typeof value === "string").map((value) => value.trim().toLowerCase()).filter((value) => value && !supported.has(value)))];
+  if (unsupported.length > 0) gaps.push(`尚未配置的生产平台：${unsupported.join("、")}`);
+  const latestTargets = new Map();
+  for (const row of targetRowsResult.results) {
+    const key = `${row.platform}:${row.app_id}`;
+    if (!latestTargets.has(key)) latestTargets.set(key, row);
+  }
+  const planned = storedManifest?.productionTargetPlan;
+  const normalizedPlatforms = taskPlatforms.filter((value) => typeof value === "string").map((value) => value.trim().toLowerCase());
+  const platformFlags = planned?.platforms ?? {
+    web: normalizedPlatforms.includes("web"), api: normalizedPlatforms.includes("api"), ios: normalizedPlatforms.includes("ios"),
+  };
+  const plannedTargets = [];
+  for (const platform of ["web", "api"]) if (platformFlags[platform]) plannedTargets.push({ platform, appId: null, label: platform.toUpperCase() });
+  const plannedApps = platformFlags.ios ? (planned?.iosApps ?? iosApps.filter((app) => app.enabled !== false)) : [];
+  const previewMarketingVersion = String(snapshot.name ?? versionId).replace(/^v(?=\d)/i, "");
+  for (const app of plannedApps) plannedTargets.push({
+    platform: "ios", appId: app.id, label: app.name,
+    appStoreAppId: app.appStoreAppId, scheme: app.scheme, bundleId: app.bundleId,
+    marketingVersion: app.marketingVersion ?? previewMarketingVersion,
+  });
+  if (platformFlags.ios && plannedApps.length === 0) gaps.push("iOS 生产目标注册表为空");
+  const actualTargets = new Map([...latestTargets.values()].map((row) => {
+    const plannedTarget = plannedTargets.find((target) => `${target.platform}:${target.appId ?? ""}` === `${row.platform}:${row.app_id}`);
+    return [`${row.platform}:${row.app_id}`, {
+    ...plannedTarget,
+    platform: row.platform,
+    appId: row.app_id || null,
+    label: plannedTarget?.label ?? row.platform.toUpperCase(),
+    stage: row.stage,
+    status: row.status,
+    attempt: row.attempt,
+    updatedAt: row.updated_at,
+    error: row.sanitized_error_summary ?? null,
+    reviewStatus: row.review_status ?? null,
+    liveStatus: row.live_status ?? null,
+    buildNumber: row.build_number ?? null,
+    reconciliationStatus: row.reconciliation_status ?? null,
+    readbackStatus: row.readback_status ?? null,
+  }];
+  }));
+  const releaseTargets = plannedTargets.map((target) => actualTargets.get(`${target.platform}:${target.appId ?? ""}`) ?? {
+    ...target, stage: "pending", status: "pending", attempt: 0, updatedAt: snapshot.updatedAt ?? null,
+    error: null, reviewStatus: null, liveStatus: null, buildNumber: null, reconciliationStatus: null, readbackStatus: null,
+  });
+  for (const [key, target] of actualTargets) {
+    if (!plannedTargets.some((plannedTarget) => `${plannedTarget.platform}:${plannedTarget.appId ?? ""}` === key)) releaseTargets.push(target);
+  }
+
   return {
     id: versionId,
     name: snapshot.name ?? versionId,
@@ -361,5 +452,7 @@ export async function buildVersionDetail(db, versionId) {
     blocked: snapshot.blocked === true,
     tasks: versionTasks,
     manifest,
+    releaseReadiness: { ready: releasable && gaps.length === 0, gaps },
+    releaseTargets,
   };
 }

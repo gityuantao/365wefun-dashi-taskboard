@@ -74,6 +74,35 @@ test("server proxies orchestration dashboard to the local orchestrator", async (
   assert.equal(post.headers.get("allow"), "GET");
 });
 
+test("server forwards the authenticated local release role to the protected publish endpoint", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  const secret = "proxy-release-secret";
+  const dashboard = await startDashboardServer({
+    db: harness.db, port: 0, mutationSecret: secret, productionReadiness: { ready: true },
+    versionStatusMap: { 发布中: "releasing" },
+  });
+  t.after(() => dashboard.close());
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dashboard-proxy-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const app = createTaskboardServer({ dataDirectory: directory, orchestrationPort: dashboard.port, orchestrationMutationSecret: secret });
+  const address = await app.listen({ host: "127.0.0.1", port: 0 });
+  t.after(() => app.close());
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/orchestration/dashboard/versions/version-1/publish`, {
+    method: "POST", headers: {
+      "content-type": "application/json",
+      "x-taskboard-user-id": "local-user",
+      "x-taskboard-user-name": encodeURIComponent("本地用户"),
+    },
+    body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "proxy-request" }),
+  });
+  assert.equal(response.status, 200);
+  const mutation = await harness.db.prepare("SELECT expected_before, actor FROM outbox_mutations WHERE id = 'publish-version-1-proxy-request'").first();
+  assert.equal(JSON.parse(mutation.expected_before), "active");
+  assert.equal(mutation.actor, "local-user");
+});
+
 test("server returns 503 when the orchestrator dashboard is not running", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "dashboard-proxy-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
