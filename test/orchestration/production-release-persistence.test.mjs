@@ -13,6 +13,10 @@ async function tableIndexes(db, table) {
   return result.results.map(({ name }) => name);
 }
 
+function webApiTerminalSuccessSql({ platform, versionId, candidateCommit, readbackSha }) {
+  return `INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, external_request_id, artifact_identity, production_readback_sha, production_release_id, health_status, readback_status, sanitized_observed_evidence, sanitized_readback_evidence, completed_at, started_at, created_at, updated_at) VALUES ('${versionId}', '${candidateCommit}', 'checksum-sha', '${platform}', '', 1, 'readback', 'succeeded', 'request-sha', 'artifact-sha', '${readbackSha}', 'release-sha', 'healthy', 'confirmed', '{"confirmed":true}', '{"confirmed":true}', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');`;
+}
+
 test("production release persistence records exact version and target identities with operational evidence", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -121,6 +125,37 @@ test("production release persistence rejects incomplete terminal Web and iOS suc
   const iosIncomplete = "INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, external_request_id, app_store_app_id, bundle_id, marketing_version, build_number, processing_status, processing_id, review_status, review_submission_id, upload_id, release_status, release_id, live_status, live_id, live_marketing_version, live_build_number, completed_at, started_at, created_at, updated_at) VALUES ('v-incomplete', 'candidate-incomplete', 'checksum-incomplete', 'ios', 'au', 1, 'live_readback', 'succeeded', 'request-ios', '0000000001', 'online.365english.app', '1.2.3', '   ', 'processed', 'processing-1', 'approved', 'submission-1', 'upload-1', 'released', 'release-1', 'live', 'live-1', '1.2.3', '42', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');";
   await assert.rejects(() => harness.db.exec(iosIncomplete), /CHECK constraint failed/);
 });
+
+for (const platform of ["web", "api"]) {
+  test(`production release persistence requires exact ${platform.toUpperCase()} Candidate readback`, async (t) => {
+    const harness = await createCloudWorkerHarness();
+    t.after(() => harness.dispose());
+
+    await assert.rejects(
+      () => harness.db.exec(webApiTerminalSuccessSql({
+        platform,
+        versionId: `v-${platform}-mismatch`,
+        candidateCommit: `candidate-${platform}`,
+        readbackSha: `other-${platform}`,
+      })),
+      /CHECK constraint failed/,
+    );
+    await harness.db.exec(webApiTerminalSuccessSql({
+      platform,
+      versionId: `v-${platform}-equal`,
+      candidateCommit: `candidate-${platform}`,
+      readbackSha: `candidate-${platform}`,
+    }));
+    const row = await harness.db
+      .prepare("SELECT candidate_commit, production_readback_sha FROM production_release_targets WHERE version_id = ?")
+      .bind(`v-${platform}-equal`)
+      .first();
+    assert.deepEqual(row, {
+      candidate_commit: `candidate-${platform}`,
+      production_readback_sha: `candidate-${platform}`,
+    });
+  });
+}
 
 test("production release persistence rejects NULL terminal evidence and upload build identities", async (t) => {
   const harness = await createCloudWorkerHarness();

@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+
+import { DomainError } from "../domain/errors.mjs";
+
 const LEGACY_SENTINELS = new Map([
   ["0001_initial.sql", { table: "projects" }],
   ["0002_orchestration_core.sql", { table: "orchestration_commands" }],
@@ -20,18 +24,70 @@ const LEGACY_SENTINELS = new Map([
   ["0013_production_release_attempts.sql", { check: hasCompleteProductionReleaseSchema }],
 ]);
 
+// Generated from each sqlite_schema.sql definition after applying canonical 0013.
+// These are per-object fingerprints, never a hash of the multi-statement migration script.
+const PRODUCTION_RELEASE_SCHEMA_FINGERPRINTS = new Map([
+  ["production_release_attempts", {
+    type: "table",
+    tableName: "production_release_attempts",
+    sha256: "76c56dbe8b658d49cd53a868405df44b5d344bcb773f89d046244d1fe54e411e",
+  }],
+  ["production_release_targets", {
+    type: "table",
+    tableName: "production_release_targets",
+    sha256: "fb8591d53f921b870a70aa312d76a58140a2594edd6e47b13c865c7d632b4e01",
+  }],
+  ["idx_production_release_targets_latest", {
+    type: "index",
+    tableName: "production_release_targets",
+    sha256: "ac593037b6fe55cd0b56624e15e79ce3e1098798ae9b21ba4f64c53e6d3ab863",
+  }],
+  ["idx_production_release_targets_reusable_success", {
+    type: "index",
+    tableName: "production_release_targets",
+    sha256: "1ce5def10d8a51478415db9f066f22d487390c15869678d2463440ca05cb4774",
+  }],
+  ["production_release_attempts_immutable_succeeded", {
+    type: "trigger",
+    tableName: "production_release_attempts",
+    sha256: "a8e6265bfd024e8ceedc78fa5045cfa9d890f9d3ccbf59ef3e7f0e3fb7ecf11c",
+  }],
+  ["production_release_targets_immutable_succeeded", {
+    type: "trigger",
+    tableName: "production_release_targets",
+    sha256: "339b477678dd13cc5184124ff95a54188060a0e5ff4ad0824de1b36268dec54c",
+  }],
+  ["production_release_attempts_immutable_succeeded_delete", {
+    type: "trigger",
+    tableName: "production_release_attempts",
+    sha256: "17b94f5d5fc20867308f1328567693a87f67802eaaf1c2a7141a9e52f8a1f4be",
+  }],
+  ["production_release_targets_immutable_succeeded_delete", {
+    type: "trigger",
+    tableName: "production_release_targets",
+    sha256: "7b74e0a1fe20d46623195d9883d2b5a2f3beef6d9b556dab94500eafbae6a19d",
+  }],
+]);
+
+function normalizeSqliteSchemaDefinition(sql) {
+  return String(sql ?? "")
+    .split(/('(?:''|[^'])*')/g)
+    .map((part, index) => index % 2 === 1
+      ? part
+      : part
+        .replace(/[A-Z]/g, (character) => character.toLowerCase())
+        .replace(/[ \t\n\f\r]+/g, " "))
+    .join("")
+    .trim();
+}
+
+function schemaDefinitionFingerprint(sql) {
+  return createHash("sha256")
+    .update(normalizeSqliteSchemaDefinition(sql))
+    .digest("hex");
+}
+
 async function hasCompleteProductionReleaseSchema(db) {
-  const tables = ["production_release_attempts", "production_release_targets"];
-  const indexes = [
-    "idx_production_release_targets_latest",
-    "idx_production_release_targets_reusable_success",
-  ];
-  const triggers = [
-    "production_release_attempts_immutable_succeeded",
-    "production_release_targets_immutable_succeeded",
-    "production_release_attempts_immutable_succeeded_delete",
-    "production_release_targets_immutable_succeeded_delete",
-  ];
   const requiredColumns = new Map([
     ["production_release_attempts", ["version_id", "candidate_commit", "manifest_checksum", "idempotency_key"]],
     ["production_release_targets", [
@@ -65,11 +121,12 @@ async function hasCompleteProductionReleaseSchema(db) {
       "live_marketing_version",
       "live_build_number",
       "live_membership_confirmed",
+      "sanitized_observed_evidence",
       "sanitized_readback_evidence",
       "sanitized_live_evidence",
     ]],
   ]);
-  for (const table of tables) {
+  for (const [table, required] of requiredColumns) {
     const tableExists = await db
       .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
       .bind(table)
@@ -77,44 +134,18 @@ async function hasCompleteProductionReleaseSchema(db) {
     if (!tableExists) return null;
     const columns = await db.prepare("SELECT name FROM pragma_table_info(?)").bind(table).all();
     const names = new Set(columns.results.map((column) => column.name));
-    if (requiredColumns.get(table).some((column) => !names.has(column))) return null;
+    if (required.some((column) => !names.has(column))) return null;
   }
-  for (const name of [...indexes, ...triggers]) {
-    const exists = await db
-      .prepare("SELECT name FROM sqlite_schema WHERE name = ?")
-      .bind(name)
+  for (const [name, expected] of PRODUCTION_RELEASE_SCHEMA_FINGERPRINTS) {
+    const actual = await db
+      .prepare("SELECT type, tbl_name, sql FROM sqlite_schema WHERE name = ? AND type = ? AND tbl_name = ?")
+      .bind(name, expected.type, expected.tableName)
       .first();
-    if (!exists) return null;
-  }
-  const requiredDefinitionFragments = new Map([
-    ["production_release_attempts", [
-      "manifest_checksum text not null check (length(trim(manifest_checksum)) > 0)",
-    ]],
-    ["production_release_targets", [
-      "reconciliation_status text not null default 'not_required' check (reconciliation_status in ('not_required', 'pending_readback', 'unknown_outcome', 'readback_confirmed', 'readback_mismatch'))",
-      "check (status <> 'succeeded' or ((platform in ('web', 'api') and stage = 'readback') or (platform = 'ios' and stage = 'live_readback')))",
-      "app_store_app_id is not null and length(trim(app_store_app_id)) > 0",
-    ]],
-    ["idx_production_release_targets_reusable_success", [
-      "where status = 'succeeded' and reconciliation_status in ('not_required', 'readback_confirmed') and",
-    ]],
-    ["production_release_attempts_immutable_succeeded_delete", [
-      "before delete on production_release_attempts when old.status = 'succeeded' begin select raise(abort, 'immutable succeeded production release attempt'); end",
-    ]],
-    ["production_release_targets_immutable_succeeded_delete", [
-      "before delete on production_release_targets when old.status = 'succeeded' begin select raise(abort, 'immutable succeeded production release target'); end",
-    ]],
-    ["production_release_attempts_immutable_succeeded", [
-      "before update on production_release_attempts when old.status = 'succeeded' begin select raise(abort, 'immutable succeeded production release attempt'); end",
-    ]],
-    ["production_release_targets_immutable_succeeded", [
-      "before update on production_release_targets when old.status = 'succeeded' begin select raise(abort, 'immutable succeeded production release target'); end",
-    ]],
-  ]);
-  for (const [name, fragments] of requiredDefinitionFragments) {
-    const row = await db.prepare("SELECT sql FROM sqlite_schema WHERE name = ?").bind(name).first();
-    const definition = String(row?.sql ?? "").toLowerCase().replace(/\s+/g, " ").trim();
-    if (fragments.some((fragment) => !definition.includes(fragment))) return null;
+    if (
+      actual?.type !== expected.type
+      || actual?.tbl_name !== expected.tableName
+      || schemaDefinitionFingerprint(actual?.sql) !== expected.sha256
+    ) return null;
   }
   return { name: "production_release_attempts" };
 }
@@ -171,6 +202,9 @@ export async function applyMigrations({ db, migrations, now = new Date().toISOSt
         productionSchemaDrift();
       }
       await db.exec(migration.sql);
+      if (migration.name === "0013_production_release_attempts.sql" && !await findLegacySentinel(db, sentinel)) {
+        productionSchemaDrift();
+      }
       applied.push(migration.name);
     } else {
       adopted.push(migration.name);
@@ -182,4 +216,3 @@ export async function applyMigrations({ db, migrations, now = new Date().toISOSt
   }
   return { applied, adopted };
 }
-import { DomainError } from "../domain/errors.mjs";
