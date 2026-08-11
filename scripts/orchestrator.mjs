@@ -228,10 +228,20 @@ function jobGitOps(job) {
   };
 }
 
-function jobCodex(signal) {
+function jobCodex(signal, role, audit) {
   return {
-    run: (options) => codex.run({ ...options, signal }),
+    run: async (options) => {
+      const result = await codex.run({ ...options, role, signal });
+      audit.aiExecution = result.aiExecution;
+      return result;
+    },
   };
+}
+
+function withAiExecution(result, audit) {
+  return audit.aiExecution
+    ? { ...result, aiExecution: audit.aiExecution }
+    : result;
 }
 
 const taskListKey = (runtime.listSet ?? "sandbox") === "production" ? "task" : "taskSandbox";
@@ -255,19 +265,23 @@ lifecycle.installSignalHandlers(process);
 const handlers = {
   assign_version: async (job, { signal } = {}) => {
     const client = await jobClient(job);
+    const audit = {};
     const assignment = await assignTaskVersion({
       taskId: job.payload.taskId,
       client,
       config,
       taskListKey,
       versionListKey,
-      codex: jobCodex(signal),
+      codex: jobCodex(signal, "version_assignment", audit),
       log,
     });
     if (assignment.error) {
-      return { status: "failed", error: `version assignment failed: ${assignment.error}` };
+      return withAiExecution(
+        { status: "failed", error: `version assignment failed: ${assignment.error}` },
+        audit,
+      );
     }
-    return { status: "completed", assignment };
+    return withAiExecution({ status: "completed", assignment }, audit);
   },
   analyze: async (job, { signal } = {}) => {
     const client = await jobClient(job);
@@ -282,19 +296,24 @@ const handlers = {
     if (gate.blocked) {
       return { status: "failed", error: `waiting_version: ${gate.reason}` };
     }
-    return executeAnalysis({
+    const audit = {};
+    const result = await executeAnalysis({
       job,
       db,
       client,
-      codex: jobCodex(signal),
+      codex: jobCodex(signal, "analysis", audit),
       now: new Date().toISOString(),
       fieldIds: {
         summary: fieldId(config, taskListKey, "执行摘要"),
         acceptance: fieldId(config, taskListKey, "验收标准"),
       },
     });
+    return withAiExecution(result, audit);
   },
   develop: async (job, { signal } = {}) => {
+    if (job.payload.contextError) {
+      return { status: "failed", error: `development context unavailable: ${job.payload.contextError}` };
+    }
     const client = await jobClient(job);
     const gate = await checkDevelopmentOrder({
       db,
@@ -314,19 +333,24 @@ const handlers = {
     if (versionGate.blocked) {
       return { status: "failed", error: `waiting_version: ${versionGate.reason}` };
     }
-    return executeDevelopment({
+    const audit = {};
+    const result = await executeDevelopment({
       job,
       db,
       client,
-      codex: jobCodex(signal),
+      codex: jobCodex(signal, "development", audit),
       gitOps: jobGitOps(job),
       now: new Date().toISOString(),
       fieldIds: {
         evidence: fieldId(config, taskListKey, "证据链接"),
       },
     });
+    return withAiExecution(result, audit);
   },
   accept: async (job, { signal } = {}) => {
+    if (job.payload.contextError) {
+      return { status: "failed", error: `acceptance context unavailable: ${job.payload.contextError}` };
+    }
     const client = await jobClient(job);
     const task = await client.getTask(job.payload.taskId);
     const targetVersion = targetVersionOfTask(task, config, taskListKey);
@@ -342,14 +366,16 @@ const handlers = {
     } catch {
       // 未配置「验收反馈」字段时只发完整评论
     }
-    return executeAcceptance({
+    const audit = {};
+    const result = await executeAcceptance({
       job,
       db,
       client,
-      codex: jobCodex(signal),
+      codex: jobCodex(signal, "acceptance", audit),
       now: new Date().toISOString(),
       fieldIds: { feedback: acceptanceFeedbackField },
     });
+    return withAiExecution(result, audit);
   },
   stage_task: async (job) => {
     const client = await jobClient(job);

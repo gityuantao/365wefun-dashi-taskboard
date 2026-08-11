@@ -6,6 +6,45 @@ const DEFAULT_TIMEOUT_MINUTES = 90;
 const DEFAULT_ABORT_GRACE_MS = 2_000;
 const DEFAULT_ABORT_FORCE_CLOSE_MS = 1_000;
 
+const REQUIRED_ROLE_POLICIES = Object.freeze({
+  analysis: Object.freeze({ model: "gpt-5.6-terra", reasoningEffort: "high" }),
+  version_assignment: Object.freeze({ model: "gpt-5.6-terra", reasoningEffort: "medium" }),
+  development: Object.freeze({ model: "gpt-5.6-sol", reasoningEffort: "xhigh" }),
+  acceptance: Object.freeze({ model: "gpt-5.6-sol", reasoningEffort: "high" }),
+});
+
+function resolveRolePolicy(runtime, role) {
+  const required = REQUIRED_ROLE_POLICIES[role];
+  if (!required) {
+    throw new DomainError(
+      "INVALID_CODEX_ROLE",
+      `Unsupported Codex role: ${String(role ?? "missing")}`,
+    );
+  }
+  const configured = runtime?.codexRolePolicies?.[role];
+  if (!configured || typeof configured !== "object") {
+    throw new DomainError(
+      "MISSING_CODEX_ROLE_POLICY",
+      `Missing Codex role policy for ${role}`,
+    );
+  }
+  if (
+    configured.model !== required.model
+    || configured.reasoningEffort !== required.reasoningEffort
+  ) {
+    throw new DomainError(
+      "UNSUPPORTED_CODEX_ROLE_POLICY",
+      `Unsupported Codex role policy for ${role}`,
+      {
+        role,
+        requiredModel: required.model,
+        requiredReasoningEffort: required.reasoningEffort,
+      },
+    );
+  }
+  return { role, ...required };
+}
+
 export function runCodex({
   workdir,
   prompt,
@@ -13,6 +52,8 @@ export function runCodex({
   imagePaths = [],
   timeoutMinutes = DEFAULT_TIMEOUT_MINUTES,
   codexBin = process.env.CODEX_BIN ?? "codex",
+  model,
+  modelReasoningEffort,
   spawnImpl = spawn,
   signal,
   abortGraceMs = DEFAULT_ABORT_GRACE_MS,
@@ -49,7 +90,13 @@ export function runCodex({
     });
   }
   return new Promise((resolve, reject) => {
-    const args = ["exec"];
+    const args = [
+      "exec",
+      "--model",
+      model,
+      "-c",
+      `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`,
+    ];
     for (const imagePath of imagePaths) args.push("--image", imagePath);
     if (skillPath) args.push("--skill", skillPath);
     let child;
@@ -141,18 +188,31 @@ export function runCodex({
 
 export function createProductionCodexAdapter({ runtime, runCodexImpl = runCodex, spawnImpl } = {}) {
   return {
-    run: async ({ prompt, workdir, taskId, signal, imagePaths }) => runCodexImpl({
-      workdir: workdir ?? runtime.repoPath,
-      prompt,
-      taskId,
-      imagePaths,
-      timeoutMinutes: runtime.codexTimeoutMinutes ?? 20,
-      codexBin: runtime.codexBin ?? "codex",
-      signal,
-      abortGraceMs: runtime.codexAbortGraceMs ?? 2_000,
-      abortForceCloseMs: runtime.codexAbortForceCloseMs ?? 1_000,
-      ...(spawnImpl ? { spawnImpl } : {}),
-    }),
+    run: async ({ role, prompt, workdir, taskId, signal, imagePaths }) => {
+      const policy = resolveRolePolicy(runtime, role);
+      const result = await runCodexImpl({
+        workdir: workdir ?? runtime.repoPath,
+        prompt,
+        taskId,
+        imagePaths,
+        model: policy.model,
+        modelReasoningEffort: policy.reasoningEffort,
+        timeoutMinutes: runtime.codexTimeoutMinutes ?? 20,
+        codexBin: runtime.codexBin ?? "codex",
+        signal,
+        abortGraceMs: runtime.codexAbortGraceMs ?? 2_000,
+        abortForceCloseMs: runtime.codexAbortForceCloseMs ?? 1_000,
+        ...(spawnImpl ? { spawnImpl } : {}),
+      });
+      return {
+        ...result,
+        aiExecution: {
+          role: policy.role,
+          model: policy.model,
+          reasoningEffort: policy.reasoningEffort,
+        },
+      };
+    },
   };
 }
 

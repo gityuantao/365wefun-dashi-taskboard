@@ -220,6 +220,65 @@ async function clearOrdinaryDevelopmentFailures(db, taskId) {
     .run();
 }
 
+async function loadAnalysisCriteria(db, taskId) {
+  const row = await db
+    .prepare(
+      `SELECT result FROM runner_jobs
+       WHERE job_type = 'analyze' AND status = 'completed'
+         AND json_extract(payload, '$.taskId') = ?
+       ORDER BY completed_at DESC, created_at DESC LIMIT 1`,
+    )
+    .bind(taskId)
+    .first();
+  if (!row?.result) {
+    return { error: `no completed analysis found for exact task ${taskId}` };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(row.result);
+  } catch {
+    return { error: `latest completed analysis result is malformed for exact task ${taskId}` };
+  }
+  const criteria = parsed?.summary?.acceptance_criteria;
+  if (
+    !Array.isArray(criteria)
+    || criteria.length === 0
+    || criteria.some((criterion) => (
+      !criterion
+      || typeof criterion !== "object"
+      || !nonEmptyString(criterion.id)
+      || !nonEmptyString(criterion.criterion)
+    ))
+  ) {
+    return { error: `latest completed analysis has no usable acceptance criteria for exact task ${taskId}` };
+  }
+  return { criteria };
+}
+
+async function loadRejectedAcceptanceFindings(db, taskId) {
+  const row = await db
+    .prepare(
+      `SELECT result FROM runner_jobs
+       WHERE job_type = 'accept' AND status = 'completed'
+         AND json_extract(payload, '$.taskId') = ?
+       ORDER BY completed_at DESC, created_at DESC LIMIT 1`,
+    )
+    .bind(taskId)
+    .first();
+  if (!row?.result) return { findings: [] };
+  let parsed;
+  try {
+    parsed = JSON.parse(row.result);
+  } catch {
+    return { error: `latest acceptance result is malformed for exact task ${taskId}` };
+  }
+  if (parsed?.result !== "rejected") return { findings: [] };
+  if (!Array.isArray(parsed.findings)) {
+    return { error: `latest rejected acceptance has no structured findings for exact task ${taskId}` };
+  }
+  return { findings: parsed.findings };
+}
+
 async function reconcileManualWaitingInfo(env, snapshot, now, commands, config) {
   if (snapshot.status !== "waiting_info") return;
   const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
@@ -369,23 +428,18 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
     }
   }
 
-  // 验收作业需要分析阶段的验收标准
-  let acceptanceCriteria = [];
-  if (jobType === "accept") {
-    const analysisRows = await env.DB
-      .prepare(
-        "SELECT result FROM runner_jobs WHERE id LIKE ? AND job_type = 'analyze' AND status = 'completed' ORDER BY completed_at DESC LIMIT 1",
-      )
-      .bind(`${snapshot.id}-analyze-%`)
-      .all();
-    const analysis = analysisRows.results[0];
-    if (analysis) {
-      try {
-        acceptanceCriteria = JSON.parse(analysis.result)?.summary?.acceptance_criteria ?? [];
-      } catch {
-        // 分析结果解析失败时按无验收标准处理
-      }
-    }
+  let acceptanceCriteria;
+  let rejectionFindings;
+  const contextErrors = [];
+  if (jobType === "develop" || jobType === "accept") {
+    const analysis = await loadAnalysisCriteria(env.DB, snapshot.id);
+    acceptanceCriteria = analysis.criteria;
+    if (analysis.error) contextErrors.push(analysis.error);
+  }
+  if (jobType === "develop") {
+    const rejectedAcceptance = await loadRejectedAcceptanceFindings(env.DB, snapshot.id);
+    rejectionFindings = rejectedAcceptance.findings;
+    if (rejectedAcceptance.error) contextErrors.push(rejectedAcceptance.error);
   }
   let developmentResult = null;
   if (jobType === "accept" || jobType === "stage_task") {
@@ -416,7 +470,11 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
               ? path.join(env.CLICKUP_WORKTREES_ROOT, `task-${snapshot.id}`)
               : undefined)
           : undefined,
-        acceptanceCriteria,
+        ...(jobType === "develop" || jobType === "accept"
+          ? { acceptanceCriteria: acceptanceCriteria ?? null }
+          : {}),
+        ...(jobType === "develop" ? { rejectionFindings: rejectionFindings ?? [] } : {}),
+        ...(contextErrors.length > 0 ? { contextError: contextErrors.join("; ") } : {}),
         commitSha: acceptedResult?.commitSha ?? developmentResult?.commitSha ?? null,
         pr: developmentResult?.pr ?? null,
         platforms: developmentResult && Object.hasOwn(developmentResult, "platforms")

@@ -126,7 +126,15 @@ export async function executeDevelopment({
   now,
   fieldIds = { evidence: "field-evidence" },
 }) {
-  const { taskId, repoPath, worktreesRoot, baseRef, versionBranch, acceptanceCriteria } = job.payload;
+  const {
+    taskId,
+    repoPath,
+    worktreesRoot,
+    baseRef,
+    versionBranch,
+    acceptanceCriteria,
+    rejectionFindings,
+  } = job.payload;
   try {
     let startAggregate = await loadAggregate(db, "task", taskId);
     if (startAggregate.state !== "developing" && startAggregate.state !== "ready_for_development") {
@@ -195,15 +203,10 @@ export async function executeDevelopment({
     let runError;
     let codexStarted = false;
     try {
-      let commentContext = mediaBundle.textContext;
       const feedbackField = task.custom_fields?.find(
         (field) => field.name === "验收反馈" || field.id === "field-acceptance-feedback",
       );
-      if (feedbackField?.value) {
-        commentContext = [commentContext, `验收反馈：${feedbackField.value}`]
-          .filter(Boolean)
-          .join("\n");
-      }
+      const acceptanceFeedback = feedbackField?.value || null;
       activity = await currentDevelopment(db, taskId, executionVersion);
       if (!activity.active) return staleDevelopmentResult(activity.aggregate);
       const diagnosticComment = formatCommentMediaDiagnostics(mediaBundle.diagnostics);
@@ -227,8 +230,10 @@ export async function executeDevelopment({
         prompt: buildDevelopmentPrompt(
           task,
           acceptanceCriteria,
-          commentContext,
+          mediaBundle.textContext,
           platforms.length > 0 ? platforms.join("、") : null,
+          rejectionFindings,
+          acceptanceFeedback,
         ),
         workdir: worktree.worktreePath,
         taskId,
@@ -363,6 +368,7 @@ export async function executeDevelopment({
       commitSha,
       platforms,
       changeSummary: parsed.change_summary,
+      findingResponses: Array.isArray(parsed.finding_responses) ? parsed.finding_responses : [],
     };
   } catch (error) {
     await rollbackDevelopment({ db, client, taskId, jobId: job.id, now, reason: error.message });

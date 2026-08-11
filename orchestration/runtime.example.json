@@ -1,0 +1,20 @@
+{
+  "codexRolePolicies": {
+    "analysis": {
+      "model": "gpt-5.6-terra",
+      "reasoningEffort": "high"
+    },
+    "version_assignment": {
+      "model": "gpt-5.6-terra",
+      "reasoningEffort": "medium"
+    },
+    "development": {
+      "model": "gpt-5.6-sol",
+      "reasoningEffort": "xhigh"
+    },
+    "acceptance": {
+      "model": "gpt-5.6-sol",
+      "reasoningEffort": "high"
+    }
+  }
+}

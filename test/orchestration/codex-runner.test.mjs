@@ -33,6 +33,8 @@ test("runCodex streams output and resolves the exit code", async () => {
     workdir: "/tmp",
     prompt: "analyze this",
     skillPath: "/skills/manage-taskboard",
+    model: "gpt-5.6-terra",
+    modelReasoningEffort: "high",
     spawnImpl,
   });
   child.stdout.emit("data", Buffer.from("working..."));
@@ -41,7 +43,12 @@ test("runCodex streams output and resolves the exit code", async () => {
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout, "working...");
   assert.equal(calls[0].bin, "codex");
-  assert.deepEqual(calls[0].args, ["exec", "--skill", "/skills/manage-taskboard"]);
+  assert.deepEqual(calls[0].args, [
+    "exec",
+    "--model", "gpt-5.6-terra",
+    "-c", 'model_reasoning_effort="high"',
+    "--skill", "/skills/manage-taskboard",
+  ]);
   assert.equal(calls[0].options.cwd, "/tmp");
 });
 
@@ -53,6 +60,8 @@ test("runCodex attaches every comment image before an optional skill", async () 
     prompt: "inspect screenshots",
     imagePaths: ["/tmp/a.png", "/tmp/b.jpg"],
     skillPath: "/skills/manage-taskboard",
+    model: "gpt-5.6-sol",
+    modelReasoningEffort: "xhigh",
     spawnImpl: (_bin, value) => {
       args = value;
       return child;
@@ -63,6 +72,8 @@ test("runCodex attaches every comment image before an optional skill", async () 
 
   assert.deepEqual(args, [
     "exec",
+    "--model", "gpt-5.6-sol",
+    "-c", 'model_reasoning_effort="xhigh"',
     "--image", "/tmp/a.png",
     "--image", "/tmp/b.jpg",
     "--skill", "/skills/manage-taskboard",
@@ -80,6 +91,9 @@ test("production Codex adapter forwards comment images into spawned CLI argument
       repoPath: "/tmp/production-repo",
       codexBin: "codex-production",
       codexTimeoutMinutes: 20,
+      codexRolePolicies: {
+        development: { model: "gpt-5.6-sol", reasoningEffort: "xhigh" },
+      },
     },
     spawnImpl: (_bin, value) => {
       args = value;
@@ -91,12 +105,18 @@ test("production Codex adapter forwards comment images into spawned CLI argument
     prompt: "inspect the ClickUp screenshot",
     workdir: "/tmp/production-worktree",
     taskId: "task-production",
+    role: "development",
     imagePaths: ["/tmp/clickup-comment.png"],
   });
   child.emit("close", 0);
   await promise;
 
-  assert.deepEqual(args, ["exec", "--image", "/tmp/clickup-comment.png"]);
+  assert.deepEqual(args, [
+    "exec",
+    "--model", "gpt-5.6-sol",
+    "-c", 'model_reasoning_effort="xhigh"',
+    "--image", "/tmp/clickup-comment.png",
+  ]);
 });
 
 test("runCodex rejects a relative comment image path before spawning", () => {

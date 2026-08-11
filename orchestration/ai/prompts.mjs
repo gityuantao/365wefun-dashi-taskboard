@@ -90,7 +90,14 @@ export function buildAnalysisPrompt(task, commentContext = null, platforms = nul
   ].join("\n");
 }
 
-export function buildDevelopmentPrompt(task, acceptanceCriteria = [], commentContext = null, platforms = null) {
+export function buildDevelopmentPrompt(
+  task,
+  acceptanceCriteria = [],
+  commentContext = null,
+  platforms = null,
+  rejectionFindings = [],
+  acceptanceFeedback = null,
+) {
   return [
     "你是研发开发器。在任务 Worktree 内实现需求并完成自动验证，输出严格 JSON，不要输出其他文字。",
     `任务名称：${task.name ?? ""}`,
@@ -99,17 +106,30 @@ export function buildDevelopmentPrompt(task, acceptanceCriteria = [], commentCon
     "验收标准：",
     ...acceptanceCriteria.map((criterion) => `- ${criterion.id}: ${criterion.criterion}`),
     "输出格式（完成修复时）：",
-    '{ "change_summary": "改动摘要", "tests": [ { "name": "测试名", "passed": true } ] }',
+    '{ "change_summary": "改动摘要", "finding_responses": [ { "finding_index": 1, "location": "修复位置", "action": "修复动作", "verification": "验证证据" } ], "tests": [ { "name": "聚焦验证名", "passed": true } ] }',
     "无法完成开发时（问题无法复现、任务信息不足、线上实测正常找不到可修点），必须输出：",
     '{ "needs_info": true, "reason": "为什么无法完成/需要补充什么信息" }',
     "约束：无法复现或信息不足时禁止强行改动代码或为了出 PR 而凑改动，一律输出 needs_info。",
     "约束：改动必须覆盖「影响平台」字段列出的全部平台（web/iOS/安卓/小程序）；字段为空时按任务描述与验收标准推断。",
     "约束：只修改当前 Worktree，不推进状态、不读取凭据、不部署生产。",
-    "若评论区包含最近一次测试环境部署失败，必须优先修复该失败原因，并在 change_summary 中明确说明处理结果。",
-    "约束：不要执行 pnpm install / npm install；不要运行完整 typecheck、构建或测试套件（Worktree 无依赖，会卡住）；改为用文件检查和代码阅读验证改动正确性。",
+    "验证规则：允许并应运行与改动直接相关的聚焦测试、聚焦 typecheck 或聚焦 build；只报告实际执行的命令和结果。",
+    "命令边界：禁止无目的 pnpm install / npm install，禁止默认运行无边界的全仓测试、全仓 typecheck 或全仓 build，禁止生产部署；若依赖或平台工具缺失，明确记录未完成的验证，不得虚假声称通过。",
+    ...(Array.isArray(rejectionFindings) && rejectionFindings.length > 0
+      ? [
+          "上一轮代码验收的完整结构化 findings（权威返工清单，独立于评论区）：",
+          ...rejectionFindings.map((finding, index) => `- finding ${index + 1}: ${JSON.stringify(finding)}`),
+          "必须在 finding_responses 中逐项对应上述 finding，分别写明修复位置、修复动作和验证证据；仅可在有仓库证据时标记不适用，并把证据写进 verification。",
+        ]
+      : []),
+    ...(acceptanceFeedback
+      ? [
+          "ClickUp「验收反馈」字段（辅助上下文，独立于结构化 findings）：",
+          String(acceptanceFeedback),
+        ]
+      : []),
     ...(commentContext
       ? [
-          "任务评论区（重点：上一次验收不通过的原因，必须在本次实现中修复）：",
+          "任务评论区（最近补充说明与历史反馈；与结构化 findings 分开参考）：",
           commentContext,
         ]
       : []),
@@ -118,14 +138,17 @@ export function buildDevelopmentPrompt(task, acceptanceCriteria = [], commentCon
 
 export function buildAcceptancePrompt(task, acceptanceCriteria = [], commitSha, commentContext = null) {
   return [
-    "你是验收器。按验收标准独立核验交付结果，输出严格 JSON，不要输出其他文字。只读核验，不得修改代码或自行修复。",
+    "你是代码验收器。按验收标准独立核验代码交付结果，输出严格 JSON，不要输出其他文字。只读核验，不得修改代码或自行修复。",
     `任务名称：${task.name ?? ""}`,
     `目标 Commit：${commitSha ?? "未指定"}`,
     "验收标准：",
     ...acceptanceCriteria.map((criterion) => `- ${criterion.id}: ${criterion.criterion}（验证：${criterion.verification ?? "未指定"}）`),
     "输出格式：",
     '{ "acceptance_result": "accepted|rejected", "criteria_results": [ { "id": "ac-1", "result": "passed|failed" } ], "findings": [ { "severity": "high", "description": "问题" } ] }',
-    "约束：证据缺失不能视为通过；不推进状态。",
+    "职责边界：本阶段只做 code acceptance，检查真实代码缺陷、需求实现完整性、生产调用链是否接入，以及与改动相称的聚焦测试/typecheck/build 证据。不得虚假通过，不推进状态。",
+    "可拒绝：存在真实代码缺陷、实现未接入生产链路、缺少当前代码改动应有且可运行的聚焦验证，或交付声称与仓库证据不符。",
+    "不得仅因缺少 iOS/Web/Android/小程序四端实机、TestFlight、已部署测试环境或人工测试证据而拒绝；这些证据属于后续 staging/testing。若代码层面没有其他缺陷，将相应标准判为 passed。",
+    "证据缺失不能视为代码已验证，但必须区分代码级证据与后续环境级证据。",
     ...(commentContext
       ? [
           "任务评论区（历史验收反馈，避免重复遗漏同一问题）：",
