@@ -69,6 +69,23 @@ test("invalid production config fails readiness before adapter import or ClickUp
   assert.equal(mutated, 0);
 });
 
+test("held runtime reports both the exact configuration gap and the active hold", async () => {
+  let imported = 0;
+  const runtime = createProductionRuntime({
+    runtime: { ...BASE_RUNTIME, productionReleaseHold: true },
+    projectRoot: "/repo",
+    pathExists: (candidate) => candidate !== "/private/production.json",
+    importModule: async () => { imported += 1; },
+  });
+
+  assert.equal(runtime.readiness.ready, false);
+  assert.equal(runtime.readiness.held, true);
+  assert.match(runtime.readiness.error, /productionConfigPath does not exist/);
+  assert.deepEqual(await runtime.probeReadiness(), runtime.readiness);
+  await assert.rejects(runtime.webAdapter.release({}), /productionConfigPath does not exist/);
+  assert.equal(imported, 0);
+});
+
 test("runtime validation requires explicit non-secret production commands, paths, URLs, timeouts, and lease bounds", () => {
   assert.deepEqual(validateProductionRuntime(BASE_RUNTIME), { ready: true, error: null });
   for (const [field, value] of [

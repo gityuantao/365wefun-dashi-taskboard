@@ -75,7 +75,11 @@ export function validateProductionRuntime(runtime, { projectRoot = null, pathExi
     }
     return Object.freeze({ ready: true, error: null });
   } catch (error) {
-    return Object.freeze({ ready: false, error: redactCredentials(error.message) });
+    return Object.freeze({
+      ready: false,
+      ...(runtime?.productionReleaseHold !== false ? { held: true } : {}),
+      error: redactCredentials(error.message),
+    });
   }
 }
 
