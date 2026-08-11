@@ -73,6 +73,13 @@ test("registry rejects duplicate bundle identifiers", () => {
   );
 });
 
+test("registry rejects duplicate App Store App IDs", () => {
+  assertInvalid(
+    [{ ...CURRENT_APPS[0] }, { ...CURRENT_APPS[1], appStoreAppId: "0000000001" }],
+    "iosApps[1].appStoreAppId",
+  );
+});
+
 test("registry rejects a missing TestFlight group", () => {
   assertInvalid([{ ...CURRENT_APPS[0], testFlightGroup: "" }], "iosApps[0].testFlightGroup");
 });
@@ -98,8 +105,16 @@ test("registry requires own non-secret production release fields", () => {
     assertInvalid([withoutField], `iosApps[0].${field}`);
   }
 
-  const inheritedReleaseFields = Object.create(CURRENT_APPS[0]);
-  assertInvalid([inheritedReleaseFields], "iosApps[0]");
+  Object.defineProperty(Object.prototype, "appStoreAppId", {
+    configurable: true,
+    value: "inherited-app-store-id",
+  });
+  try {
+    const { appStoreAppId: _appStoreAppId, ...withoutOwnAppStoreId } = CURRENT_APPS[0];
+    assertInvalid([withoutOwnAppStoreId], "iosApps[0].appStoreAppId");
+  } finally {
+    delete Object.prototype.appStoreAppId;
+  }
 });
 
 test("registry rejects blank production release field values", () => {

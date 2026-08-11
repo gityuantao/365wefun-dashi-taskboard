@@ -37,3 +37,21 @@ test("migration ledger applies 0008 and adopts staging failure ownership on an e
   const ledger = await harness.db.prepare("SELECT name FROM orchestration_migrations ORDER BY name").all();
   assert.equal(ledger.results.length, names.length);
 });
+
+test("migration ledger does not adopt a partial production release schema", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await harness.db.exec("DROP TABLE production_release_targets;");
+  const migrations = [{
+    name: "0013_production_release_attempts.sql",
+    sql: await readFile(path.join(MIGRATIONS_DIR, "0013_production_release_attempts.sql"), "utf8"),
+  }];
+
+  const result = await applyMigrations({ db: harness.db, migrations, now: "2026-08-11T00:00:00.000Z" });
+
+  assert.deepEqual(result.adopted, []);
+  assert.deepEqual(result.applied, ["0013_production_release_attempts.sql"]);
+  assert.ok(await harness.db
+    .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'production_release_targets'")
+    .first());
+});

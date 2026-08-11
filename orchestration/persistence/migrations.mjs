@@ -17,11 +17,67 @@ const LEGACY_SENTINELS = new Map([
     table: "staging_deployments",
     column: "failure_owner",
   }],
-  ["0013_production_release_attempts.sql", { table: "production_release_attempts" }],
+  ["0013_production_release_attempts.sql", { check: hasCompleteProductionReleaseSchema }],
 ]);
+
+async function hasCompleteProductionReleaseSchema(db) {
+  const tables = ["production_release_attempts", "production_release_targets"];
+  const indexes = [
+    "idx_production_release_targets_latest",
+    "idx_production_release_targets_reusable_success",
+  ];
+  const triggers = [
+    "production_release_attempts_immutable_succeeded",
+    "production_release_targets_immutable_succeeded",
+  ];
+  const requiredColumns = new Map([
+    ["production_release_attempts", ["version_id", "candidate_commit", "manifest_checksum", "idempotency_key"]],
+    ["production_release_targets", [
+      "version_id",
+      "candidate_commit",
+      "manifest_checksum",
+      "platform",
+      "artifact_identity",
+      "production_readback_sha",
+      "production_release_id",
+      "app_store_app_id",
+      "bundle_id",
+      "marketing_version",
+      "build_number",
+      "processing_status",
+      "processing_id",
+      "review_status",
+      "upload_id",
+      "review_id",
+      "release_status",
+      "release_id",
+      "live_status",
+      "live_id",
+    ]],
+  ]);
+  for (const table of tables) {
+    const tableExists = await db
+      .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
+      .bind(table)
+      .first();
+    if (!tableExists) return null;
+    const columns = await db.prepare("SELECT name FROM pragma_table_info(?)").bind(table).all();
+    const names = new Set(columns.results.map((column) => column.name));
+    if (requiredColumns.get(table).some((column) => !names.has(column))) return null;
+  }
+  for (const name of [...indexes, ...triggers]) {
+    const exists = await db
+      .prepare("SELECT name FROM sqlite_schema WHERE name = ?")
+      .bind(name)
+      .first();
+    if (!exists) return null;
+  }
+  return { name: "production_release_attempts" };
+}
 
 async function findLegacySentinel(db, sentinel) {
   if (!sentinel) return null;
+  if (sentinel.check) return sentinel.check(db);
   if (sentinel.column) {
     return db.prepare(`
       SELECT name

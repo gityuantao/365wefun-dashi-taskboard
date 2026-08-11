@@ -57,6 +57,7 @@ export function loadIosApps(value) {
   const ids = new Set();
   const schemes = new Set();
   const bundleIds = new Set();
+  const appStoreAppIds = new Set();
   let enabledCount = 0;
 
   const apps = value.map((app, index) => {
@@ -90,6 +91,7 @@ export function loadIosApps(value) {
     assertUnique(app.id, ids, `${prefix}.id`);
     assertUnique(app.scheme, schemes, `${prefix}.scheme`);
     assertUnique(app.bundleId, bundleIds, `${prefix}.bundleId`);
+    assertUnique(app.appStoreAppId, appStoreAppIds, `${prefix}.appStoreAppId`);
     if (app.enabled) enabledCount += 1;
 
     return freezeApp({
