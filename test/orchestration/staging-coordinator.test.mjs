@@ -107,6 +107,157 @@ async function acceptancePassedCount(db, taskId) {
   return Number(row?.count ?? 0);
 }
 
+async function productReworkFailureCount(db, taskId) {
+  const row = await db.prepare(
+    "SELECT round FROM task_rework WHERE task_id = ?",
+  ).bind(taskId).first();
+  return Number(row?.round ?? 0);
+}
+
+async function productDevelopmentTransitionCount(db, taskId) {
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS count FROM orchestration_events
+     WHERE aggregate_type = 'task' AND aggregate_id = ?
+       AND type IN ('task.staging_failed', 'task.acceptance_failed')`,
+  ).bind(taskId).first();
+  return Number(row?.count ?? 0);
+}
+
+async function retryStaging(db, taskId) {
+  const aggregate = await loadAggregate(db, "task", taskId);
+  const result = await dispatchCommand({
+    db,
+    command: parseCommandEnvelope({
+      id: `${taskId}-retry-staging-${aggregate.version + 1}`,
+      type: "retry_staging",
+      aggregateType: "task",
+      aggregateId: taskId,
+      expectedVersion: aggregate.version + 1,
+      actorId: "test",
+      issuedAt: NOW,
+      reason: "retry staging infrastructure",
+      parameters: {},
+    }),
+    now: NOW,
+  });
+  assert.equal(result.status, "succeeded");
+}
+
+test("a repeated merge infrastructure failure is fingerprinted without consuming product rework", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const taskId = "task-merge-infrastructure-failure";
+  await seedAcceptingTask(harness.db, taskId);
+  const comments = [];
+  let mergeAttempt = 0;
+  const leakedCredentials = [
+    "hunter2",
+    "otherpass",
+    "cookie-one",
+    "cookie-two",
+    "sk-1234567890abcdef",
+    "sk-abcdef1234567890",
+    "aaaaaaaa.bbbbbbbb.cccccccc",
+    "dddddddd.eeeeeeee.ffffffff",
+  ];
+  const gitOps = {
+    integrateTaskPr: async () => {
+      mergeAttempt += 1;
+      const credentials = mergeAttempt === 1
+        ? {
+            password: "hunter2",
+            cookie: "cookie-one",
+            key: "sk-1234567890abcdef",
+            jwt: "aaaaaaaa.bbbbbbbb.cccccccc",
+          }
+        : {
+            password: "otherpass",
+            cookie: "cookie-two",
+            key: "sk-abcdef1234567890",
+            jwt: "dddddddd.eeeeeeee.ffffffff",
+          };
+      return {
+        merged: false,
+        error: [
+          "merge unavailable",
+          `remote=https://alice:${credentials.password}@example.com/repo`,
+          `Cookie: session=${credentials.cookie}`,
+          `credential ${credentials.key}`,
+          `identity ${credentials.jwt}`,
+        ].join("\n"),
+      };
+    },
+    persistCandidate: async () => {
+      throw new Error("candidate must not be persisted after a merge failure");
+    },
+  };
+  const run = () => executeStagingGate({
+    job: stagingJob(taskId, ["web"]),
+    db: harness.db,
+    client: { postComment: async (_taskId, body) => comments.push(body) },
+    gitOps,
+    adapter: webGate().adapter,
+    now: NOW,
+  });
+
+  const first = await run();
+  const firstAttempt = await harness.db.prepare(
+    `SELECT error, failure_owner, failure_classification, failure_fingerprint
+     FROM staging_deployments WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`,
+  ).bind(taskId).first();
+
+  assert.equal(first.status, "failed");
+  assert.equal(first.classification, "staging_infrastructure");
+  assert.equal(first.stage, "merge");
+  assert.equal(first.repeated, false);
+  assert.match(first.fingerprint, /^[a-f0-9]{64}$/);
+  assert.match(first.error, /\[REDACTED\]/);
+  assert.equal(firstAttempt.failure_owner, "staging_infrastructure");
+  assert.equal(firstAttempt.failure_classification, "staging_infrastructure");
+  assert.equal(firstAttempt.failure_fingerprint, first.fingerprint);
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
+  assert.equal(await productReworkFailureCount(harness.db, taskId), 0);
+  assert.equal(await productDevelopmentTransitionCount(harness.db, taskId), 0);
+  assert.match(comments.at(-1), /产品开发已完成，当前为提测基础设施故障/);
+  assert.match(comments.at(-1), /重复故障：否/);
+  for (const credential of leakedCredentials) {
+    assert.doesNotMatch(JSON.stringify([first, firstAttempt, comments.at(-1)]), new RegExp(credential));
+  }
+
+  await retryStaging(harness.db, taskId);
+  const second = await run();
+  const attempts = await harness.db.prepare(
+    `SELECT error, failure_owner, failure_classification, failure_fingerprint
+     FROM staging_deployments WHERE task_id = ? ORDER BY attempt`,
+  ).bind(taskId).all();
+
+  assert.equal(second.status, "failed");
+  assert.equal(second.classification, "staging_infrastructure");
+  assert.equal(second.stage, "merge");
+  assert.equal(second.repeated, true);
+  assert.equal(second.fingerprint, first.fingerprint);
+  assert.deepEqual(attempts.results.map((attempt) => attempt.failure_owner), [
+    "staging_infrastructure",
+    "staging_infrastructure",
+  ]);
+  assert.deepEqual(attempts.results.map((attempt) => attempt.failure_classification), [
+    "staging_infrastructure",
+    "staging_infrastructure",
+  ]);
+  assert.deepEqual(attempts.results.map((attempt) => attempt.failure_fingerprint), [
+    first.fingerprint,
+    first.fingerprint,
+  ]);
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
+  assert.equal(await productReworkFailureCount(harness.db, taskId), 0);
+  assert.equal(await productDevelopmentTransitionCount(harness.db, taskId), 0);
+  assert.match(comments.at(-1), /产品开发已完成，当前为提测基础设施故障/);
+  assert.match(comments.at(-1), /重复故障：是/);
+  for (const credential of leakedCredentials) {
+    assert.doesNotMatch(JSON.stringify([second, ...attempts.results, comments.at(-1)]), new RegExp(credential));
+  }
+});
+
 test("an iOS task advances exactly once only after Web and every TestFlight App succeed", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -227,12 +378,24 @@ test("an iOS App failure uses its exact TestFlight App and stage in staging roll
     },
     now: NOW,
   });
+  const stagingAttempt = await harness.db.prepare(
+    `SELECT failure_owner, failure_classification, failure_fingerprint
+     FROM staging_deployments WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`,
+  ).bind(taskId).first();
 
   assert.equal(result.status, "failed");
+  assert.equal(result.classification, "staging_infrastructure");
   assert.equal(result.stage, "testflight:cn:processing");
-  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "ready_for_development");
+  assert.equal(result.repeated, false);
+  assert.match(result.fingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(stagingAttempt.failure_owner, "staging_infrastructure");
+  assert.equal(stagingAttempt.failure_classification, "staging_infrastructure");
+  assert.equal(stagingAttempt.failure_fingerprint, result.fingerprint);
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
+  assert.equal(await productReworkFailureCount(harness.db, taskId), 0);
   assert.equal(await acceptancePassedCount(harness.db, taskId), 0);
   assert.ok(comments.some((comment) => String(comment).includes("阶段：testflight:cn:processing")));
+  assert.match(comments.at(-1), /产品开发已完成，当前为提测基础设施故障/);
 });
 
 test("a reclaimed staging lease blocks the next iOS external operation and every later App", async (t) => {
@@ -386,7 +549,8 @@ test("iOS staging fails closed with precise evidence for missing gate configurat
       assert.equal(result.status, "failed");
       assert.equal(result.stage, "testflight:all:configuration");
       assert.equal(await acceptancePassedCount(harness.db, taskId), 0);
-      assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "ready_for_development");
+      assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
+      assert.equal(await productReworkFailureCount(harness.db, taskId), 0);
       assert.ok(comments.some((comment) => (
         String(comment).includes("阶段：testflight:all:configuration")
       )));

@@ -1,7 +1,8 @@
 import { parseCommandEnvelope } from "../domain/commands.mjs";
+import { redactCredentials } from "../domain/redaction.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { dispatchCommand } from "./dispatch-command.mjs";
-import { recordFailure, resetRework } from "./failure-handler.mjs";
+import { resetRework } from "./failure-handler.mjs";
 import { executeIosStagingGate } from "./ios-staging-coordinator.mjs";
 import { requiresIosStaging } from "../domain/platforms.mjs";
 import { loadIosApps } from "../ios/app-registry.mjs";
@@ -9,12 +10,15 @@ import { loadIosApps } from "../ios/app-registry.mjs";
 const DEFAULT_STAGING_LEASE_MS = 45 * 60_000;
 
 function concise(value, max = 300) {
-  return String(value ?? "unknown error")
-    .replace(/(?:bearer|basic)\s+\S+/gi, "[REDACTED]")
-    .replace(/((?:password|token|secret|key)\s*[:=]\s*)\S+/gi, "$1[REDACTED]")
+  return redactCredentials(value ?? "unknown error")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, max);
+}
+
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function nextAttempt(db, taskId) {
@@ -62,22 +66,49 @@ async function releaseStagingLease(db, holder, fencingToken) {
   ).bind(holder, fencingToken).run();
 }
 
-async function transitionFailure({ db, client, taskId, jobId, stage, error, now }) {
+async function transitionFailure({
+  db,
+  client,
+  taskId,
+  jobId,
+  attemptId,
+  candidateCommit,
+  stage,
+  error,
+  now,
+}) {
   const reason = concise(error?.message ?? error);
-  const failure = await recordFailure({
-    db,
+  const candidateIdentity = candidateCommit ?? "unknown";
+  const fingerprint = await sha256Hex([
     taskId,
-    reason: `staging ${stage}: ${reason}`,
-    evidence: `staging-${jobId}`,
-    now,
-  });
+    candidateIdentity,
+    stage,
+    "staging_infrastructure",
+    reason,
+  ].join("|"));
+  const previous = await db.prepare(
+    `SELECT id FROM staging_deployments
+     WHERE task_id = ? AND COALESCE(candidate_commit, 'unknown') = ?
+       AND failure_fingerprint = ? AND status = 'failed' AND id != ?
+     ORDER BY attempt DESC LIMIT 1`,
+  ).bind(taskId, candidateIdentity, fingerprint, attemptId ?? "").first();
+  const repeated = previous !== null;
+  if (attemptId) {
+    await db.prepare(
+      `UPDATE staging_deployments SET
+         failure_owner = 'staging_infrastructure',
+         failure_classification = 'staging_infrastructure',
+         failure_fingerprint = ?
+       WHERE id = ?`,
+    ).bind(fingerprint, attemptId).run();
+  }
   const aggregate = await loadAggregate(db, "task", taskId);
   if (aggregate.state === "accepting") {
     await dispatchCommand({
       db,
       command: parseCommandEnvelope({
         id: `staging-failed-${jobId}-${aggregate.version + 1}`,
-        type: failure.blocked ? "acceptance_rejected" : "staging_failed",
+        type: "acceptance_rejected",
         aggregateType: "task",
         aggregateId: taskId,
         expectedVersion: aggregate.version + 1,
@@ -89,18 +120,26 @@ async function transitionFailure({ db, client, taskId, jobId, stage, error, now 
       now,
     });
   }
-  const outcome = failure.blocked
-    ? "连续失败已达到返工上限，转为「验收不通过」"
-    : "已退回「待开发」，下一轮开发将继续处理";
   try {
     await client.postComment(taskId, [
       "❌ 测试环境部署失败",
+      "产品开发已完成，当前为提测基础设施故障",
+      "故障归属：staging_infrastructure",
       `阶段：${stage}`,
       `原因：${reason}`,
-      outcome,
+      `故障指纹：${fingerprint}`,
+      `重复故障：${repeated ? "是" : "否"}`,
+      "任务已转为「验收不通过」，不计入产品返工次数",
     ].join("\n"));
   } catch {}
-  return { status: "failed", classification: "staging_failure", stage, error: reason };
+  return {
+    status: "failed",
+    classification: "staging_infrastructure",
+    stage,
+    error: reason,
+    fingerprint,
+    repeated,
+  };
 }
 
 function successComment({ taskCommit, versionBranch, deployment, observed, iosEvidence }) {
@@ -298,7 +337,17 @@ export async function executeStagingGate({
          WHERE id = ?`,
       ).bind(stage, concise(error.message), new Date().toISOString(), attemptId).run();
     }
-    return transitionFailure({ db, client, taskId, jobId: job.id, stage, error, now: new Date().toISOString() });
+    return transitionFailure({
+      db,
+      client,
+      taskId,
+      jobId: job.id,
+      attemptId,
+      candidateCommit,
+      stage,
+      error,
+      now: new Date().toISOString(),
+    });
   } finally {
     if (fencingToken !== null) await releaseStagingLease(db, job.id, fencingToken);
   }

@@ -8,7 +8,7 @@ import { loadCleanupAttempts } from "../../orchestration/application/release-com
 
 const MIGRATIONS_DIR = path.resolve("cloud/migrations");
 
-test("migration ledger applies 0008 to an existing DB that already has projects", async (t) => {
+test("migration ledger applies 0008 and adopts staging failure ownership on an existing DB", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await harness.db.exec("DROP TABLE release_cleanup_attempts");
@@ -26,6 +26,7 @@ test("migration ledger applies 0008 to an existing DB that already has projects"
   const result = await applyMigrations({ db: harness.db, migrations, now: "2026-08-09T00:00:00.000Z" });
 
   assert.ok(result.applied.includes("0008_release_cleanup_attempts.sql"));
+  assert.ok(result.adopted.includes("0012_staging_failure_ownership.sql"));
   assert.deepEqual(await loadCleanupAttempts({
     db: harness.db,
     versionId: "version-1",
