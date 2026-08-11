@@ -165,6 +165,7 @@ export function fetchAndMergeTaskPullRequest({
       headRefName: pr.headRefName,
       taskHead: pr.headRefOid,
       candidateCommit,
+      candidateSourceRef: fetchedBase,
       versionBranch,
       alreadyMerged: true,
     };
@@ -207,6 +208,7 @@ export function fetchAndMergeTaskPullRequest({
     prNumber: pr.number,
     headRefName: pr.headRefName,
     fetchedRef,
+    candidateSourceRef: versionBranch,
   };
 }
 
@@ -215,13 +217,17 @@ export function verifyCandidateIntegration({
   repository,
   versionBranch,
   candidateCommit,
+  candidateSourceRef = null,
   candidateRef = null,
   taskPrHeads,
   run = runCommand,
 }) {
-  const branchHead = git(repoPath, ["rev-parse", "--verify", versionBranch], run);
-  if (branchHead.status !== 0 || branchHead.stdout.trim() !== candidateCommit) {
-    return { verified: false, error: "version branch does not point to frozen Candidate" };
+  if (!candidateRef) {
+    const sourceRef = candidateSourceRef ?? versionBranch;
+    const branchHead = git(repoPath, ["rev-parse", "--verify", sourceRef], run);
+    if (branchHead.status !== 0 || branchHead.stdout.trim() !== candidateCommit) {
+      return { verified: false, error: "Candidate source ref does not point to frozen Candidate" };
+    }
   }
   for (const head of taskPrHeads) {
     const ancestor = git(repoPath, ["merge-base", "--is-ancestor", head.headCommit, candidateCommit], run);
@@ -305,12 +311,19 @@ export function createReleaseGitOps({ repoPath, repository, run = runCommand }) 
       versionBranch,
       run,
     }),
-    persistCandidate: ({ versionId, versionBranch, candidateCommit, taskPrHeads }) => {
+    persistCandidate: ({
+      versionId,
+      versionBranch,
+      candidateCommit,
+      candidateSourceRef,
+      taskPrHeads,
+    }) => {
       const verified = verifyCandidateIntegration({
         repoPath,
         repository,
         versionBranch,
         candidateCommit,
+        candidateSourceRef,
         taskPrHeads,
         run,
       });

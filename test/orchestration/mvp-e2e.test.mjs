@@ -623,6 +623,13 @@ test("missing adapter rejection resumes staging after configuration is restored"
     adapter: null,
     now: NOW,
   });
+  await harness.db.prepare(
+    "UPDATE runner_jobs SET status = 'failed', result = ?, completed_at = ? WHERE id = ?",
+  ).bind(
+    JSON.stringify(initialFailure),
+    NOW,
+    `${taskId}-stage_task-4`,
+  ).run();
   const failedAttempt = await harness.db.prepare(
     `SELECT status, stage, failure_owner
      FROM staging_deployments WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`,

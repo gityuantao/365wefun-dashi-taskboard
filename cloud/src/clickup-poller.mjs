@@ -43,6 +43,7 @@ function matchesStagingAttempt(payload, attempt, taskId) {
     && payload.versionBranch === attempt.version_branch
     && nonEmptyString(payload.targetVersion)
     && payload.targetVersion === attempt.target_version
+    && Object.hasOwn(payload, "platforms")
     && Array.isArray(payload.platforms)
     && payload.platforms.every(nonEmptyString);
 }
@@ -65,6 +66,10 @@ async function loadStagingRecovery(db, taskId) {
     && rejection.evidence_id.startsWith("staging-");
   if (!stagingRejection) {
     return { kind: "blocked", reason: "rejection ownership cannot be proven" };
+  }
+  const stageJobId = rejection.evidence_id.slice("staging-".length);
+  if (!nonEmptyString(stageJobId)) {
+    return { kind: "blocked", reason: "staging rejection evidence does not name a stage job" };
   }
   const attempt = await db.prepare(
     `SELECT status, completed_at, failure_owner, pr_url, task_commit, version_branch, target_version
@@ -92,32 +97,40 @@ async function loadStagingRecovery(db, taskId) {
   ) {
     return { kind: "blocked", reason: "staging failure does not match the current rejection" };
   }
-  const rows = await db.prepare(
-    `SELECT payload FROM runner_jobs
-     WHERE job_type = 'stage_task' AND json_extract(payload, '$.taskId') = ?
-     ORDER BY created_at DESC, id DESC`,
-  ).bind(taskId).all();
-  for (const row of rows.results ?? []) {
-    try {
-      const payload = JSON.parse(row.payload);
-      if (matchesStagingAttempt(payload, attempt, taskId)) {
-        return {
-          kind: "staging_infrastructure",
-          payload: {
-            taskId,
-            pr: { url: payload.pr.url },
-            commitSha: payload.commitSha,
-            versionBranch: payload.versionBranch,
-            targetVersion: payload.targetVersion,
-            platforms: [...payload.platforms],
-          },
-        };
-      }
-    } catch {
-      // Ignore malformed historical jobs and continue looking for matching evidence.
-    }
+  const stageJob = await db.prepare(
+    `SELECT job_type, status, result, payload FROM runner_jobs WHERE id = ? LIMIT 1`,
+  ).bind(stageJobId).first();
+  if (!stageJob || stageJob.job_type !== "stage_task" || stageJob.status !== "failed") {
+    return { kind: "blocked", reason: "exact failed stage task evidence is absent" };
   }
-  return { kind: "blocked", reason: "persisted stage task evidence is incomplete" };
+  let payload;
+  let result;
+  try {
+    payload = JSON.parse(stageJob.payload);
+    result = JSON.parse(stageJob.result);
+  } catch {
+    return { kind: "blocked", reason: "exact stage task evidence is malformed" };
+  }
+  if (
+    result?.status !== "failed"
+    || result?.classification !== "staging_infrastructure"
+  ) {
+    return { kind: "blocked", reason: "exact stage task result is not a staging infrastructure failure" };
+  }
+  if (!matchesStagingAttempt(payload, attempt, taskId)) {
+    return { kind: "blocked", reason: "exact stage task payload does not match the current staging attempt" };
+  }
+  return {
+    kind: "staging_infrastructure",
+    payload: {
+      taskId,
+      pr: { url: payload.pr.url },
+      commitSha: payload.commitSha,
+      versionBranch: payload.versionBranch,
+      targetVersion: payload.targetVersion,
+      platforms: [...payload.platforms],
+    },
+  };
 }
 
 async function postStagingRecoveryBlocked(env, taskId, reason) {
@@ -406,7 +419,9 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
         acceptanceCriteria,
         commitSha: acceptedResult?.commitSha ?? developmentResult?.commitSha ?? null,
         pr: developmentResult?.pr ?? null,
-        platforms: developmentResult?.platforms ?? [],
+        platforms: developmentResult && Object.hasOwn(developmentResult, "platforms")
+          ? developmentResult.platforms
+          : undefined,
         targetVersion: snapshot.targetVersion ?? acceptedResult?.targetVersion ?? null,
         aggregateVersion: aggregate.version,
       };
@@ -553,9 +568,17 @@ export async function pollClickUpOnce(env, {
         && change.from === "acceptance_rejected"
         && change.to === "ready_for_development"
       ));
+    const explicitRejectedTestRecovery = aggregate.state === "acceptance_rejected"
+      && snapshot.status === "ready_for_test"
+      && changes.some((change) => (
+        change.field === "status"
+        && change.from === "acceptance_rejected"
+        && change.to === "ready_for_test"
+      ));
     await handleStatusDrivenFlow(env, snapshot, now, commands, config, {
       manualDevelopmentStart,
       explicitRejectedDevelopmentRecovery,
+      explicitRejectedTestRecovery,
     });
     await ensureInboxAnalysis(env, snapshot, now, commands, config);
     await ensureExternalTaskImport(env, snapshot, now, commands, config);
@@ -647,6 +670,7 @@ async function handleStatusDrivenFlow(
   {
     manualDevelopmentStart = false,
     explicitRejectedDevelopmentRecovery = false,
+    explicitRejectedTestRecovery = false,
   } = {},
 ) {
 
@@ -709,18 +733,32 @@ async function handleStatusDrivenFlow(
     }
     aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   }
-  if (aggregate.state === "acceptance_rejected" && snapshot.status === "ready_for_test") {
-    const testId = "poller-rejected-to-test-" + snapshot.id + "-" + (aggregate.version + 1);
-    if (!(await loadCommandResult(env.DB, testId))) {
+  if (
+    explicitRejectedTestRecovery
+    && aggregate.state === "acceptance_rejected"
+    && snapshot.status === "ready_for_test"
+  ) {
+    const recovery = await loadStagingRecovery(env.DB, snapshot.id);
+    if (recovery.kind === "blocked") {
+      await postStagingRecoveryBlocked(env, snapshot.id, recovery.reason);
+      return;
+    }
+    const retryStaging = recovery.kind === "staging_infrastructure";
+    const commandId = retryStaging
+      ? "poller-retry-staging-" + snapshot.id + "-" + (aggregate.version + 1)
+      : "poller-rejected-to-test-" + snapshot.id + "-" + (aggregate.version + 1);
+    if (!(await loadCommandResult(env.DB, commandId))) {
       commands.push(await runCommand(env, parseCommandEnvelope({
-        id: testId,
-        type: "acceptance_rejected_to_test",
+        id: commandId,
+        type: retryStaging ? "retry_staging" : "acceptance_rejected_to_test",
         aggregateType: "task",
         aggregateId: snapshot.id,
         expectedVersion: aggregate.version + 1,
         actorId: "system-poller",
         issuedAt: now,
-        reason: "user routed rejected task to testing",
+        reason: retryStaging
+          ? "user explicitly retried staging infrastructure"
+          : "user routed rejected task to testing",
         parameters: {},
       }), now, config));
     }

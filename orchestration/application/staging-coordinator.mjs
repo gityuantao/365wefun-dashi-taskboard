@@ -173,6 +173,7 @@ export async function executeStagingGate({
   client,
   gitOps,
   adapter,
+  adapterFactory = null,
   iosApps = null,
   iosAdapter = null,
   beforeExternalOperation = async () => {},
@@ -185,6 +186,9 @@ export async function executeStagingGate({
   let fencingToken = null;
   let candidateCommit = null;
   try {
+    if (!Object.hasOwn(job.payload, "platforms") || !Array.isArray(platforms)) {
+      throw new Error("staging evidence is incomplete: platforms must be an explicitly provided array");
+    }
     if (!pr?.url || !commitSha || !versionBranch || !targetVersion) {
       throw new Error(
         "staging evidence is incomplete: PR, accepted commit, version branch and target version are required",
@@ -203,7 +207,12 @@ export async function executeStagingGate({
       ) VALUES (?, ?, ?, ?, ?, ?, 'preflight', 'running', ?, ?)`,
     ).bind(attemptId, taskId, targetVersion, pr.url, commitSha, versionBranch, attempt, now).run();
 
-    if (!adapter || typeof adapter.deploy !== "function" || typeof adapter.readback !== "function") {
+    const activeAdapter = adapterFactory ? await adapterFactory() : adapter;
+    if (
+      !activeAdapter
+      || typeof activeAdapter.deploy !== "function"
+      || typeof activeAdapter.readback !== "function"
+    ) {
       throw new Error("staging adapter is not configured");
     }
 
@@ -226,6 +235,7 @@ export async function executeStagingGate({
       versionId: targetVersion,
       versionBranch,
       candidateCommit,
+      candidateSourceRef: integrated.candidateSourceRef,
       taskPrHeads: [{ taskId, headCommit: taskCommit, prNumber: integrated.prNumber }],
     });
     if (!persisted.persisted) throw new Error(persisted.error ?? "candidate push failed");
@@ -257,9 +267,9 @@ export async function executeStagingGate({
     };
     stage = "deploy";
     await db.prepare("UPDATE staging_deployments SET stage = ? WHERE id = ?").bind(stage, attemptId).run();
-    const deployment = await adapter.deploy({ candidateCommit, versionBranch, taskId, targetVersion });
+    const deployment = await activeAdapter.deploy({ candidateCommit, versionBranch, taskId, targetVersion });
     stage = "readback";
-    const observed = await adapter.readback({ deployment, candidateCommit });
+    const observed = await activeAdapter.readback({ deployment, candidateCommit });
     if (observed.confirmed !== true || observed.gitSha !== candidateCommit) {
       throw new Error(`staging runtime SHA ${observed.gitSha ?? "missing"} does not match ${candidateCommit}`);
     }

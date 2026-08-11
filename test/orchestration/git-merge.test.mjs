@@ -50,7 +50,7 @@ async function makeMergedPullRequestRepo() {
   git(repo, ["merge", "--no-ff", "task/task-1", "-m", "Merge task PR"]);
   const mergeCommit = git(repo, ["rev-parse", "HEAD"]).trim();
   git(repo, ["push", "origin", "version/v-1"]);
-  return { root, repo, headRefOid, mergeCommit };
+  return { root, remote, repo, headRefOid, mergeCommit };
 }
 
 function mergedPullRequestRun({ headRefOid, mergeCommit }) {
@@ -122,6 +122,56 @@ test("fetchAndMergeTaskPullRequest accepts a merged PR ancestor of a later remot
   assert.equal(result.taskHead, headRefOid);
   assert.equal(result.candidateCommit, laterRemoteHead);
   assert.equal(result.alreadyMerged, true);
+});
+
+test("production git ops persist a merged remote Candidate without mutating a stale local version branch", async (t) => {
+  const { root, remote, repo, headRefOid, mergeCommit } = await makeMergedPullRequestRepo();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const publisher = path.join(root, "publisher");
+  git(root, ["clone", remote, publisher]);
+  git(publisher, ["config", "user.email", "publisher@example.com"]);
+  git(publisher, ["config", "user.name", "Publisher"]);
+  git(publisher, ["checkout", "version/v-1"]);
+  await writeFile(path.join(publisher, "later.txt"), "later remote work\n");
+  git(publisher, ["add", "."]);
+  git(publisher, ["commit", "-m", "later remote version work"]);
+  git(publisher, ["push", "origin", "version/v-1"]);
+  const remoteHead = git(publisher, ["rev-parse", "HEAD"]).trim();
+  assert.equal(git(repo, ["rev-parse", "version/v-1"]).trim(), mergeCommit);
+
+  const ops = createReleaseGitOps({
+    repoPath: repo,
+    repository: "owner/repo",
+    run: mergedPullRequestRun({ headRefOid, mergeCommit }),
+  });
+  const integrated = await ops.integrateTaskPr({
+    taskId: "task-1",
+    pullRequest: "https://github.com/owner/repo/pull/42",
+    versionBranch: "version/v-1",
+  });
+  assert.equal(integrated.merged, true);
+  assert.equal(integrated.candidateCommit, remoteHead);
+  assert.equal(git(repo, ["rev-parse", "version/v-1"]).trim(), mergeCommit);
+
+  const persisted = await ops.persistCandidate({
+    versionId: "v-1",
+    versionBranch: "version/v-1",
+    candidateCommit: integrated.candidateCommit,
+    candidateSourceRef: integrated.candidateSourceRef,
+    taskPrHeads: [{
+      taskId: "task-1",
+      headCommit: integrated.taskHead,
+      prNumber: integrated.prNumber,
+      repository: integrated.repository,
+    }],
+  });
+
+  assert.equal(persisted.persisted, true, persisted.error);
+  assert.equal(git(repo, ["rev-parse", "version/v-1"]).trim(), mergeCommit);
+  assert.equal(
+    git(repo, ["ls-remote", "origin", persisted.candidateRef]).trim().split(/\s+/)[0],
+    remoteHead,
+  );
 });
 
 test("fetchAndMergeTaskPullRequest rejects merged PR SHAs absent from refreshed version history", async (t) => {

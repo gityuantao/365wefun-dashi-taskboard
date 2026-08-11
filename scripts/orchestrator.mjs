@@ -68,6 +68,9 @@ import {
 import {
   createReleaseGitOps,
 } from "../orchestration/git/merge.mjs";
+import {
+  createProductionStagingAdapterFactory,
+} from "../orchestration/release/staging-command-adapter.mjs";
 import { readControl, shouldProcess } from "../orchestration/control.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -350,13 +353,10 @@ const handlers = {
   },
   stage_task: async (job) => {
     const client = await jobClient(job);
-    const modulePath = runtime.stagingAdapterModule
-      ? path.resolve(PROJECT_ROOT, runtime.stagingAdapterModule)
-      : null;
-    const module = modulePath ? await import(pathToFileURL(modulePath).href) : null;
-    const adapter = typeof module?.createStagingAdapter === "function"
-      ? module.createStagingAdapter({ runtime, projectRoot: PROJECT_ROOT })
-      : null;
+    const adapterFactory = createProductionStagingAdapterFactory({
+      runtime,
+      projectRoot: PROJECT_ROOT,
+    });
     const releaseGitOps = createReleaseGitOps({
       repoPath: runtime.repoPath,
       repository: resolveRemoteRepo(runtime.repoPath),
@@ -382,7 +382,7 @@ const handlers = {
       db,
       client,
       gitOps: guardedGitOps,
-      adapter,
+      adapterFactory,
       iosApps,
       iosAdapter,
       beforeExternalOperation: renewActiveClaim,

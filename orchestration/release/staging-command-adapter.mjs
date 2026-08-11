@@ -1,7 +1,25 @@
 import { execFile } from "node:child_process";
+import path from "node:path";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 
 const execFileAsync = promisify(execFile);
+
+export function createProductionStagingAdapterFactory({
+  runtime,
+  projectRoot,
+  importModule = (url) => import(url),
+}) {
+  return async () => {
+    const modulePath = runtime.stagingAdapterModule
+      ? path.resolve(projectRoot, runtime.stagingAdapterModule)
+      : null;
+    const module = modulePath ? await importModule(pathToFileURL(modulePath).href) : null;
+    return typeof module?.createStagingAdapter === "function"
+      ? module.createStagingAdapter({ runtime, projectRoot })
+      : null;
+  };
+}
 
 function requireSha(value, label) {
   const sha = String(value ?? "").trim();

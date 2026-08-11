@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
+import { pollClickUpOnce } from "../../cloud/src/clickup-poller.mjs";
 import { executeStagingGate } from "../../orchestration/application/staging-coordinator.mjs";
 import { dispatchCommand } from "../../orchestration/application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
 import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-store.mjs";
+import { saveSnapshot } from "../../orchestration/clickup/snapshot.mjs";
+import {
+  claimJob,
+  completeJob,
+  enqueueJob,
+} from "../../orchestration/persistence/d1-runner-jobs.mjs";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 
 const NOW = "2026-08-10T08:00:00.000Z";
@@ -171,6 +181,260 @@ test("a missing staging adapter persists infrastructure ownership before rejecti
   assert.equal(attempt.failure_classification, "staging_infrastructure");
   assert.equal(attempt.failure_fingerprint, result.fingerprint);
   assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
+});
+
+test("staging rejects missing or non-array platforms before an attempt or external work", async (t) => {
+  const cases = [
+    { name: "missing", value: undefined, remove: true },
+    { name: "string", value: "web" },
+    { name: "null", value: null },
+    { name: "object", value: { web: true } },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async (t) => {
+      const harness = await createCloudWorkerHarness();
+      t.after(() => harness.dispose());
+      const taskId = `task-invalid-platforms-${testCase.name}`;
+      await seedAcceptingTask(harness.db, taskId);
+      const job = stagingJob(taskId, testCase.value);
+      if (testCase.remove) delete job.payload.platforms;
+      const calls = [];
+      const comments = [];
+
+      const result = await executeStagingGate({
+        job,
+        db: harness.db,
+        client: { postComment: async (_taskId, body) => comments.push(body) },
+        gitOps: {
+          integrateTaskPr: async () => {
+            calls.push("integrate");
+            return { merged: true, candidateCommit: CANDIDATE_COMMIT, taskHead: TASK_COMMIT };
+          },
+          persistCandidate: async () => {
+            calls.push("persist");
+            return { persisted: true };
+          },
+        },
+        adapter: {
+          deploy: async () => {
+            calls.push("deploy");
+            return { releaseId: "must-not-deploy" };
+          },
+          readback: async () => {
+            calls.push("readback");
+            return { confirmed: true, gitSha: CANDIDATE_COMMIT };
+          },
+        },
+        now: NOW,
+      });
+
+      assert.equal(result.status, "failed");
+      assert.equal(result.stage, "preflight");
+      assert.equal(result.classification, "staging_infrastructure");
+      assert.match(result.error, /platforms must be an explicitly provided array/);
+      assert.deepEqual(calls, []);
+      assert.equal(comments.length, 1);
+      assert.match(comments[0], /故障归属：staging_infrastructure/);
+      const attempts = await harness.db.prepare(
+        "SELECT COUNT(*) AS count FROM staging_deployments WHERE task_id = ?",
+      ).bind(taskId).first();
+      assert.equal(attempts.count, 0);
+      assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
+      const rejection = await harness.db.prepare(
+        `SELECT actor_id, data FROM orchestration_events
+         WHERE aggregate_type = 'task' AND aggregate_id = ?
+           AND type = 'task.acceptance_rejected'
+         ORDER BY aggregate_version DESC LIMIT 1`,
+      ).bind(taskId).first();
+      assert.equal(rejection.actor_id, "runner-staging");
+      assert.equal(JSON.parse(rejection.data).evidenceId, `staging-${job.id}`);
+    });
+  }
+});
+
+test("an explicit empty platforms array remains valid Web-only staging evidence", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const taskId = "task-empty-platforms";
+  await seedAcceptingTask(harness.db, taskId);
+
+  const result = await executeStagingGate({
+    job: stagingJob(taskId, []),
+    db: harness.db,
+    client: { postComment: async () => ({}) },
+    ...webGate(),
+    now: NOW,
+  });
+
+  assert.equal(result.status, "completed", JSON.stringify(result));
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "ready_for_test");
+});
+
+test("production adapter module and factory failures stay inside the failed staging attempt boundary", async (t) => {
+  const adapterModule = await import("../../orchestration/release/staging-command-adapter.mjs");
+  assert.equal(typeof adapterModule.createProductionStagingAdapterFactory, "function");
+  const cases = [
+    {
+      name: "invalid module path",
+      moduleName: "missing-staging-adapter.mjs",
+      error: /missing-staging-adapter|cannot find module/i,
+    },
+    {
+      name: "throwing factory",
+      moduleName: "throwing-staging-adapter.mjs",
+      source: `export function createStagingAdapter() { throw new Error("staging factory exploded"); }\n`,
+      error: /staging factory exploded/i,
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async (t) => {
+      const harness = await createCloudWorkerHarness();
+      t.after(() => harness.dispose());
+      const projectRoot = await mkdtemp(path.join(os.tmpdir(), "taskboard-stage-loader-"));
+      t.after(() => rm(projectRoot, { recursive: true, force: true }));
+      if (testCase.source) {
+        await writeFile(path.join(projectRoot, testCase.moduleName), testCase.source);
+      }
+      const taskId = `task-adapter-${testCase.name.replaceAll(" ", "-")}`;
+      await seedAcceptingTask(harness.db, taskId);
+      const payload = stagingJob(taskId, ["web"]).payload;
+      const jobId = `${taskId}-stage_task-4`;
+      await enqueueJob(harness.db, {
+        jobId,
+        commandId: `auto-stage_task-${taskId}`,
+        jobType: "stage_task",
+        payload,
+        payloadHash: "adapter-boundary",
+        expiresAt: "2026-08-10T10:00:00.000Z",
+        createdAt: NOW,
+      });
+      const job = await claimJob(harness.db, {
+        deviceId: "production-runner",
+        jobType: "stage_task",
+        now: NOW,
+      });
+      let gitCalls = 0;
+      const adapterFactory = adapterModule.createProductionStagingAdapterFactory({
+        runtime: { stagingAdapterModule: testCase.moduleName },
+        projectRoot,
+      });
+
+      const result = await executeStagingGate({
+        job,
+        db: harness.db,
+        client: { postComment: async () => ({}) },
+        gitOps: {
+          integrateTaskPr: async () => { gitCalls += 1; return { merged: false }; },
+          persistCandidate: async () => { gitCalls += 1; return { persisted: false }; },
+        },
+        adapterFactory,
+        now: NOW,
+      });
+      await completeJob(harness.db, {
+        jobId,
+        deviceId: "production-runner",
+        fencingToken: job.fencingToken,
+        status: "failed",
+        result,
+        now: "2026-08-10T08:00:01.000Z",
+      });
+
+      assert.equal(result.status, "failed");
+      assert.equal(result.stage, "preflight");
+      assert.match(result.error, testCase.error);
+      assert.equal(gitCalls, 0);
+      const jobs = await harness.db.prepare(
+        "SELECT status, result FROM runner_jobs WHERE id = ?",
+      ).bind(jobId).all();
+      assert.equal(jobs.results.length, 1);
+      assert.equal(jobs.results[0].status, "failed");
+      assert.equal(JSON.parse(jobs.results[0].result).classification, "staging_infrastructure");
+      const attempts = await harness.db.prepare(
+        `SELECT status, failure_owner FROM staging_deployments
+         WHERE task_id = ? ORDER BY attempt`,
+      ).bind(taskId).all();
+      assert.deepEqual(attempts.results, [{
+        status: "failed",
+        failure_owner: "staging_infrastructure",
+      }]);
+      assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
+
+      const unchangedAt = "2026-08-10T08:00:02.000Z";
+      await saveSnapshot(harness.db, {
+        type: "task",
+        snapshot: {
+          id: taskId,
+          listId: "task-list",
+          name: "Adapter boundary",
+          status: "acceptance_rejected",
+          targetVersion: "1.2.3",
+          assignee: null,
+          updatedAt: unchangedAt,
+          fieldsHash: "unchanged-rejection",
+        },
+        readAt: unchangedAt,
+      });
+      const config = {
+        teamId: "team",
+        spaceId: "space",
+        lists: {
+          task: { id: "task", name: "task" },
+          version: { id: "version", name: "version" },
+          taskSandbox: { id: "task-list", name: "task sandbox" },
+          versionSandbox: { id: "version-list", name: "version sandbox" },
+        },
+        taskStatusMap: { "待开发": "ready_for_development" },
+        versionStatusMap: { "进行中": "active" },
+        fields: {
+          task: {},
+          version: {},
+          taskSandbox: {
+            "自动化纳管": { id: "managed", type: "checkbox" },
+            "目标版本": { id: "version-field", type: "short_text" },
+          },
+          versionSandbox: { "发布阻塞": { id: "blocked", type: "drop_down" } },
+        },
+      };
+      const poll = await pollClickUpOnce({
+        DB: harness.db,
+        CLICKUP_API_TOKEN: "redacted",
+        CLICKUP_CONFIG: JSON.stringify(config),
+        CLICKUP_LIST_SET: "sandbox",
+        CLICKUP_JOB_RETRY_MINUTES: "5",
+        clientFactory: async () => ({
+          getTasksByList: async () => [{
+            id: taskId,
+            name: "Adapter boundary",
+            list: { id: "task-list" },
+            status: { status: "验收不通过" },
+            custom_fields: [
+              { id: "managed", value: true },
+              { id: "version-field", value: "1.2.3" },
+            ],
+            updated_at: unchangedAt,
+          }],
+          getVersionsByList: async () => [{
+            id: "version-1.2.3",
+            name: "1.2.3",
+            status: { status: "进行中" },
+            custom_fields: [{ id: "blocked", value: false }],
+          }],
+          postComment: async () => ({}),
+        }),
+      }, { now: "2026-08-10T09:00:00.000Z" });
+      assert.deepEqual(poll.commands, []);
+      const queued = await harness.db.prepare(
+        "SELECT job_type FROM runner_jobs WHERE status = 'queued' ORDER BY job_type",
+      ).all();
+      assert.deepEqual(queued.results, []);
+      const developJobs = await harness.db.prepare(
+        "SELECT COUNT(*) AS count FROM runner_jobs WHERE job_type = 'develop'",
+      ).first();
+      assert.equal(developJobs.count, 0);
+    });
+  }
 });
 
 test("staging rejects a PR head that differs from the accepted commit before persistence or deploy", async (t) => {
@@ -512,7 +776,7 @@ test("an iOS App failure uses its exact TestFlight App and stage in staging roll
   const { gitOps, adapter } = webGate();
 
   const result = await executeStagingGate({
-    job: stagingJob(taskId, "web、IoS"),
+    job: stagingJob(taskId, ["web", "IoS"]),
     db: harness.db,
     client: { postComment: async (_taskId, body) => comments.push(body) },
     gitOps,
