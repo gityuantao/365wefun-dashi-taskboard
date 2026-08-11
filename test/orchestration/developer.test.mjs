@@ -622,6 +622,66 @@ test("development sends comment images to Codex with their comment label and cle
   await assert.rejects(access(downloadedPath));
 });
 
+test("development uses the latest 12 comments and images", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const downloadedUrls = [];
+  let options;
+  const comments = Array.from({ length: 13 }, (_, index) => ({
+    id: `comment-${index}`,
+    date: String(1_000 + index),
+    comment_text: index === 12
+      ? "❌ 最新验收不通过：支付按钮仍然无响应"
+      : `评论-${index}`,
+    attachments: index === 12
+      ? [{ title: "latest-rejection.png", url: "https://attachments.clickup.com/latest-rejection.png" }]
+      : index === 0
+        ? [{ title: "old-outside-window.png", url: "https://attachments.clickup.com/old-outside-window.png" }]
+        : [],
+  })).reverse();
+
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({
+      getTask: async () => ({
+        id: "task-1",
+        name: "录音回放按钮",
+        description: "修复录音回放",
+        custom_fields: [{
+          id: "field-acceptance-feedback",
+          name: "验收反馈",
+          value: "验收字段：测试环境支付仍失败",
+        }],
+      }),
+      getComments: async () => comments,
+      downloadAttachment: async (url) => {
+        downloadedUrls.push(url);
+        return { body: PNG, contentType: "image/png", contentLength: PNG.byteLength };
+      },
+    }),
+    codex: {
+      run: async (value) => {
+        options = value;
+        await access(value.imagePaths[0]);
+        return { exitCode: 0, stdout: validOutput(), stderr: "" };
+      },
+    },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.match(options.prompt, /最新验收不通过：支付按钮仍然无响应/);
+  assert.match(options.prompt, /验收字段：测试环境支付仍失败/);
+  assert.doesNotMatch(options.prompt, /评论-0/);
+  assert.equal(downloadedUrls.some((url) => url.includes("latest-rejection.png")), true);
+  assert.equal(downloadedUrls.some((url) => url.includes("old-outside-window.png")), false);
+  assert.equal(options.imagePaths.length, 1);
+  await assert.rejects(access(options.imagePaths[0]));
+});
+
 test("development cleans comment media when feedback processing throws after collection", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
