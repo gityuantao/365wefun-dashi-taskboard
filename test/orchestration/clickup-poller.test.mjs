@@ -1242,6 +1242,27 @@ test("poller routes a rejected task back to rework when user moves it to 待开�
     const params = types[index] === "acceptance_rejected" ? { evidenceId: "ev-rej" } : {};
     await dispatchTask(harness, `rej-dev-${index}`, types[index], index + 1, params);
   }
+  await enqueueJob(harness.db, {
+    jobId: "task-1-develop-old",
+    commandId: "auto-develop-task-1",
+    jobType: "develop",
+    payload: { taskId: "task-1" },
+    payloadHash: "old-failure",
+    expiresAt: "2026-08-11T02:00:00.000Z",
+    createdAt: "2026-08-11T00:00:00.000Z",
+  });
+  await harness.db.prepare(
+    `UPDATE runner_jobs
+     SET status = 'failed', result = ?, completed_at = ?
+     WHERE id = ?`,
+  ).bind(
+    JSON.stringify({
+      status: "failed",
+      error: "HTTP_400: Custom field usages exceeded for your plan",
+    }),
+    "2026-08-11T00:01:00.000Z",
+    "task-1-develop-old",
+  ).run();
   const env = await makeEnv(harness, [
     sandboxTask({ status: "待开发", request: null, version: "1.0.1" }),
   ], [
@@ -1251,6 +1272,10 @@ test("poller routes a rejected task back to rework when user moves it to 待开�
   assert.ok(result.commands.some((command) => command.type === "acceptance_rejected_to_develop"));
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "ready_for_development");
+  const oldFailure = await harness.db.prepare(
+    "SELECT id FROM runner_jobs WHERE id = ?",
+  ).bind("task-1-develop-old").first();
+  assert.equal(oldFailure, null);
   const job = await harness.db
     .prepare("SELECT id FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'")
     .first();
@@ -1389,11 +1414,40 @@ test("moving directly to 待开发 is treated as test failed", async (t) => {
       "development_completed", "acceptance_passed"][index];
     await dispatchTask(harness, `poll-direct-fail-${index}`, type, index + 1);
   }
+  await enqueueJob(harness.db, {
+    jobId: "task-1-develop-old",
+    commandId: "auto-develop-task-1",
+    jobType: "develop",
+    payload: { taskId: "task-1" },
+    payloadHash: "old-failure",
+    expiresAt: "2026-08-11T02:00:00.000Z",
+    createdAt: "2026-08-11T00:00:00.000Z",
+  });
+  await harness.db.prepare(
+    `UPDATE runner_jobs
+     SET status = 'failed', result = ?, completed_at = ?
+     WHERE id = ?`,
+  ).bind(
+    JSON.stringify({
+      status: "failed",
+      error: "HTTP_400: Custom field usages exceeded for your plan",
+    }),
+    "2026-08-11T00:01:00.000Z",
+    "task-1-develop-old",
+  ).run();
   const env = await makeEnv(harness, [sandboxTask({ status: "待开发" })]);
   const result = await pollClickUpOnce(env, { now: NOW });
   const types = result.commands.map((command) => command.type);
   assert.ok(types.includes("test_failed"));
   assert.ok(!types.includes("start_test"));
+  const oldFailure = await harness.db.prepare(
+    "SELECT id FROM runner_jobs WHERE id = ?",
+  ).bind("task-1-develop-old").first();
+  assert.equal(oldFailure, null);
+  const job = await harness.db
+    .prepare("SELECT id FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'")
+    .first();
+  assert.ok(job);
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "ready_for_development");
 });

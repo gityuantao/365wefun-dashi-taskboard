@@ -546,6 +546,7 @@ async function handleStatusDrivenFlow(
 
   // 验收不通过：用户处理完原因后手动改回「待开发」（重新开发）或「待测试」（直接测试）
   if (aggregate.state === "acceptance_rejected" && snapshot.status === "ready_for_development") {
+    await clearOrdinaryDevelopmentFailures(env.DB, snapshot.id);
     const devId = "poller-rejected-to-dev-" + snapshot.id + "-" + (aggregate.version + 1);
     if (!(await loadCommandResult(env.DB, devId))) {
       commands.push(await runCommand(env, parseCommandEnvelope({
@@ -597,6 +598,7 @@ async function handleStatusDrivenFlow(
     }
     aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   } else if (aggregate.state === "ready_for_test" && snapshot.status === "ready_for_development") {
+    await clearOrdinaryDevelopmentFailures(env.DB, snapshot.id);
     const resultId = "poller-" + snapshot.id + "-" + (aggregate.version + 1);
     if (!(await loadCommandResult(env.DB, resultId))) {
       commands.push(await runCommand(env, parseCommandEnvelope({
