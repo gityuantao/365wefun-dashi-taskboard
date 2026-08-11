@@ -186,11 +186,13 @@ test("web adapter preserves the exact Web/API platform through every deployer ca
   const adapter = createWebAdapter({
     deployer: {
       preflight: async ({ platform }) => { seen.push(["preflight", platform]); return { ok: true }; },
-      upload: async ({ platform }) => {
+      upload: async ({ platform, manifest }) => {
+        assert.equal(manifest, MANIFEST);
         seen.push(["upload", platform]);
         return { object: "api/object", externalRequestId: "api-request-1" };
       },
-      switchEntry: async ({ platform }) => {
+      switchEntry: async ({ platform, manifest }) => {
+        assert.equal(manifest, MANIFEST);
         seen.push(["switch", platform]);
         publication = {
           confirmed: true, published: true, status: "published", authoritative: true,
@@ -201,8 +203,9 @@ test("web adapter preserves the exact Web/API platform through every deployer ca
         };
         return { url: "https://api.example.com", productionReleaseId: "api-release-1" };
       },
-      healthCheck: async ({ platform }) => { seen.push(["health", platform]); return { ok: true }; },
-      readback: async ({ platform, readbackLocator, externalRequestId, idempotencyKey }) => {
+      healthCheck: async ({ platform, manifest }) => { assert.equal(manifest, MANIFEST); seen.push(["health", platform]); return { ok: true }; },
+      readback: async ({ platform, manifest, readbackLocator, externalRequestId, idempotencyKey }) => {
+        assert.equal(manifest, MANIFEST);
         seen.push(["readback", platform, readbackLocator.locator, externalRequestId, idempotencyKey]);
         return publication;
       },

@@ -22,18 +22,20 @@ export function createWebAdapter({ deployer }) {
       if (!deployer) {
         throw new Error("web deployer not configured");
       }
-      const preflight = await stage(options, "preflight", () => deployer.preflight?.({ manifest, platform }));
+      const preflight = await stage(options, "preflight", () => deployer.preflight?.({ manifest, platform, signal: options.signal }));
       if (preflight && preflight.ok === false) {
         throw preflightRejected();
       }
       const digest = manifest.checksum;
       const upload = await stage(options, "upload", () => deployer.upload({
+        manifest,
         versionId: manifest.versionId,
         digest,
         candidateCommit: manifest.candidateCommit,
         artifactIdentity: manifest.artifactIdentity,
         idempotencyKey: options.idempotencyKey,
         platform,
+        signal: options.signal,
       }));
       await options.recordStage?.("upload", {
         externalRequestId: upload?.externalRequestId,
@@ -46,12 +48,14 @@ export function createWebAdapter({ deployer }) {
         },
       });
       const entry = await stage(options, "switch", () => deployer.switchEntry({
+        manifest,
         versionId: manifest.versionId,
         candidateCommit: manifest.candidateCommit,
         artifactIdentity: manifest.artifactIdentity,
         upload,
         idempotencyKey: options.idempotencyKey,
         platform,
+        signal: options.signal,
       }));
       await options.recordStage?.("switch", {
         externalRequestId: upload?.externalRequestId,
@@ -63,8 +67,10 @@ export function createWebAdapter({ deployer }) {
         },
       });
       const health = await stage(options, "health", () => deployer.healthCheck({
+        manifest,
         url: entry.url,
         platform,
+        signal: options.signal,
       }));
       if (!health.ok) {
         throw new Error(`health check failed with status ${health.status}`);
@@ -106,6 +112,7 @@ export function createWebAdapter({ deployer }) {
         throw new Error("web deployer readback not configured");
       }
       const observed = await stage(options, "readback", () => deployer.readback({
+        manifest,
         versionId: manifest.versionId,
         url: deployment?.url ?? null,
         productionReleaseId: deployment?.productionReleaseId ?? null,
@@ -113,6 +120,7 @@ export function createWebAdapter({ deployer }) {
         externalRequestId: options.externalRequestId ?? deployment?.externalRequestId ?? null,
         idempotencyKey: options.idempotencyKey,
         platform,
+        signal: options.signal,
       }));
       const artifactIdentity = observed?.artifactIdentity;
       const hasArtifactIdentity = typeof artifactIdentity === "string"
