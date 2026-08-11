@@ -83,3 +83,27 @@ test("migration ledger fails closed for an unrecorded legacy manifest_id schema"
     (error) => error.code === "PRODUCTION_RELEASE_SCHEMA_DRIFT",
   );
 });
+
+test("migration ledger rejects same-name production schema objects with unsafe definitions", async (t) => {
+  const setupCases = [
+    "DROP INDEX idx_production_release_targets_reusable_success; CREATE INDEX idx_production_release_targets_reusable_success ON production_release_targets (attempt);",
+    "DROP TRIGGER production_release_targets_immutable_succeeded_delete; CREATE TRIGGER production_release_targets_immutable_succeeded_delete BEFORE DELETE ON production_release_targets BEGIN SELECT 1; END;",
+    "DROP TABLE production_release_targets; CREATE TABLE production_release_targets AS SELECT * FROM production_release_attempts;",
+  ];
+  for (const setup of setupCases) {
+    const harness = await createCloudWorkerHarness();
+    try {
+      await harness.db.exec(setup);
+      const migrations = [{
+        name: "0013_production_release_attempts.sql",
+        sql: await readFile(path.join(MIGRATIONS_DIR, "0013_production_release_attempts.sql"), "utf8"),
+      }];
+      await assert.rejects(
+        () => applyMigrations({ db: harness.db, migrations, now: "2026-08-11T00:00:00.000Z" }),
+        (error) => error.code === "PRODUCTION_RELEASE_SCHEMA_DRIFT",
+      );
+    } finally {
+      await harness.dispose();
+    }
+  }
+});

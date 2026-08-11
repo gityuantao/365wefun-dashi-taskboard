@@ -122,6 +122,36 @@ test("production release persistence rejects incomplete terminal Web and iOS suc
   await assert.rejects(() => harness.db.exec(iosIncomplete), /CHECK constraint failed/);
 });
 
+test("production release persistence rejects NULL terminal evidence and upload build identities", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await assert.rejects(
+    () => harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, external_request_id, artifact_identity, production_readback_sha, production_release_id, health_status, readback_status, sanitized_observed_evidence, sanitized_readback_evidence, completed_at, started_at, created_at, updated_at) VALUES ('v-null', 'candidate-null', 'checksum-null', 'web', '', 1, 'readback', 'succeeded', 'request-null', NULL, 'candidate-null', 'release-null', 'healthy', 'confirmed', '{\"confirmed\":true}', '{\"sha\":\"candidate-null\"}', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');"),
+    /CHECK constraint failed/,
+  );
+  await assert.rejects(
+    () => harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, external_request_id, app_store_app_id, bundle_id, marketing_version, build_number, processing_status, processing_id, review_status, review_submission_id, upload_id, review_id, release_status, release_id, live_status, live_id, live_marketing_version, live_build_number, live_membership_confirmed, sanitized_observed_evidence, sanitized_live_evidence, completed_at, started_at, created_at, updated_at) VALUES ('v-null', 'candidate-null', 'checksum-null', 'ios', 'au', 1, 'live_readback', 'succeeded', 'request-ios-null', '0000000001', 'online.365english.app', '1.2.3', NULL, 'processed', 'processing-1', 'approved', 'submission-1', 'upload-1', 'review-1', 'released', 'release-1', 'live', 'live-1', '1.2.3', '42', 1, '{\"confirmed\":true}', '{\"membership\":true}', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');"),
+    /CHECK constraint failed/,
+  );
+  await assert.rejects(
+    () => harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, app_store_app_id, bundle_id, marketing_version, build_number, started_at, created_at, updated_at) VALUES ('v-null', 'candidate-null', 'checksum-null', 'ios', 'au', 2, 'upload', 'running', '0000000001', 'online.365english.app', '1.2.3', NULL, '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');"),
+    /CHECK constraint failed/,
+  );
+});
+
+test("production release persistence limits success to reconciled terminal stages", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await assert.rejects(
+    () => harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, artifact_identity, started_at, created_at, updated_at) VALUES ('v-lifecycle', 'candidate-lifecycle', 'checksum-lifecycle', 'web', '', 1, 'upload', 'succeeded', 'artifact-lifecycle', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');"),
+    /CHECK constraint failed/,
+  );
+  await assert.rejects(
+    () => harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, external_request_id, reconciliation_status, artifact_identity, production_readback_sha, production_release_id, health_status, readback_status, sanitized_observed_evidence, sanitized_readback_evidence, completed_at, started_at, created_at, updated_at) VALUES ('v-lifecycle', 'candidate-lifecycle', 'checksum-lifecycle', 'web', '', 2, 'readback', 'succeeded', 'request-lifecycle', 'unknown_outcome', 'artifact-lifecycle', 'candidate-lifecycle', 'release-lifecycle', 'healthy', 'confirmed', '{\"confirmed\":true}', '{\"sha\":\"candidate-lifecycle\"}', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');"),
+    /CHECK constraint failed/,
+  );
+});
+
 test("production release persistence records a bounded unknown outcome without raw response fields", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -144,8 +174,8 @@ test("production release persistence reuses successful Web/API readback and bloc
     () => harness.db.exec(attempt.replace("'v2'", "'v3'")),
     /UNIQUE constraint failed/,
   );
-  await harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, external_request_id, artifact_identity, production_readback_sha, production_release_id, health_status, readback_status, sanitized_readback_evidence, started_at, completed_at, created_at, updated_at) VALUES ('v2', 'candidate-2', 'checksum-2', 'web', '', 1, 'readback', 'succeeded', 'request-web-2', 'web-artifact-2', 'candidate-2', 'web-release-2', 'healthy', 'confirmed', '{\"sha\":\"candidate-2\"}', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z');");
-  await harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, external_request_id, artifact_identity, production_readback_sha, production_release_id, health_status, readback_status, sanitized_readback_evidence, started_at, completed_at, created_at, updated_at) VALUES ('v2', 'candidate-2', 'checksum-2', 'api', '', 1, 'readback', 'succeeded', 'request-api-2', 'api-artifact-2', 'candidate-2', 'api-release-2', 'healthy', 'confirmed', '{\"sha\":\"candidate-2\"}', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z');");
+  await harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, external_request_id, artifact_identity, production_readback_sha, production_release_id, health_status, readback_status, sanitized_observed_evidence, sanitized_readback_evidence, started_at, completed_at, created_at, updated_at) VALUES ('v2', 'candidate-2', 'checksum-2', 'web', '', 1, 'readback', 'succeeded', 'request-web-2', 'web-artifact-2', 'candidate-2', 'web-release-2', 'healthy', 'confirmed', '{\"confirmed\":true}', '{\"sha\":\"candidate-2\"}', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z');");
+  await harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, external_request_id, artifact_identity, production_readback_sha, production_release_id, health_status, readback_status, sanitized_observed_evidence, sanitized_readback_evidence, started_at, completed_at, created_at, updated_at) VALUES ('v2', 'candidate-2', 'checksum-2', 'api', '', 1, 'readback', 'succeeded', 'request-api-2', 'api-artifact-2', 'candidate-2', 'api-release-2', 'healthy', 'confirmed', '{\"confirmed\":true}', '{\"sha\":\"candidate-2\"}', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z');");
   const reusable = await harness.db.prepare("SELECT production_release_id FROM production_release_targets WHERE version_id = ? AND candidate_commit = ? AND manifest_checksum = ? AND platform = ? AND app_id = ? AND status = 'succeeded' AND ((platform IN ('web', 'api') AND stage = 'readback') OR (platform = 'ios' AND stage = 'live_readback'))").bind('v2', 'candidate-2', 'checksum-2', 'web', '').all();
   assert.deepEqual(reusable.results, [{ production_release_id: "web-release-2" }]);
   const reusableApi = await harness.db.prepare("SELECT production_release_id FROM production_release_targets WHERE version_id = ? AND candidate_commit = ? AND manifest_checksum = ? AND platform = ? AND app_id = ? AND status = 'succeeded' AND ((platform IN ('web', 'api') AND stage = 'readback') OR (platform = 'ios' AND stage = 'live_readback'))").bind('v2', 'candidate-2', 'checksum-2', 'api', '').all();

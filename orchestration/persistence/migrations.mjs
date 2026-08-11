@@ -86,6 +86,36 @@ async function hasCompleteProductionReleaseSchema(db) {
       .first();
     if (!exists) return null;
   }
+  const requiredDefinitionFragments = new Map([
+    ["production_release_attempts", [
+      "manifest_checksum text not null check (length(trim(manifest_checksum)) > 0)",
+    ]],
+    ["production_release_targets", [
+      "reconciliation_status text not null default 'not_required' check (reconciliation_status in ('not_required', 'pending_readback', 'unknown_outcome', 'readback_confirmed', 'readback_mismatch'))",
+      "check (status <> 'succeeded' or ((platform in ('web', 'api') and stage = 'readback') or (platform = 'ios' and stage = 'live_readback')))",
+      "app_store_app_id is not null and length(trim(app_store_app_id)) > 0",
+    ]],
+    ["idx_production_release_targets_reusable_success", [
+      "where status = 'succeeded' and reconciliation_status in ('not_required', 'readback_confirmed') and",
+    ]],
+    ["production_release_attempts_immutable_succeeded_delete", [
+      "before delete on production_release_attempts when old.status = 'succeeded' begin select raise(abort, 'immutable succeeded production release attempt'); end",
+    ]],
+    ["production_release_targets_immutable_succeeded_delete", [
+      "before delete on production_release_targets when old.status = 'succeeded' begin select raise(abort, 'immutable succeeded production release target'); end",
+    ]],
+    ["production_release_attempts_immutable_succeeded", [
+      "before update on production_release_attempts when old.status = 'succeeded' begin select raise(abort, 'immutable succeeded production release attempt'); end",
+    ]],
+    ["production_release_targets_immutable_succeeded", [
+      "before update on production_release_targets when old.status = 'succeeded' begin select raise(abort, 'immutable succeeded production release target'); end",
+    ]],
+  ]);
+  for (const [name, fragments] of requiredDefinitionFragments) {
+    const row = await db.prepare("SELECT sql FROM sqlite_schema WHERE name = ?").bind(name).first();
+    const definition = String(row?.sql ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+    if (fragments.some((fragment) => !definition.includes(fragment))) return null;
+  }
   return { name: "production_release_attempts" };
 }
 
