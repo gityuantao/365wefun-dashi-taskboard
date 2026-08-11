@@ -10,6 +10,7 @@ import { coordinateReleaseSnapshot } from "../../orchestration/application/relea
 
 const BASE_RUNTIME = {
   deviceId: "runner-1",
+  productionReleaseHold: false,
   releaseAdapterModule: "./web-adapter.mjs",
   iosProductionReleaseAdapterModule: "./ios-adapter.mjs",
   productionReleaseCommand: ["node", "scripts/deploy-production-candidate.mjs"],
@@ -28,6 +29,28 @@ const BASE_RUNTIME = {
     releaseMode: "automatic", reviewConfigurationRef: "review/au",
   }],
 };
+
+test("production release hold defaults closed and blocks every adapter boundary before import", async () => {
+  for (const heldValue of [undefined, true]) {
+    let imported = 0;
+    const runtime = createProductionRuntime({
+      runtime: { ...BASE_RUNTIME, productionReleaseHold: heldValue },
+      projectRoot: "/repo",
+      pathExists: () => true,
+      importModule: async () => { imported += 1; },
+    });
+
+    assert.deepEqual(runtime.readiness, {
+      ready: false,
+      held: true,
+      error: "production release hold is enabled",
+    });
+    assert.deepEqual(await runtime.probeReadiness(), runtime.readiness);
+    await assert.rejects(runtime.webAdapter.release({}), /production release hold is enabled/);
+    await assert.rejects(runtime.iosAdapter.release({}), /production release hold is enabled/);
+    assert.equal(imported, 0);
+  }
+});
 
 test("invalid production config fails readiness before adapter import or ClickUp mutation", async () => {
   let imported = 0;

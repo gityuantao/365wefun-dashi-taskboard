@@ -66,6 +66,13 @@ export function validateProductionRuntime(runtime, { projectRoot = null, pathExi
         }
       }
     }
+    if (runtime.productionReleaseHold !== false) {
+      return Object.freeze({
+        ready: false,
+        held: true,
+        error: "production release hold is enabled",
+      });
+    }
     return Object.freeze({ ready: true, error: null });
   } catch (error) {
     return Object.freeze({ ready: false, error: redactCredentials(error.message) });

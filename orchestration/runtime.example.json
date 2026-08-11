@@ -17,6 +17,7 @@
       "reasoningEffort": "high"
     }
   },
+  "productionReleaseHold": true,
   "releaseAdapterModule": "orchestration/release/production-command-adapter.mjs",
   "productionReleaseCommand": ["node", "scripts/deploy-production-candidate.mjs"],
   "productionConfigPath": "/absolute/private/path/production-release.private.json",
