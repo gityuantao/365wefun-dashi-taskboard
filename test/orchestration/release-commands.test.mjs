@@ -39,6 +39,8 @@ function webPublication(candidateCommit = CANDIDATE_COMMIT, artifactIdentity = A
   return {
     confirmed: true,
     published: true,
+    status: "published",
+    authoritative: true,
     candidateCommit,
     artifactIdentity,
     productionReleaseId: "web-release-1",
@@ -120,10 +122,10 @@ async function seedTaskToRelease(harness, taskId, platforms = ["web"]) {
   });
 }
 
-async function prepareVersion(harness, { platforms = ["web"] } = {}) {
+async function prepareVersion(harness, { platforms = ["web"], iosApps = [] } = {}) {
   await seedVersion(harness, "version-1");
   await seedTaskToRelease(harness, "task-a", platforms);
-  await freezeManifest({
+  const frozen = await freezeManifest({
     db: harness.db,
     versionId: "version-1",
     now: NOW,
@@ -143,7 +145,18 @@ async function prepareVersion(harness, { platforms = ["web"] } = {}) {
       command: "node --test test/orchestration/*.test.mjs",
       collectedAt: NOW,
     },
+    productionTargetPlan: {
+      schemaVersion: 1,
+      taskPlatforms: [{ taskId: "task-a", platforms }],
+      platforms: {
+        web: platforms.includes("web"),
+        api: platforms.includes("api"),
+        ios: platforms.includes("ios"),
+      },
+      iosApps: iosApps.map(({ enabled, ...app }) => app),
+    },
   });
+  assert.equal(frozen.status, "frozen", frozen.reasons?.join("; "));
 }
 
 test("confirm release publishes the version and its tasks", async (t) => {
@@ -173,7 +186,6 @@ test("confirm release publishes the version and its tasks", async (t) => {
 test("an iOS review wait keeps the version releasing and publishes nothing until every target is live", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
-  await prepareVersion(harness, { platforms: ["web", "ios"] });
   const app = {
     id: "au",
     name: "Overseas",
@@ -189,6 +201,7 @@ test("an iOS review wait keeps the version releasing and publishes nothing until
     reviewConfigurationRef: "app-store-review/au",
     marketingVersion: "1.2.3",
   };
+  await prepareVersion(harness, { platforms: ["ios"], iosApps: [app] });
   let waiting = true;
   const iosCalls = [];
   const options = {
@@ -202,8 +215,18 @@ test("an iOS review wait keeps the version releasing and publishes nothing until
     },
     apps: [app],
     iosAdapter: {
-      release: async () => {
+      release: async ({ recordStage }) => {
         iosCalls.push("release");
+        await recordStage("test");
+        await recordStage("archive");
+        await recordStage("upload", { buildNumber: "101", uploadId: "au-upload-1" });
+        await recordStage("processing", {
+          buildNumber: "101", processingStatus: "processed", processingId: "au-processing-1",
+        });
+        await recordStage("review_submit", {
+          buildNumber: "101", reviewStatus: "submitted", reviewSubmissionId: "au-submission-1",
+        });
+        await recordStage("review_wait", { buildNumber: "101" });
         return {
           externalRequestId: "au-request-1",
           buildNumber: "101",
@@ -215,13 +238,29 @@ test("an iOS review wait keeps the version releasing and publishes nothing until
           releaseStatus: "not_released",
           liveStatus: "not_live",
           observedEvidence: { build: "101" },
+          lineage: {
+            externalRequestId: "au-request-1",
+            buildNumber: "101",
+            uploadId: "au-upload-1",
+            processingId: "au-processing-1",
+            reviewSubmissionId: "au-submission-1",
+          },
         };
       },
-      readback: async () => {
+      readback: async ({ recordStage }) => {
         iosCalls.push("readback");
-        if (waiting) return { status: "waiting_external", reviewStatus: "submitted" };
+        await recordStage("live_readback", { buildNumber: "101" });
+        if (waiting) return {
+          status: "waiting_external", authoritative: true, submissionExists: true,
+          reviewStatus: "submitted",
+          lineage: {
+            externalRequestId: "au-request-1", buildNumber: "101", uploadId: "au-upload-1",
+            processingId: "au-processing-1", reviewSubmissionId: "au-submission-1",
+          },
+        };
         return {
           status: "completed",
+          authoritative: true,
           externalRequestId: "au-request-1",
           buildNumber: "101",
           uploadId: "au-upload-1",
@@ -238,14 +277,27 @@ test("an iOS review wait keeps the version releasing and publishes nothing until
           liveBuildNumber: "101",
           liveMembershipConfirmed: true,
           observedEvidence: { build: "101" },
-          liveEvidence: { storefront: "live" },
+          liveEvidence: {
+            membershipConfirmed: true, appStoreAppId: "0000000001",
+            marketingVersion: "1.2.3", buildNumber: "101", liveId: "au-live-1",
+          },
+          lineage: {
+            externalRequestId: "au-request-1",
+            buildNumber: "101",
+            uploadId: "au-upload-1",
+            processingId: "au-processing-1",
+            reviewSubmissionId: "au-submission-1",
+            reviewId: "au-review-1",
+            releaseId: "au-release-1",
+            liveId: "au-live-1",
+          },
         };
       },
     },
   };
 
   const first = await handleConfirmRelease({ ...options, now: NOW });
-  assert.equal(first.status, "waiting_external");
+  assert.equal(first.status, "waiting_external", first.error);
   assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "releasing");
   assert.equal((await loadAggregate(harness.db, "task", "task-a")).state, "ready_for_release");
 
@@ -255,6 +307,9 @@ test("an iOS review wait keeps the version releasing and publishes nothing until
   assert.deepEqual(iosCalls, ["release", "readback", "readback"]);
   assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "published");
   assert.equal((await loadAggregate(harness.db, "task", "task-a")).state, "published");
+  assert.equal(second.publication.kind, "ios_aggregate");
+  assert.equal(second.publication.candidateCommit, CANDIDATE_COMMIT);
+  assert.match(second.publication.cleanupToken, /^ios:/);
 });
 
 test("confirm release rejects missing or placeholder deployers before state changes", async (t) => {
@@ -367,6 +422,8 @@ test("confirm release rejects Candidate mutations from every web deployer stage"
           publishedState = {
             confirmed: true,
             published: true,
+            status: "published",
+            authoritative: true,
             candidateCommit: mutationStage === "preflight" ? tamperedCommit : CANDIDATE_COMMIT,
             artifactIdentity: structuredClone(tamperedArtifactIdentity),
             url: "https://releases.example.com/v1",
@@ -525,6 +582,15 @@ test("partial task publication retries remaining tasks before publishing the ver
     ],
     artifactIdentity: ARTIFACT_IDENTITY,
     regressionEvidence: { passed: true, command: "node --test", collectedAt: NOW },
+    productionTargetPlan: {
+      schemaVersion: 1,
+      taskPlatforms: [
+        { taskId: "task-a", platforms: ["web"] },
+        { taskId: "task-b", platforms: ["web"] },
+      ],
+      platforms: { web: true, api: false, ios: false },
+      iosApps: [],
+    },
   });
   const adapter = {
     release: async () => webSubmission(),

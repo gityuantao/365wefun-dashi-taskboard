@@ -110,6 +110,23 @@ test("production release persistence binds exact checksum identity and accepts o
   await harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, external_request_id, app_store_app_id, bundle_id, marketing_version, build_number, processing_status, processing_id, review_status, review_submission_id, upload_id, review_id, release_status, release_id, live_status, live_id, live_marketing_version, live_build_number, live_membership_confirmed, sanitized_observed_evidence, sanitized_readback_evidence, sanitized_live_evidence, completed_at, started_at, created_at, updated_at) VALUES ('v1', 'candidate-1', 'checksum-1', 'ios', 'au', 1, 'live_readback', 'succeeded', 'request-1', '0000000001', 'online.365english.app', '1.2.3', '42', 'processed', 'processing-1', 'approved', 'review-submission-1', 'upload-1', 'review-1', 'released', 'release-1', 'live', 'live-1', '1.2.3', '42', 1, '{\"confirmed\":true}', '{\"sha\":\"candidate-1\"}', '{\"membership\":true}', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');");
 });
 
+test("production release attempt terminal timestamps and failure fingerprints are coherent", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const base = "version_id, candidate_commit, manifest_checksum, attempt, idempotency_key, status, started_at, completed_at, created_at, updated_at, failure_fingerprint";
+  for (const values of [
+    "'v-success-null', 'candidate', 'checksum', 1, 'key-success-null', 'succeeded', '2026-08-11T00:00:00.000Z', NULL, '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z', NULL",
+    "'v-success-failure', 'candidate', 'checksum', 1, 'key-success-failure', 'succeeded', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z', 'failure-sha'",
+    "'v-failed-null', 'candidate', 'checksum', 1, 'key-failed-null', 'failed', '2026-08-11T00:00:00.000Z', NULL, '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z', 'failure-sha'",
+    "'v-running-complete', 'candidate', 'checksum', 1, 'key-running-complete', 'running', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z', '2026-08-11T00:00:00.000Z', '2026-08-11T00:01:00.000Z', NULL",
+  ]) {
+    await assert.rejects(
+      () => harness.db.exec(`INSERT INTO production_release_attempts (${base}) VALUES (${values});`),
+      /CHECK constraint failed/,
+    );
+  }
+});
+
 test("production release persistence permits iOS test work before a build exists", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

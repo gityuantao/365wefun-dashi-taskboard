@@ -280,6 +280,8 @@ test("complete MVP loop preserves an image-only rejection through development an
       publishedDeployment = {
         confirmed: true,
         published: true,
+        status: "published",
+        authoritative: true,
         candidateCommit,
         artifactIdentity: structuredClone(artifactIdentity),
         url: "https://e365.example.com",
@@ -518,6 +520,12 @@ test("complete MVP loop preserves an image-only rejection through development an
       passed: true,
       command: "node --test test/orchestration/*.test.mjs",
       collectedAt: NOW,
+    },
+    productionTargetPlan: {
+      schemaVersion: 1,
+      taskPlatforms: [{ taskId: "task-e2e-1", platforms: ["web"] }],
+      platforms: { web: true, api: false, ios: false },
+      iosApps: [],
     },
   });
   assert.equal(frozen.status, "frozen");

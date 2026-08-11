@@ -51,9 +51,9 @@ test("web adapter preflights, uploads, switches entry, and verifies health", asy
   assert.ok(calls.some(([kind]) => kind === "health"));
   assert.deepEqual(fencedStages, [
     "stage:preflight", "before", "after",
-    "stage:upload", "before", "after",
-    "stage:switch", "before", "after",
-    "stage:health", "before", "after",
+    "stage:upload", "before", "after", "stage:upload",
+    "stage:switch", "before", "after", "stage:switch",
+    "stage:health", "before", "after", "stage:health",
   ]);
 });
 
@@ -116,6 +116,8 @@ test("web adapter reads Candidate identity from persisted deployment state", asy
       publishedState = {
         confirmed: true,
         published: true,
+        status: "published",
+        authoritative: true,
         candidateCommit,
         artifactIdentity: structuredClone(artifactIdentity),
         url: "https://e365.example.com",
@@ -159,6 +161,8 @@ test("web adapter never echoes requested Candidate over mismatched deployment st
       readback: async () => ({
         confirmed: true,
         published: true,
+        status: "published",
+        authoritative: true,
         candidateCommit: "2222222222222222222222222222222222222222",
         artifactIdentity: { digest: "sha256:other" },
         externalRequestId: "request-1",
@@ -174,4 +178,47 @@ test("web adapter never echoes requested Candidate over mismatched deployment st
     confirmPublishedCandidate({ adapter, manifest: MANIFEST }),
     /exact frozen Candidate/i,
   );
+});
+
+test("web adapter preserves the exact Web/API platform through every deployer call", async () => {
+  const seen = [];
+  let publication;
+  const adapter = createWebAdapter({
+    deployer: {
+      preflight: async ({ platform }) => { seen.push(["preflight", platform]); return { ok: true }; },
+      upload: async ({ platform }) => {
+        seen.push(["upload", platform]);
+        return { object: "api/object", externalRequestId: "api-request-1" };
+      },
+      switchEntry: async ({ platform }) => {
+        seen.push(["switch", platform]);
+        publication = {
+          confirmed: true, published: true, status: "published", authoritative: true,
+          candidateCommit: MANIFEST.candidateCommit,
+          artifactIdentity: MANIFEST.artifactIdentity,
+          externalRequestId: "api-request-1", productionReleaseId: "api-release-1",
+          healthStatus: "healthy", evidence: { platform: "api" },
+        };
+        return { url: "https://api.example.com", productionReleaseId: "api-release-1" };
+      },
+      healthCheck: async ({ platform }) => { seen.push(["health", platform]); return { ok: true }; },
+      readback: async ({ platform, readbackLocator, externalRequestId, idempotencyKey }) => {
+        seen.push(["readback", platform, readbackLocator.locator, externalRequestId, idempotencyKey]);
+        return publication;
+      },
+    },
+  });
+  const deployment = await adapter.release({ manifest: MANIFEST, platform: "api" });
+  await adapter.readback({
+    manifest: MANIFEST,
+    platform: "api",
+    deployment,
+    readbackLocator: { locator: "persisted-api" },
+    externalRequestId: "api-request-1",
+    idempotencyKey: "api-idempotency-1",
+  });
+  assert.deepEqual(seen, [
+    ["preflight", "api"], ["upload", "api"], ["switch", "api"], ["health", "api"],
+    ["readback", "api", "persisted-api", "api-request-1", "api-idempotency-1"],
+  ]);
 });

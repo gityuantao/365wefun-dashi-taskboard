@@ -152,6 +152,44 @@ test("coordinator preserves PRs and refs when publication is not confirmed", asy
   assert.equal(result.cleanupResult, undefined);
 });
 
+test("iOS-only authoritative publication allows outer cleanup", async () => {
+  const cleaned = [];
+  const manifest = {
+    versionId: "version-1",
+    versionBranch: "version/v1.2.3",
+    candidateCommit: "1111111111111111111111111111111111111111",
+    taskIds: ["task-a"],
+    taskPrHeads: [{ taskId: "task-a", branch: "task/task-a" }],
+  };
+  const result = await coordinateVersionRelease({
+    versionId: manifest.versionId,
+    versionBranch: manifest.versionBranch,
+    taskIds: manifest.taskIds,
+    existingManifest: manifest,
+    now: NOW,
+    verifyCandidate: async () => ({ verified: true }),
+    publishCandidate: async () => ({
+      status: "succeeded",
+      publication: {
+        kind: "ios_aggregate",
+        status: "live",
+        confirmed: true,
+        published: true,
+        candidateCommit: manifest.candidateCommit,
+        cleanupToken: "ios:manifest-checksum:live-id",
+      },
+    }),
+    cleanupTask: async ({ taskId }) => {
+      cleaned.push(taskId);
+      return { taskId };
+    },
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.publication.kind, "ios_aggregate");
+  assert.equal(result.cleanupResult.status, "completed");
+  assert.deepEqual(cleaned, ["task-a"]);
+});
+
 test("coordinator stops before freezing or cleanup when task integration fails", async () => {
   const calls = [];
   const result = await coordinateVersionRelease({
@@ -340,6 +378,18 @@ test("release snapshot wiring passes frozen platform and App identity into the p
     checksum: "manifest-checksum-v1",
     taskIds: ["task-a"],
     taskPrHeads: [{ taskId: "task-a", branch: "task/task-a" }],
+    productionTargetPlan: {
+      schemaVersion: 1,
+      taskPlatforms: [{ taskId: "task-a", platforms: ["web", "ios"] }],
+      platforms: { web: true, api: false, ios: true },
+      iosApps: [{
+        id: "au", name: "Overseas", appStoreAppId: "0000000001", scheme: "E365AU",
+        bundleId: "online.365english.app", marketingVersion: "1.2.3",
+        testScheme: "E365AUTests", testTarget: "E365AUTests",
+        buildNumberSource: "app-store-connect", releaseMode: "automatic",
+        reviewConfigurationRef: "app-store-review/au", testFlightGroup: "Internal Testing",
+      }],
+    },
   };
   const iosAdapter = { release() {}, readback() {} };
   const releaseLease = { holder: "release-worker-1", durationMs: 60_000 };
@@ -386,9 +436,9 @@ test("release snapshot wiring passes frozen platform and App identity into the p
   });
 
   assert.equal(result.status, "waiting_external");
-  assert.deepEqual(received.platforms, [{ id: "task-a", platforms: ["web", "ios"] }]);
-  assert.equal(received.apps[0].id, "au");
-  assert.equal(received.apps[0].marketingVersion, "1.2.3");
+  assert.equal(received.platforms, undefined);
+  assert.equal(received.apps, undefined);
+  assert.equal(received.targetPlanValidated, true);
   assert.equal(received.iosAdapter, iosAdapter);
   assert.equal(received.lease, releaseLease);
 });
@@ -399,6 +449,9 @@ test("production coordinator wiring blocks stale local and advanced remote PR he
     loadManifest: async () => null,
     loadAggregate: async () => ({ state: "active", version: 1 }),
     checkVersionGate: async () => ({ pass: true, reasons: [], taskIds: ["task-a"] }),
+    loadAllTaskSnapshots: async () => [{
+      id: "task-a", targetVersion: "version-1", platforms: ["web"],
+    }],
     loadTaskPullRequest: async () => "https://github.com/owner/repo/pull/42",
     freezeManifest: async () => sideEffects.push("freeze"),
     handleConfirmRelease: async () => sideEffects.push("deploy"),
@@ -451,4 +504,111 @@ test("production coordinator wiring blocks stale local and advanced remote PR he
   assert.equal(remoteAdvanced.status, "failed");
   assert.equal(remoteAdvanced.stage, "candidate_persistence");
   assert.deepEqual(sideEffects, []);
+});
+
+test("unsupported production scope is rejected before every mutating release effect", async () => {
+  const mutations = [];
+  const result = await coordinateReleaseSnapshot({
+    snapshot: { id: "version-1", name: "version-1", status: "releasing" },
+    now: NOW,
+    db: {},
+    adapter: {
+      collectRegressionEvidence: async () => mutations.push("regression"),
+      identifyArtifact: async () => mutations.push("artifact"),
+    },
+    runtime: { repoPath: "/repo", worktreesRoot: "/worktrees", iosApps: [] },
+    repository: "owner/repo",
+    releaseGitOps: {
+      integrateTaskPr: async () => mutations.push("integrate"),
+      persistCandidate: async () => mutations.push("persist"),
+      verifyCandidate: async () => mutations.push("verify"),
+    },
+    services: {
+      loadManifest: async () => null,
+      loadAggregate: async () => ({ state: "active", version: 1 }),
+      loadAllTaskSnapshots: async () => [{
+        id: "task-a", targetVersion: "version-1", platforms: ["visionos"],
+      }],
+      checkVersionGate: async () => ({ pass: true, reasons: [], taskIds: ["task-a"] }),
+      freezeManifest: async () => mutations.push("freeze"),
+      handleConfirmRelease: async () => mutations.push("publish"),
+    },
+  });
+
+  assert.equal(result.status, "rejected");
+  assert.match(result.error, /visionos|support/i);
+  assert.deepEqual(mutations, []);
+});
+
+test("missing production scope is rejected before every mutating release effect", async () => {
+  const mutations = [];
+  const result = await coordinateReleaseSnapshot({
+    snapshot: { id: "version-1", name: "version-1", status: "releasing" },
+    now: NOW,
+    db: {},
+    adapter: {
+      collectRegressionEvidence: async () => mutations.push("regression"),
+      identifyArtifact: async () => mutations.push("artifact"),
+    },
+    runtime: { repoPath: "/repo", worktreesRoot: "/worktrees" },
+    repository: "owner/repo",
+    releaseGitOps: { integrateTaskPr: async () => mutations.push("integrate") },
+    services: {
+      loadManifest: async () => null,
+      loadAggregate: async () => ({ state: "active", version: 1 }),
+      loadAllTaskSnapshots: async () => [],
+      checkVersionGate: async () => ({ pass: true, reasons: [], taskIds: [] }),
+    },
+  });
+  assert.equal(result.status, "rejected");
+  assert.match(result.error, /snapshot|scope|non-empty/i);
+  assert.deepEqual(mutations, []);
+});
+
+test("retry rejects frozen production target plan drift before verification or publication", async () => {
+  const mutations = [];
+  const manifest = {
+    versionId: "version-1",
+    versionBranch: "version/v1.2.3",
+    candidateCommit: "1111111111111111111111111111111111111111",
+    checksum: "manifest-checksum-v1",
+    taskIds: ["task-a"],
+    taskPrHeads: [{ taskId: "task-a", branch: "task/task-a" }],
+    productionTargetPlan: {
+      schemaVersion: 1,
+      taskPlatforms: [{ taskId: "task-a", platforms: ["ios"] }],
+      platforms: { web: false, api: false, ios: true },
+      iosApps: [{
+        id: "au", name: "Overseas", scheme: "E365AU", testScheme: "E365AUTests",
+        testTarget: "E365AUTests", bundleId: "online.365english.app",
+        testFlightGroup: "Internal Testing", buildNumberSource: "app-store-connect",
+        appStoreAppId: "0000000001", releaseMode: "automatic",
+        reviewConfigurationRef: "app-store-review/au", marketingVersion: "1.2.3",
+      }],
+    },
+  };
+  const result = await coordinateReleaseSnapshot({
+    snapshot: { id: "version-1", name: "v1.2.3", status: "releasing" },
+    now: NOW,
+    db: {},
+    adapter: {},
+    iosAdapter: {},
+    apps: [{
+      ...manifest.productionTargetPlan.iosApps[0],
+      enabled: false,
+    }],
+    runtime: { repoPath: "/repo", worktreesRoot: "/worktrees" },
+    repository: "owner/repo",
+    releaseGitOps: { verifyCandidate: async () => mutations.push("verify") },
+    services: {
+      loadManifest: async () => manifest,
+      loadAggregate: async () => ({ state: "releasing", version: 2 }),
+      loadAllTaskSnapshots: async () => [{ id: "task-a", platforms: ["ios"] }],
+      handleConfirmRelease: async () => mutations.push("publish"),
+    },
+  });
+
+  assert.equal(result.status, "rejected");
+  assert.match(result.error, /target plan|drift|registry/i);
+  assert.deepEqual(mutations, []);
 });

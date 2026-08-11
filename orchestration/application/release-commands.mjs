@@ -8,6 +8,12 @@ import {
   validateFrozenManifest,
 } from "../release/version-aggregator.mjs";
 import { assertProductionPlatformsSupported } from "../release/platform-gate.mjs";
+import {
+  assertProductionTargetPlanMatches,
+  buildProductionTargetPlan,
+  iosAppsFromProductionTargetPlan,
+  taskSnapshotsFromProductionTargetPlan,
+} from "../release/production-target-plan.mjs";
 import { dispatchCommand } from "./dispatch-command.mjs";
 import { executeProductionRelease } from "./production-release-coordinator.mjs";
 import { stateChangeText } from "../clickup/state-comments.mjs";
@@ -123,6 +129,10 @@ export async function confirmPublishedCandidate({ adapter, manifest, deployment 
   if (
     publication?.confirmed !== true
     || publication?.published !== true
+    || publication?.authoritative !== true
+    || !["published", "live"].includes(publication?.status)
+    || publication?.healthStatus !== "healthy"
+    || publication?.readbackStatus !== "confirmed"
     || publication?.candidateCommit !== manifest.candidateCommit
     || !isDeepStrictEqual(publication?.artifactIdentity, manifest.artifactIdentity)
   ) {
@@ -140,8 +150,9 @@ export async function handleConfirmRelease({
   adapter,
   webAdapter = adapter,
   iosAdapter = null,
-  apps = [],
+  apps = null,
   platforms = null,
+  targetPlanValidated = false,
   lease = null,
   client,
   dispatch = dispatchCommand,
@@ -162,19 +173,27 @@ export async function handleConfirmRelease({
       error: `version frozen manifest is incomplete: ${manifestReasons.join("; ")}`,
     };
   }
-  const taskSnapshots = platforms ?? (await loadAllTaskSnapshots(db)).filter(
-    (snapshot) => manifest.taskIds.includes(snapshot.id),
-  );
-  const platformTaskIds = new Set(taskSnapshots.map((snapshot) => snapshot?.id));
-  if (
-    platformTaskIds.size !== manifest.taskIds.length
-    || manifest.taskIds.some((taskId) => !platformTaskIds.has(taskId))
-  ) {
-    return { status: "rejected", error: "frozen manifest task platform scope is incomplete" };
+  const frozenTaskSnapshots = taskSnapshotsFromProductionTargetPlan(manifest.productionTargetPlan);
+  const frozenApps = iosAppsFromProductionTargetPlan(manifest.productionTargetPlan);
+  if (!targetPlanValidated) {
+    const currentTaskSnapshots = platforms ?? (await loadAllTaskSnapshots(db)).filter(
+      (snapshot) => manifest.taskIds.includes(snapshot.id),
+    );
+    try {
+      const currentPlan = buildProductionTargetPlan({
+        taskSnapshots: currentTaskSnapshots,
+        taskIds: manifest.taskIds,
+        apps: apps ?? [],
+        marketingVersion: frozenApps[0]?.marketingVersion,
+      });
+      assertProductionTargetPlanMatches(manifest.productionTargetPlan, currentPlan);
+    } catch (error) {
+      return { status: "rejected", error: error.message };
+    }
   }
   let resolvedPlatforms;
   try {
-    resolvedPlatforms = assertProductionPlatformsSupported(taskSnapshots);
+    resolvedPlatforms = assertProductionPlatformsSupported(frozenTaskSnapshots);
   } catch (error) {
     return { status: "rejected", error: error.message };
   }
@@ -240,9 +259,15 @@ export async function handleConfirmRelease({
       return released;
     },
     readback: async (options) => {
-      const persistedLocator = options.deployment?.observedEvidence ?? options.deployment;
-      const deployment = deployments.get(options.platform) ?? persistedLocator;
-      const publication = await webAdapter.readback({ ...options, deployment });
+      const persistedLocator = options.readbackLocator
+        ?? options.deployment?.observedEvidence
+        ?? options.deployment;
+      const readbackLocator = deployments.get(options.platform) ?? persistedLocator;
+      const publication = await webAdapter.readback({
+        ...options,
+        deployment: options.deployment,
+        readbackLocator,
+      });
       return publication;
     },
   } : null;
@@ -256,8 +281,8 @@ export async function handleConfirmRelease({
     productionResult = await executeRelease({
       db,
       manifest,
-      platforms: taskSnapshots,
-      apps,
+      platforms: frozenTaskSnapshots,
+      apps: frozenApps,
       webAdapter: persistentWebAdapter,
       iosAdapter,
       lease: activeLease,
@@ -316,19 +341,10 @@ export async function handleConfirmRelease({
         }
       }
     }
-    const publishedWeb = productionResult.targets.find(
-      (target) => target.platform === "web" || target.platform === "api",
-    );
     return {
       status: "succeeded",
       result: productionResult,
-      publication: publishedWeb ? {
-        confirmed: true,
-        published: true,
-        candidateCommit: publishedWeb.productionReadbackSha,
-        artifactIdentity: publishedWeb.artifactIdentity,
-        productionReleaseId: publishedWeb.productionReleaseId,
-      } : null,
+      publication: productionResult.publication,
     };
   } catch (error) {
     const failed = await loadAggregate(db, "version", versionId);

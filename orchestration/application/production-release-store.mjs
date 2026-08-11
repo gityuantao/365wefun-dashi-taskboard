@@ -363,7 +363,10 @@ export async function listReusableProductionTargetSuccesses({ db, manifest }) {
        AND status = 'succeeded'
        AND reconciliation_status IN ('not_required', 'readback_confirmed')
        AND ((platform IN ('web', 'api') AND stage = 'readback')
-         OR (platform = 'ios' AND stage = 'live_readback'))
+         OR (platform = 'ios' AND stage = 'live_readback'
+           AND json_extract(sanitized_observed_evidence, '$.authoritative') = 1
+           AND (live_membership_confirmed = 1
+             OR json_extract(sanitized_live_evidence, '$.membershipConfirmed') = 1)))
      ORDER BY platform, app_id, attempt DESC`,
   ).bind(manifest.versionId, manifest.candidateCommit, manifest.checksum).all();
   const exact = new Map();
@@ -396,6 +399,22 @@ export async function listProductionTargetKeys({ db, manifest }) {
      ORDER BY platform, app_id`,
   ).bind(manifest.versionId, manifest.candidateCommit, manifest.checksum).all();
   return new Set(rows.results.map((row) => `${row.platform}:${row.app_id}`));
+}
+
+export async function countProductionTargetSafeReposts({ db, manifest, platform, appId = "" }) {
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS count FROM production_release_targets
+     WHERE version_id = ? AND candidate_commit = ? AND manifest_checksum = ?
+       AND platform = ? AND app_id = ?
+       AND json_extract(sanitized_observed_evidence, '$.safeRepostAuthorized') = 1`,
+  ).bind(
+    manifest.versionId,
+    manifest.candidateCommit,
+    manifest.checksum,
+    platform,
+    appId,
+  ).first();
+  return Number(row?.count ?? 0);
 }
 
 export async function initializeProductionTargets({

@@ -10,7 +10,9 @@ import {
   checkVersionGate,
   freezeManifest,
   loadManifest,
+  validateFrozenManifest,
 } from "../../orchestration/release/version-aggregator.mjs";
+import { assertProductionTargetPlanMatches } from "../../orchestration/release/production-target-plan.mjs";
 
 const NOW = "2026-08-04T00:06:00.000Z";
 const CANDIDATE = {
@@ -41,6 +43,15 @@ const CANDIDATE = {
     passed: true,
     command: "node --test test/orchestration/*.test.mjs",
     collectedAt: NOW,
+  },
+  productionTargetPlan: {
+    schemaVersion: 1,
+    taskPlatforms: [
+      { taskId: "task-a", platforms: ["web"] },
+      { taskId: "task-b", platforms: ["web"] },
+    ],
+    platforms: { web: true, api: false, ios: false },
+    iosApps: [],
   },
 };
 
@@ -151,7 +162,11 @@ test("freezeManifest records the exact immutable Candidate without advancing ver
   assert.deepEqual(result.manifest.taskPrHeads, CANDIDATE.taskPrHeads);
   assert.deepEqual(result.manifest.artifactIdentity, CANDIDATE.artifactIdentity);
   assert.deepEqual(result.manifest.regressionEvidence, CANDIDATE.regressionEvidence);
+  assert.deepEqual(result.manifest.productionTargetPlan, CANDIDATE.productionTargetPlan);
   assert.equal(typeof result.manifest.checksum, "string");
+  const tamperedPlan = structuredClone(result.manifest);
+  tamperedPlan.productionTargetPlan.platforms.api = true;
+  assert.ok(validateFrozenManifest(tamperedPlan).some((reason) => /checksum/i.test(reason)));
   const aggregate = await loadAggregate(harness.db, "version", "version-1");
   assert.equal(aggregate.state, "active");
   const stored = await loadManifest({ db: harness.db, versionId: "version-1" });
@@ -197,4 +212,31 @@ test("freezeManifest refuses when the gate fails", async (t) => {
   await seedActiveVersion(harness);
   const result = await freezeManifest({ db: harness.db, versionId: "version-1", now: NOW });
   assert.equal(result.status, "rejected");
+});
+
+test("frozen target plan rejects additions, removals, reordering, and tuple drift", () => {
+  const plan = {
+    schemaVersion: 1,
+    taskPlatforms: [{ taskId: "task-a", platforms: ["web", "ios"] }],
+    platforms: { web: true, api: false, ios: true },
+    iosApps: [
+      { id: "au", appStoreAppId: "1" },
+      { id: "cn", appStoreAppId: "2" },
+    ],
+  };
+  const variants = [
+    { ...structuredClone(plan), iosApps: [plan.iosApps[0]] },
+    { ...structuredClone(plan), iosApps: [...plan.iosApps, { id: "nz", appStoreAppId: "3" }] },
+    { ...structuredClone(plan), iosApps: [...plan.iosApps].reverse() },
+    {
+      ...structuredClone(plan),
+      iosApps: [{ ...plan.iosApps[0], appStoreAppId: "changed" }, plan.iosApps[1]],
+    },
+  ];
+  for (const variant of variants) {
+    assert.throws(
+      () => assertProductionTargetPlanMatches(plan, variant),
+      /target plan.*drift/i,
+    );
+  }
 });

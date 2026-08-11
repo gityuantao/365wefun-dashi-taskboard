@@ -18,11 +18,11 @@ export function createWebAdapter({ deployer }) {
 
   return {
     async release(options) {
-      const { manifest } = options;
+      const { manifest, platform } = options;
       if (!deployer) {
         throw new Error("web deployer not configured");
       }
-      const preflight = await stage(options, "preflight", () => deployer.preflight?.({ manifest }));
+      const preflight = await stage(options, "preflight", () => deployer.preflight?.({ manifest, platform }));
       if (preflight && preflight.ok === false) {
         throw preflightRejected();
       }
@@ -33,18 +33,46 @@ export function createWebAdapter({ deployer }) {
         candidateCommit: manifest.candidateCommit,
         artifactIdentity: manifest.artifactIdentity,
         idempotencyKey: options.idempotencyKey,
+        platform,
       }));
+      await options.recordStage?.("upload", {
+        externalRequestId: upload?.externalRequestId,
+        artifactIdentity: manifest.artifactIdentity,
+        observedEvidence: {
+          platform,
+          object: upload?.object ?? null,
+          etag: upload?.etag ?? null,
+          externalRequestId: upload?.externalRequestId ?? null,
+        },
+      });
       const entry = await stage(options, "switch", () => deployer.switchEntry({
         versionId: manifest.versionId,
         candidateCommit: manifest.candidateCommit,
         artifactIdentity: manifest.artifactIdentity,
         upload,
         idempotencyKey: options.idempotencyKey,
+        platform,
       }));
-      const health = await stage(options, "health", () => deployer.healthCheck({ url: entry.url }));
+      await options.recordStage?.("switch", {
+        externalRequestId: upload?.externalRequestId,
+        productionReleaseId: entry?.productionReleaseId,
+        observedEvidence: {
+          platform,
+          url: entry?.url ?? null,
+          productionReleaseId: entry?.productionReleaseId ?? null,
+        },
+      });
+      const health = await stage(options, "health", () => deployer.healthCheck({
+        url: entry.url,
+        platform,
+      }));
       if (!health.ok) {
         throw new Error(`health check failed with status ${health.status}`);
       }
+      await options.recordStage?.("health", {
+        healthStatus: "healthy",
+        observedEvidence: { platform, healthStatus: "healthy" },
+      });
       if (typeof upload?.externalRequestId !== "string" || upload.externalRequestId.trim() === "") {
         throw new Error("web deployer upload omitted externalRequestId");
       }
@@ -73,7 +101,7 @@ export function createWebAdapter({ deployer }) {
       };
     },
     async readback(options) {
-      const { manifest, deployment } = options;
+      const { manifest, deployment, readbackLocator, platform } = options;
       if (!deployer || typeof deployer.readback !== "function") {
         throw new Error("web deployer readback not configured");
       }
@@ -81,6 +109,10 @@ export function createWebAdapter({ deployer }) {
         versionId: manifest.versionId,
         url: deployment?.url ?? null,
         productionReleaseId: deployment?.productionReleaseId ?? null,
+        readbackLocator: readbackLocator ?? deployment ?? null,
+        externalRequestId: options.externalRequestId ?? deployment?.externalRequestId ?? null,
+        idempotencyKey: options.idempotencyKey,
+        platform,
       }));
       const artifactIdentity = observed?.artifactIdentity;
       const hasArtifactIdentity = typeof artifactIdentity === "string"
@@ -92,6 +124,8 @@ export function createWebAdapter({ deployer }) {
       if (
         observed?.confirmed !== true
         || observed?.published !== true
+        || !["published", "live"].includes(observed?.status)
+        || observed?.authoritative !== true
         || typeof observed?.candidateCommit !== "string"
         || observed.candidateCommit.trim() === ""
         || !hasArtifactIdentity
@@ -107,6 +141,8 @@ export function createWebAdapter({ deployer }) {
       return {
         confirmed: true,
         published: true,
+        status: observed.status,
+        authoritative: true,
         candidateCommit: observed.candidateCommit,
         artifactIdentity,
         externalRequestId: observed.externalRequestId,

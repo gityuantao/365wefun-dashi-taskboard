@@ -30,7 +30,7 @@ const PRODUCTION_RELEASE_SCHEMA_FINGERPRINTS = new Map([
   ["production_release_attempts", {
     type: "table",
     tableName: "production_release_attempts",
-    sha256: "76c56dbe8b658d49cd53a868405df44b5d344bcb773f89d046244d1fe54e411e",
+    sha256: "14e3fc766cbc40fd2650a3e3c1025f5fa2ce4fed4bf1066e94e2c523c7370109",
   }],
   ["production_release_targets", {
     type: "table",

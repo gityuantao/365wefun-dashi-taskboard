@@ -1,5 +1,6 @@
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { loadLastConfirmed } from "../clickup/snapshot.mjs";
+import { validateProductionTargetPlan } from "./production-target-plan.mjs";
 
 export async function loadAllTaskSnapshots(db) {
   const rows = await db
@@ -103,6 +104,13 @@ export function validateFrozenManifest(manifest) {
   if (!manifest.regressionEvidence || manifest.regressionEvidence.passed !== true) {
     reasons.push("passing regression evidence is missing");
   }
+  reasons.push(...validateProductionTargetPlan(manifest.productionTargetPlan, taskIds));
+  if (nonEmptyString(manifest.checksum)) {
+    const { checksum: storedChecksum, ...withoutChecksum } = manifest;
+    if (storedChecksum !== checksum(withoutChecksum)) {
+      reasons.push("Manifest checksum does not match its frozen contents");
+    }
+  }
   return reasons;
 }
 
@@ -116,6 +124,7 @@ export async function freezeManifest({
   taskPrHeads,
   artifactIdentity,
   regressionEvidence,
+  productionTargetPlan,
 }) {
   const existing = await loadManifest({ db, versionId });
   if (existing) {
@@ -134,6 +143,7 @@ export async function freezeManifest({
     taskPrHeads,
     artifactIdentity,
     regressionEvidence,
+    productionTargetPlan,
     createdAt: now,
   };
   const reasons = validateFrozenManifest(manifestWithoutChecksum);

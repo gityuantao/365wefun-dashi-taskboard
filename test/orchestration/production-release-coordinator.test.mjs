@@ -62,8 +62,10 @@ function webReleaseEvidence() {
 
 function webLiveEvidence() {
   return {
-    status: "completed",
     confirmed: true,
+    published: true,
+    status: "published",
+    authoritative: true,
     candidateCommit: CANDIDATE_COMMIT,
     artifactIdentity: { digest: "sha256:artifact-v1" },
     externalRequestId: "web-request-1",
@@ -76,7 +78,7 @@ function webLiveEvidence() {
 }
 
 function iosSubmission(app, attempt = 1) {
-  return {
+  const submission = {
     externalRequestId: `${app.id}-request-${attempt}`,
     buildNumber: String(100 + attempt),
     uploadId: `${app.id}-upload-${attempt}`,
@@ -88,11 +90,37 @@ function iosSubmission(app, attempt = 1) {
     liveStatus: "not_live",
     observedEvidence: { appId: app.id, build: String(100 + attempt) },
   };
+  return {
+    ...submission,
+    lineage: {
+      externalRequestId: submission.externalRequestId,
+      buildNumber: submission.buildNumber,
+      uploadId: submission.uploadId,
+      processingId: submission.processingId,
+      reviewSubmissionId: submission.reviewSubmissionId,
+    },
+  };
+}
+
+async function stagedIosSubmission({ app, recordStage, attempt = 1 }) {
+  const buildNumber = String(100 + attempt);
+  await recordStage("test");
+  await recordStage("archive");
+  await recordStage("upload", { buildNumber, uploadId: `${app.id}-upload-${attempt}` });
+  await recordStage("processing", {
+    buildNumber, processingStatus: "processed", processingId: `${app.id}-processing-${attempt}`,
+  });
+  await recordStage("review_submit", {
+    buildNumber, reviewStatus: "submitted", reviewSubmissionId: `${app.id}-submission-${attempt}`,
+  });
+  await recordStage("review_wait", { buildNumber });
+  return iosSubmission(app, attempt);
 }
 
 function iosLiveEvidence(app, attempt = 1) {
-  return {
+  const live = {
     status: "completed",
+    authoritative: true,
     externalRequestId: `${app.id}-request-${attempt}`,
     buildNumber: String(100 + attempt),
     uploadId: `${app.id}-upload-${attempt}`,
@@ -109,7 +137,20 @@ function iosLiveEvidence(app, attempt = 1) {
     liveBuildNumber: String(100 + attempt),
     liveMembershipConfirmed: true,
     observedEvidence: { appId: app.id, build: String(100 + attempt) },
-    liveEvidence: { storefront: "live", appId: app.id },
+    liveEvidence: {
+      membershipConfirmed: true,
+      appStoreAppId: app.appStoreAppId,
+      marketingVersion: app.marketingVersion,
+      buildNumber: String(100 + attempt),
+      liveId: `${app.id}-live-${attempt}`,
+    },
+  };
+  return {
+    ...live,
+    lineage: Object.fromEntries([
+      "externalRequestId", "buildNumber", "uploadId", "processingId", "reviewSubmissionId",
+      "reviewId", "releaseId", "liveId",
+    ].map((field) => [field, live[field]])),
   };
 }
 
@@ -148,16 +189,20 @@ test("Web and enabled iOS Apps run sequentially while an external review keeps t
     },
   };
   const iosAdapter = {
-    release: async ({ manifest, app }) => {
+    release: async ({ manifest, app, recordStage }) => {
       calls.push(`${app.id}:release:${manifest.checksum}:${manifest.candidateCommit}`);
-      return iosSubmission(app);
+      return stagedIosSubmission({ app, recordStage });
     },
-    readback: async ({ manifest, app }) => {
+    readback: async ({ manifest, app, recordStage }) => {
       calls.push(`${app.id}:readback:${manifest.checksum}:${manifest.candidateCommit}`);
+      await recordStage("live_readback", { buildNumber: "101" });
       if (app.id === "au" && auWaiting) {
         return {
           status: "waiting_external",
+          authoritative: true,
+          submissionExists: true,
           reviewStatus: "submitted",
+          lineage: iosSubmission(app).lineage,
           observedEvidence: { appId: app.id, review: "submitted" },
         };
       }
@@ -172,7 +217,7 @@ test("Web and enabled iOS Apps run sequentially while an external review keeps t
     apps: IOS_APPS,
     webAdapter,
     iosAdapter,
-    lease: releaseLease(),
+    lease: { ...releaseLease(), maxReconciliationAttempts: 4 },
     now: NOW,
   });
 
@@ -195,7 +240,7 @@ test("Web and enabled iOS Apps run sequentially while an external review keeps t
     apps: IOS_APPS,
     webAdapter,
     iosAdapter,
-    lease: releaseLease("release-worker-2", LATER),
+    lease: { ...releaseLease("release-worker-2", LATER), maxReconciliationAttempts: 4 },
     now: LATER,
   });
 
@@ -218,7 +263,7 @@ test("Web and enabled iOS Apps run sequentially while an external review keeps t
       [platform, app_id, attempt, stage, status]
     )),
     [
-      ["ios", "au", 1, "review_wait", "running"],
+      ["ios", "au", 1, "live_readback", "running"],
       ["ios", "au", 2, "live_readback", "succeeded"],
       ["ios", "cn", 1, "live_readback", "succeeded"],
       ["web", "", 1, "readback", "succeeded"],
@@ -239,7 +284,7 @@ test("a retry reuses authoritative terminal successes and retries only the faile
     readback: async () => webLiveEvidence(),
   };
   const iosAdapter = {
-    release: async ({ app }) => {
+    release: async ({ app, recordStage }) => {
       releases[app.id] += 1;
       if (app.id === "cn" && rejectCn) {
         const error = new Error("App Store validation rejected the binary");
@@ -247,9 +292,12 @@ test("a retry reuses authoritative terminal successes and retries only the faile
         error.failureClassification = "product_rework";
         throw error;
       }
-      return iosSubmission(app, releases[app.id]);
+      return stagedIosSubmission({ app, recordStage, attempt: releases[app.id] });
     },
-    readback: async ({ app }) => iosLiveEvidence(app, releases[app.id]),
+    readback: async ({ app, recordStage }) => {
+      await recordStage("live_readback", { buildNumber: String(100 + releases[app.id]) });
+      return iosLiveEvidence(app, releases[app.id]);
+    },
   };
   const common = {
     db: harness.db,
@@ -397,11 +445,13 @@ test("iOS recovery stays before upload while an unknown outcome has no build num
     apps: [IOS_APPS[0]],
     webAdapter: null,
     iosAdapter: {
-      release: async () => {
+      release: async ({ recordStage }) => {
         releases += 1;
+        await recordStage("test");
         throw new Error("connection reset before build reservation response");
       },
-      readback: async () => {
+      readback: async ({ recordStage }) => {
+        await recordStage("test");
         if (returnWaitingEvidence) {
           return { status: "waiting_external", observedEvidence: { lookup: "no-build-yet" } };
         }
@@ -412,18 +462,18 @@ test("iOS recovery stays before upload while an unknown outcome has no build num
 
   assert.equal((await executeProductionRelease({
     ...common,
-    lease: releaseLease(),
+    lease: { ...releaseLease(), maxReconciliationAttempts: 4 },
     now: NOW,
   })).status, "waiting_external");
   assert.equal((await executeProductionRelease({
     ...common,
-    lease: releaseLease("release-worker-2", LATER),
+    lease: { ...releaseLease("release-worker-2", LATER), maxReconciliationAttempts: 4 },
     now: LATER,
   })).status, "waiting_external");
   returnWaitingEvidence = true;
   assert.equal((await executeProductionRelease({
     ...common,
-    lease: releaseLease("release-worker-3", LATER),
+    lease: { ...releaseLease("release-worker-3", LATER), maxReconciliationAttempts: 4 },
     now: LATER,
   })).status, "waiting_external");
   assert.equal(releases, 1);
@@ -496,4 +546,276 @@ test("unsupported task platforms fail closed before persistence or adapter side 
   );
   assert.deepEqual(calls, []);
   assert.deepEqual((await releaseRows(harness.db)).results, []);
+});
+
+test("Web terminal success rejects published contradictions", async (t) => {
+  for (const contradiction of [
+    { published: false, status: "published" },
+    { published: true, status: "failed" },
+  ]) {
+    await t.test(JSON.stringify(contradiction), async (t) => {
+      const harness = await createCloudWorkerHarness();
+      t.after(() => harness.dispose());
+      const result = await executeProductionRelease({
+        db: harness.db,
+        manifest: MANIFEST,
+        platforms: [{ id: "task-a", platforms: ["web"] }],
+        apps: [],
+        webAdapter: {
+          release: async () => webReleaseEvidence(),
+          readback: async () => ({ ...webLiveEvidence(), ...contradiction }),
+        },
+        iosAdapter: null,
+        lease: releaseLease(),
+        now: NOW,
+      });
+      assert.equal(result.status, "failed");
+    });
+  }
+});
+
+test("iOS stage evidence persists build identity before upload and follows the legal lifecycle", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const stages = [];
+  const record = async (recordStage, stage, evidence) => {
+    await recordStage(stage, evidence);
+    const latest = (await targetRows(harness.db)).results.at(-1);
+    stages.push([latest.stage, latest.build_number]);
+  };
+  const app = IOS_APPS[0];
+  const result = await executeProductionRelease({
+    db: harness.db,
+    manifest: MANIFEST,
+    platforms: [{ id: "task-a", platforms: ["ios"] }],
+    apps: [app],
+    webAdapter: null,
+    iosAdapter: {
+      release: async ({ recordStage }) => {
+        await record(recordStage, "test", {});
+        await record(recordStage, "archive", {});
+        await record(recordStage, "upload", { buildNumber: "101", uploadId: "au-upload-1" });
+        await record(recordStage, "processing", {
+          buildNumber: "101", processingStatus: "processed", processingId: "au-processing-1",
+        });
+        await record(recordStage, "review_submit", {
+          buildNumber: "101", reviewStatus: "submitted", reviewSubmissionId: "au-submission-1",
+        });
+        await record(recordStage, "review_wait", { buildNumber: "101" });
+        return iosSubmission(app);
+      },
+      readback: async ({ recordStage }) => {
+        await record(recordStage, "release", { buildNumber: "101" });
+        await record(recordStage, "live_readback", { buildNumber: "101" });
+        return iosLiveEvidence(app);
+      },
+    },
+    lease: releaseLease(),
+    now: NOW,
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.publication.kind, "ios_aggregate");
+  assert.equal(result.publication.candidateCommit, CANDIDATE_COMMIT);
+  assert.match(result.publication.cleanupToken, /^ios:manifest-checksum-v1:/);
+  assert.deepEqual(stages, [
+    ["test", null], ["archive", null], ["upload", "101"], ["processing", "101"],
+    ["review_submit", "101"], ["review_wait", "101"], ["release", "101"],
+    ["live_readback", "101"],
+  ]);
+});
+
+test("authoritative absence allows one bounded safe repost after unknown outcome", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const calls = [];
+  let releaseAttempt = 0;
+  let readbackAttempt = 0;
+  const common = {
+    db: harness.db,
+    manifest: MANIFEST,
+    platforms: [{ id: "task-a", platforms: ["web"] }],
+    apps: [],
+    webAdapter: {
+      release: async () => {
+        calls.push("release");
+        releaseAttempt += 1;
+        if (releaseAttempt === 1) throw new Error("connection reset");
+        return webReleaseEvidence();
+      },
+      readback: async ({ externalRequestId, idempotencyKey }) => {
+        calls.push(`readback:${externalRequestId ?? "none"}:${idempotencyKey}`);
+        readbackAttempt += 1;
+        return readbackAttempt === 1
+          ? { status: "absent", authoritative: true, evidence: { lookup: "not-found" } }
+          : webLiveEvidence();
+      },
+    },
+    iosAdapter: null,
+  };
+  assert.equal((await executeProductionRelease({
+    ...common, lease: releaseLease(), now: NOW,
+  })).status, "waiting_external");
+  assert.equal((await executeProductionRelease({
+    ...common, lease: { ...releaseLease("release-worker-2", LATER), maxSafeReposts: 1 }, now: LATER,
+  })).status, "completed");
+  assert.equal(calls.filter((call) => call === "release").length, 2);
+  assert.match(calls[1], /readback:none:version-1:manifest-checksum-v1:web::1/);
+});
+
+test("returned unknown readbacks consume the reconciliation budget", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const common = {
+    db: harness.db,
+    manifest: MANIFEST,
+    platforms: [{ id: "task-a", platforms: ["web"] }],
+    apps: [],
+    webAdapter: {
+      release: async () => { throw new Error("connection reset"); },
+      readback: async () => ({ status: "unknown", evidence: { lookup: "inconclusive" } }),
+    },
+    iosAdapter: null,
+  };
+  assert.equal((await executeProductionRelease({
+    ...common, lease: { ...releaseLease(), maxReconciliationAttempts: 2 }, now: NOW,
+  })).status, "waiting_external");
+  assert.equal((await executeProductionRelease({
+    ...common,
+    lease: { ...releaseLease("release-worker-2", LATER), maxReconciliationAttempts: 2 },
+    now: LATER,
+  })).status, "failed");
+});
+
+test("post-effect contract gaps recover by locator readback without reposting", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  let releases = 0;
+  const readbackArgs = [];
+  const common = {
+    db: harness.db,
+    manifest: MANIFEST,
+    platforms: [{ id: "task-a", platforms: ["web"] }],
+    apps: [],
+    webAdapter: {
+      release: async () => {
+        releases += 1;
+        return {
+          artifactIdentity: MANIFEST.artifactIdentity,
+          observedEvidence: { locator: "release-by-idempotency" },
+        };
+      },
+      readback: async (options) => {
+        readbackArgs.push(options);
+        return webLiveEvidence();
+      },
+    },
+    iosAdapter: null,
+  };
+  assert.equal((await executeProductionRelease({
+    ...common, lease: releaseLease(), now: NOW,
+  })).status, "waiting_external");
+  assert.equal((await executeProductionRelease({
+    ...common, lease: releaseLease("release-worker-2", LATER), now: LATER,
+  })).status, "completed");
+  assert.equal(releases, 1);
+  assert.equal(readbackArgs[0].readbackLocator.locator, "release-by-idempotency");
+  assert.equal(readbackArgs[0].externalRequestId, null);
+  assert.match(readbackArgs[0].idempotencyKey, /:web::1$/);
+});
+
+test("iOS terminal readback rejects mixed submission lineage", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const app = IOS_APPS[0];
+  const result = await executeProductionRelease({
+    db: harness.db,
+    manifest: MANIFEST,
+    platforms: [{ id: "task-a", platforms: ["ios"] }],
+    apps: [app],
+    webAdapter: null,
+    iosAdapter: {
+      release: ({ recordStage }) => stagedIosSubmission({ app, recordStage }),
+      readback: async ({ recordStage }) => {
+        await recordStage("live_readback", { buildNumber: "101" });
+        const observed = iosLiveEvidence(app);
+        return {
+          ...observed,
+          buildNumber: "999",
+          liveBuildNumber: "999",
+          lineage: { ...observed.lineage, buildNumber: "999" },
+        };
+      },
+    },
+    lease: releaseLease(),
+    now: NOW,
+  });
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /exact frozen Candidate|readback/i);
+});
+
+test("iOS terminal and waiting evidence must be authoritative and non-empty", async (t) => {
+  const app = IOS_APPS[0];
+  for (const [name, mutate] of [
+    ["non-authoritative", (observed) => ({ ...observed, authoritative: false })],
+    ["empty-live-proof", (observed) => ({
+      ...observed, liveMembershipConfirmed: false, liveEvidence: {},
+    })],
+  ]) {
+    await t.test(name, async (t) => {
+      const harness = await createCloudWorkerHarness();
+      t.after(() => harness.dispose());
+      const result = await executeProductionRelease({
+        db: harness.db,
+        manifest: MANIFEST,
+        platforms: [{ id: "task-a", platforms: ["ios"] }],
+        apps: [app],
+        webAdapter: null,
+        iosAdapter: {
+          release: ({ recordStage }) => stagedIosSubmission({ app, recordStage }),
+          readback: async ({ recordStage }) => {
+            await recordStage("live_readback", { buildNumber: "101" });
+            return mutate(iosLiveEvidence(app));
+          },
+        },
+        lease: releaseLease(),
+        now: NOW,
+      });
+      assert.equal(result.status, "failed");
+    });
+  }
+});
+
+test("non-authoritative Apple waiting evidence cannot bypass reconciliation exhaustion", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const app = IOS_APPS[0];
+  const common = {
+    db: harness.db,
+    manifest: MANIFEST,
+    platforms: [{ id: "task-a", platforms: ["ios"] }],
+    apps: [app],
+    webAdapter: null,
+    iosAdapter: {
+      release: ({ recordStage }) => stagedIosSubmission({ app, recordStage }),
+      readback: async ({ recordStage }) => {
+        await recordStage("live_readback", { buildNumber: "101" });
+        return {
+          status: "waiting_external",
+          authoritative: false,
+          submissionExists: true,
+          lineage: iosSubmission(app).lineage,
+        };
+      },
+    },
+  };
+  assert.equal((await executeProductionRelease({
+    ...common,
+    lease: { ...releaseLease(), maxReconciliationAttempts: 2 },
+    now: NOW,
+  })).status, "waiting_external");
+  assert.equal((await executeProductionRelease({
+    ...common,
+    lease: { ...releaseLease("release-worker-2", LATER), maxReconciliationAttempts: 2 },
+    now: LATER,
+  })).status, "failed");
 });

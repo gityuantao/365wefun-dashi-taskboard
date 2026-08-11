@@ -5,7 +5,10 @@ import {
   loadManifest,
 } from "../release/version-aggregator.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
-import { enabledIosApps, loadIosApps } from "../ios/app-registry.mjs";
+import {
+  assertProductionTargetPlanMatches,
+  buildProductionTargetPlan,
+} from "../release/production-target-plan.mjs";
 import { removeTaskWorktree } from "../runner/worktree.mjs";
 import { closeTaskPullRequest, deleteRemoteTaskBranch } from "../git/pr.mjs";
 import {
@@ -66,13 +69,45 @@ export async function coordinateReleaseSnapshot({
     return { status: "rejected", error: "configured deployer and Candidate evidence providers required" };
   }
 
-  let taskIds = existingManifest?.taskIds ?? [];
+  const allTaskSnapshots = await services.loadAllTaskSnapshots(db);
+  const versionTaskSnapshots = allTaskSnapshots.filter(
+    (task) => task.targetVersion === (snapshot.name ?? versionId),
+  );
+  const expectedTaskIds = existingManifest?.taskIds ?? versionTaskSnapshots
+    .map((task) => task.id)
+    .sort();
+  const releaseTaskSnapshots = existingManifest && versionTaskSnapshots.length > 0
+    ? versionTaskSnapshots
+    : allTaskSnapshots.filter((taskSnapshot) => expectedTaskIds.includes(taskSnapshot.id));
+  const configuredApps = apps ?? runtime?.iosApps ?? [];
+  let productionTargetPlan;
+  try {
+    productionTargetPlan = buildProductionTargetPlan({
+      taskSnapshots: releaseTaskSnapshots,
+      taskIds: expectedTaskIds,
+      apps: configuredApps,
+      marketingVersion: String(snapshot.name ?? versionId).replace(/^v(?=\d)/, ""),
+    });
+    if (existingManifest) {
+      assertProductionTargetPlanMatches(existingManifest.productionTargetPlan, productionTargetPlan);
+    }
+  } catch (error) {
+    return { status: "rejected", error: `production target plan validation failed: ${error.message}` };
+  }
+
+  let taskIds = expectedTaskIds;
   if (!existingManifest) {
     const gate = await services.checkVersionGate({ db, versionId });
     if (!gate.pass) {
       return { status: "rejected", error: gate.reasons.join("; ") };
     }
     taskIds = gate.taskIds;
+    if (
+      taskIds.length !== expectedTaskIds.length
+      || taskIds.some((taskId, index) => taskId !== expectedTaskIds[index])
+    ) {
+      return { status: "rejected", error: "production task scope changed during release gating" };
+    }
   }
   const versionBranch = existingManifest?.versionBranch ?? `version/${snapshot.name ?? versionId}`;
   const result = await coordinateVersionRelease({
@@ -89,19 +124,13 @@ export async function coordinateReleaseSnapshot({
     collectRegressionEvidence: (candidate) => adapter.collectRegressionEvidence(candidate),
     identifyArtifact: (candidate) => adapter.identifyArtifact(candidate),
     persistCandidate: (candidate) => releaseGitOps.persistCandidate(candidate),
-    freezeCandidate: (candidate) => services.freezeManifest({ db, ...candidate }),
+    freezeCandidate: (candidate) => services.freezeManifest({
+      db,
+      ...candidate,
+      productionTargetPlan,
+    }),
     verifyCandidate: (candidate) => releaseGitOps.verifyCandidate(candidate),
     publishCandidate: async ({ manifest }) => {
-      const releaseTaskSnapshots = (await services.loadAllTaskSnapshots(db)).filter(
-        (taskSnapshot) => taskIds.includes(taskSnapshot.id),
-      );
-      const configuredApps = apps ?? runtime?.iosApps ?? [];
-      const productionApps = configuredApps.length > 0
-        ? enabledIosApps(loadIosApps(configuredApps)).map((app) => ({
-          ...app,
-          marketingVersion: String(snapshot.name ?? versionId).replace(/^v(?=\d)/, ""),
-        }))
-        : [];
       return services.handleConfirmRelease({
         db,
         versionId,
@@ -110,8 +139,7 @@ export async function coordinateReleaseSnapshot({
         now,
         adapter,
         iosAdapter,
-        apps: productionApps,
-        platforms: releaseTaskSnapshots,
+        targetPlanValidated: true,
         lease: releaseLease,
         client,
       });
