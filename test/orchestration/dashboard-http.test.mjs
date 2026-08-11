@@ -101,6 +101,7 @@ test("orchestrator dashboard server enqueues a publish mutation when releasable"
       已发布: "published",
       已取消: "canceled",
     },
+    productionReadiness: { ready: true, error: null },
   });
   t.after(() => dashboard.close());
 
@@ -157,6 +158,78 @@ test("orchestrator dashboard server enqueues a publish mutation when releasable"
   assert.equal(method.status, 405);
   const methodBody = await method.json();
   assert.deepEqual(methodBody.error.details.allowed, ["POST"]);
+});
+
+test("dashboard exposes production readiness and rejects publish before enqueue when runtime is invalid", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  const dashboard = await startDashboardServer({
+    db: harness.db,
+    port: 0,
+    mutationSecret: "runtime-readiness-secret",
+    versionStatusMap: { 发布中: "releasing" },
+    productionReadiness: { ready: false, error: "productionConfigPath is required" },
+  });
+  t.after(() => dashboard.close());
+
+  const state = await fetch(`http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard`);
+  assert.deepEqual((await state.json()).productionReleaseReadiness, {
+    ready: false,
+    error: "productionConfigPath is required",
+  });
+  const publish = await fetch(
+    `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
+    { method: "POST", headers: { authorization: "Bearer runtime-readiness-secret" } },
+  );
+  assert.equal(publish.status, 503);
+  assert.equal((await publish.json()).error.code, "PRODUCTION_RUNTIME_NOT_READY");
+  const row = await harness.db.prepare("SELECT COUNT(*) AS count FROM outbox_mutations WHERE object_id = 'version-1'").first();
+  assert.equal(row.count, 0);
+});
+
+test("publish re-probes lazy adapter factories before enqueueing ClickUp releasing", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  let probes = 0;
+  const dashboard = await startDashboardServer({
+    db: harness.db,
+    port: 0,
+    mutationSecret: "factory-readiness-secret",
+    versionStatusMap: { 发布中: "releasing" },
+    productionReadiness: async () => {
+      probes += 1;
+      return { ready: false, error: "production runtime adapter unavailable" };
+    },
+  });
+  t.after(() => dashboard.close());
+
+  const publish = await fetch(
+    `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
+    { method: "POST", headers: { authorization: "Bearer factory-readiness-secret" } },
+  );
+  assert.equal(publish.status, 503);
+  assert.equal(probes, 1);
+  const row = await harness.db.prepare("SELECT COUNT(*) AS count FROM outbox_mutations WHERE object_id = 'version-1'").first();
+  assert.equal(row.count, 0);
+});
+
+test("publish fails closed when no production readiness probe was configured", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  const dashboard = await startDashboardServer({
+    db: harness.db, port: 0, mutationSecret: "missing-probe-secret",
+    versionStatusMap: { 发布中: "releasing" },
+  });
+  t.after(() => dashboard.close());
+  const publish = await fetch(
+    `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
+    { method: "POST", headers: { authorization: "Bearer missing-probe-secret" } },
+  );
+  assert.equal(publish.status, 503);
+  assert.match((await publish.json()).error.message, /readiness probe was not configured/);
 });
 
 test("invalid absolute-form request targets still receive a 500 response", async (t) => {

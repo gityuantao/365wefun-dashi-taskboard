@@ -396,6 +396,7 @@ export async function coordinateVersionRelease({
   taskIds,
   now,
   existingManifest = null,
+  publicationAlreadyConfirmed = false,
   integrateTaskPr,
   collectRegressionEvidence,
   identifyArtifact,
@@ -485,21 +486,27 @@ export async function coordinateVersionRelease({
     manifest = frozen.manifest;
   }
 
-  const verified = await verifyCandidate({ manifest });
-  if (verified?.verified !== true) {
-    return {
-      status: "failed",
-      stage: "candidate_verification",
-      error: verified?.error ?? "frozen Candidate integration could not be verified",
-    };
-  }
+  let publication = {
+    status: "succeeded",
+    publication: { candidateCommit: manifest.candidateCommit },
+  };
+  if (!publicationAlreadyConfirmed) {
+    const verified = await verifyCandidate({ manifest });
+    if (verified?.verified !== true) {
+      return {
+        status: "failed",
+        stage: "candidate_verification",
+        error: verified?.error ?? "frozen Candidate integration could not be verified",
+      };
+    }
 
-  const publication = await publishCandidate({ manifest });
-  if (publication?.status !== "succeeded") {
-    return publication ?? { status: "failed", error: "publication failed" };
-  }
-  if (publication.publication?.candidateCommit !== manifest.candidateCommit) {
-    return { status: "failed", error: "published Candidate does not match frozen Candidate" };
+    publication = await publishCandidate({ manifest });
+    if (publication?.status !== "succeeded") {
+      return publication ?? { status: "failed", error: "publication failed" };
+    }
+    if (publication.publication?.candidateCommit !== manifest.candidateCommit) {
+      return { status: "failed", error: "published Candidate does not match frozen Candidate" };
+    }
   }
 
   const cleanupResult = {

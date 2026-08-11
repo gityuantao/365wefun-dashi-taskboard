@@ -48,6 +48,8 @@ export async function coordinateReleaseSnapshot({
   runtime,
   repository,
   releaseGitOps,
+  productionReadiness = { ready: false, error: "production readiness probe was not configured" },
+  prepareProductionRuntime = null,
   log = () => {},
   services: overrides = {},
 }) {
@@ -59,6 +61,22 @@ export async function coordinateReleaseSnapshot({
   if (snapshot.status !== "releasing" && !cleanupRetry) {
     return { status: "skipped" };
   }
+  if (!cleanupRetry && productionReadiness?.ready !== true) {
+    return {
+      status: "rejected",
+      error: `production runtime is not ready: ${productionReadiness?.error ?? "invalid configuration"}`,
+    };
+  }
+  if (!cleanupRetry && !existingManifest && typeof prepareProductionRuntime === "function") {
+    try {
+      await prepareProductionRuntime();
+    } catch (error) {
+      return {
+        status: "rejected",
+        error: `production runtime preflight failed: ${error.message}`,
+      };
+    }
+  }
   if (!existingManifest && (
     !adapter
     || (
@@ -69,8 +87,8 @@ export async function coordinateReleaseSnapshot({
     return { status: "rejected", error: "configured deployer and Candidate evidence providers required" };
   }
 
-  const allTaskSnapshots = await services.loadAllTaskSnapshots(db);
-  const versionTaskSnapshots = allTaskSnapshots.filter(
+  const allTaskSnapshots = cleanupRetry ? [] : await services.loadAllTaskSnapshots(db);
+  const versionTaskSnapshots = cleanupRetry ? [] : allTaskSnapshots.filter(
     (task) => task.targetVersion === (snapshot.name ?? versionId),
   );
   const expectedTaskIds = existingManifest?.taskIds ?? versionTaskSnapshots
@@ -79,20 +97,22 @@ export async function coordinateReleaseSnapshot({
   const releaseTaskSnapshots = existingManifest && versionTaskSnapshots.length > 0
     ? versionTaskSnapshots
     : allTaskSnapshots.filter((taskSnapshot) => expectedTaskIds.includes(taskSnapshot.id));
-  const configuredApps = apps ?? runtime?.iosApps ?? [];
-  let productionTargetPlan;
-  try {
-    productionTargetPlan = buildProductionTargetPlan({
-      taskSnapshots: releaseTaskSnapshots,
-      taskIds: expectedTaskIds,
-      apps: configuredApps,
-      marketingVersion: String(snapshot.name ?? versionId).replace(/^v(?=\d)/, ""),
-    });
-    if (existingManifest) {
-      assertProductionTargetPlanMatches(existingManifest.productionTargetPlan, productionTargetPlan);
+  let productionTargetPlan = existingManifest?.productionTargetPlan;
+  if (!cleanupRetry) {
+    const configuredApps = apps ?? runtime?.iosApps ?? [];
+    try {
+      productionTargetPlan = buildProductionTargetPlan({
+        taskSnapshots: releaseTaskSnapshots,
+        taskIds: expectedTaskIds,
+        apps: configuredApps,
+        marketingVersion: String(snapshot.name ?? versionId).replace(/^v(?=\d)/, ""),
+      });
+      if (existingManifest) {
+        assertProductionTargetPlanMatches(existingManifest.productionTargetPlan, productionTargetPlan);
+      }
+    } catch (error) {
+      return { status: "rejected", error: `production target plan validation failed: ${error.message}` };
     }
-  } catch (error) {
-    return { status: "rejected", error: `production target plan validation failed: ${error.message}` };
   }
 
   let taskIds = expectedTaskIds;
@@ -116,6 +136,7 @@ export async function coordinateReleaseSnapshot({
     taskIds,
     now,
     existingManifest,
+    publicationAlreadyConfirmed: cleanupRetry,
     integrateTaskPr: async ({ taskId }) => releaseGitOps.integrateTaskPr({
       taskId,
       pullRequest: await services.loadTaskPullRequest({ db, taskId }),

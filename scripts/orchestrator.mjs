@@ -3,7 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
 import { pollClickUpOnce } from "../cloud/src/clickup-poller.mjs";
 import { createClickUpClient } from "../orchestration/clickup/client.mjs";
@@ -73,6 +73,7 @@ import {
 import {
   createProductionStagingAdapterFactory,
 } from "../orchestration/release/staging-command-adapter.mjs";
+import { createProductionRuntime } from "../orchestration/release/production-runtime.mjs";
 import { readControl, shouldProcess } from "../orchestration/control.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -94,7 +95,16 @@ const rawClickUpConfig = JSON.parse(
 );
 const config = loadClickUpConfig(rawClickUpConfig);
 const iosAppsValue = runtime.iosApps ?? rawClickUpConfig.iosApps;
-const iosApps = iosAppsValue === undefined ? null : loadIosApps(iosAppsValue);
+let loadedIosApps = null;
+const configuredIosApps = () => {
+  if (loadedIosApps) return loadedIosApps;
+  loadedIosApps = loadIosApps(iosAppsValue);
+  return loadedIosApps;
+};
+const productionRuntime = createProductionRuntime({
+  runtime: { ...runtime, iosApps: iosAppsValue },
+  projectRoot: PROJECT_ROOT,
+});
 const iosAdapter = createTestFlightAdapter({ runtime, projectRoot: PROJECT_ROOT });
 const iosOperationTimeoutMs = Number(runtime.iosTestFlightTimeoutMs ?? 30 * 60_000);
 const iosOperationLeaseMs = (
@@ -242,6 +252,7 @@ const dashboardServer = await startDashboardServer({
   mutationSecret: await getProcessOrchestrationMutationSecret({
     secretPath: DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH,
   }),
+  productionReadiness: () => productionRuntime.probeReadiness(),
 });
 log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
 
@@ -393,7 +404,7 @@ const handlers = {
       client,
       gitOps: guardedGitOps,
       adapterFactory,
-      iosApps,
+      iosApps: configuredIosApps(),
       iosAdapter,
       beforeExternalOperation: renewActiveClaim,
       stagingLeaseMs: stagingEnvironmentLeaseMs,
@@ -440,22 +451,8 @@ async function ensureVersionActive(versionId, now) {
   });
 }
 
-async function loadConfiguredReleaseAdapter() {
-  if (typeof runtime.releaseAdapterModule !== "string" || runtime.releaseAdapterModule.trim() === "") {
-    return null;
-  }
-  const modulePath = path.resolve(PROJECT_ROOT, runtime.releaseAdapterModule);
-  const module = await import(pathToFileURL(modulePath).href);
-  if (typeof module.createReleaseAdapter !== "function") {
-    throw new Error("release adapter module must export createReleaseAdapter");
-  }
-  const adapter = await module.createReleaseAdapter({ runtime, projectRoot: PROJECT_ROOT });
-  return adapter?.placeholder === true ? null : adapter;
-}
-
 async function releaseCoordinator(now) {
   const client = await clientFactory({ token });
-  const adapter = await loadConfiguredReleaseAdapter();
   const repository = resolveRemoteRepo(runtime.repoPath);
   const releaseGitOps = createReleaseGitOps({
     repoPath: runtime.repoPath,
@@ -471,7 +468,15 @@ async function releaseCoordinator(now) {
       snapshot,
       now,
       db,
-      adapter,
+      adapter: productionRuntime.webAdapter,
+      iosAdapter: productionRuntime.iosAdapter,
+      apps: productionRuntime.apps,
+      releaseLease: productionRuntime.releaseLease(() => new Date().toISOString()),
+      productionReadiness: productionRuntime.readiness,
+      prepareProductionRuntime: async () => {
+        const readiness = await productionRuntime.probeReadiness();
+        if (!readiness.ready) throw new Error(readiness.error);
+      },
       client,
       runtime,
       repository,

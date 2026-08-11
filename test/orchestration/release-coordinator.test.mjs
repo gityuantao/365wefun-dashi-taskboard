@@ -395,6 +395,7 @@ test("release snapshot wiring passes frozen platform and App identity into the p
   const releaseLease = { holder: "release-worker-1", durationMs: 60_000 };
   let received;
   const result = await coordinateReleaseSnapshot({
+    productionReadiness: { ready: true, error: null },
     snapshot: { id: "version-1", name: "v1.2.3", status: "releasing" },
     now: NOW,
     db: {},
@@ -479,6 +480,7 @@ test("production coordinator wiring blocks stale local and advanced remote PR he
   };
 
   const localStale = await coordinateReleaseSnapshot({
+    productionReadiness: { ready: true, error: null },
     ...base,
     releaseGitOps: {
       integrateTaskPr: async () => ({ merged: false, error: "fetched PR head is stale" }),
@@ -488,6 +490,7 @@ test("production coordinator wiring blocks stale local and advanced remote PR he
   assert.deepEqual(sideEffects, []);
 
   const remoteAdvanced = await coordinateReleaseSnapshot({
+    productionReadiness: { ready: true, error: null },
     ...base,
     releaseGitOps: {
       integrateTaskPr: async () => ({
@@ -509,6 +512,7 @@ test("production coordinator wiring blocks stale local and advanced remote PR he
 test("unsupported production scope is rejected before every mutating release effect", async () => {
   const mutations = [];
   const result = await coordinateReleaseSnapshot({
+    productionReadiness: { ready: true, error: null },
     snapshot: { id: "version-1", name: "version-1", status: "releasing" },
     now: NOW,
     db: {},
@@ -543,6 +547,7 @@ test("unsupported production scope is rejected before every mutating release eff
 test("missing production scope is rejected before every mutating release effect", async () => {
   const mutations = [];
   const result = await coordinateReleaseSnapshot({
+    productionReadiness: { ready: true, error: null },
     snapshot: { id: "version-1", name: "version-1", status: "releasing" },
     now: NOW,
     db: {},
@@ -588,6 +593,7 @@ test("retry rejects frozen production target plan drift before verification or p
     },
   };
   const result = await coordinateReleaseSnapshot({
+    productionReadiness: { ready: true, error: null },
     snapshot: { id: "version-1", name: "v1.2.3", status: "releasing" },
     now: NOW,
     db: {},

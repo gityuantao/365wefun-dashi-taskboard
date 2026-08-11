@@ -171,7 +171,13 @@ export async function startDashboardServer({
   versionStatusMap = null,
   mutationSecret,
   mutationSecretPath = null,
+  productionReadiness = { ready: false, error: "production readiness probe was not configured" },
 }) {
+  const currentProductionReadiness = async () => (
+    typeof productionReadiness === "function"
+      ? productionReadiness()
+      : productionReadiness
+  );
   const resolvedMutationSecret = mutationSecret === undefined
     ? await getProcessOrchestrationMutationSecret({ secretPath: mutationSecretPath })
     : mutationSecret;
@@ -206,7 +212,10 @@ export async function startDashboardServer({
 
       if (pathname === "/api/orchestration/dashboard") {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
-        return sendJson(response, 200, await buildDashboard(db, { versionListUrl }));
+        return sendJson(response, 200, {
+          ...await buildDashboard(db, { versionListUrl }),
+          productionReleaseReadiness: await currentProductionReadiness(),
+        });
       }
 
       const taskMatch = pathname.match(/^\/api\/orchestration\/dashboard\/tasks\/([^/]+)$/);
@@ -235,6 +244,15 @@ export async function startDashboardServer({
       if (versionPublishMatch) {
         if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
         if (!authorizedMutation(request, resolvedMutationSecret)) return unauthorized(response);
+        const releaseReadiness = await currentProductionReadiness();
+        if (releaseReadiness?.ready !== true) {
+          return sendJson(response, 503, {
+            error: {
+              code: "PRODUCTION_RUNTIME_NOT_READY",
+              message: releaseReadiness?.error ?? "Production release runtime is not ready",
+            },
+          });
+        }
         let versionId;
         try {
           versionId = decodeURIComponent(versionPublishMatch[1]);

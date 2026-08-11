@@ -17,6 +17,18 @@
       "reasoningEffort": "high"
     }
   },
+  "releaseAdapterModule": "orchestration/release/production-command-adapter.mjs",
+  "productionReleaseCommand": ["node", "scripts/deploy-production-candidate.mjs"],
+  "productionConfigPath": "/absolute/private/path/production-release.private.json",
+  "productionReleaseTimeoutMs": 2700000,
+  "iosProductionReleaseAdapterModule": "orchestration/ios/app-store-release-adapter.mjs",
+  "iosProductionReleaseCommand": ["node", "scripts/release-all-ios-apps.mjs"],
+  "iosProductionCredentialsPath": "/absolute/private/path/app-store-connect.private.json",
+  "iosProductionApiUrl": "https://api.appstoreconnect.apple.com",
+  "iosProductionReleaseTimeoutMs": 2700000,
+  "iosProductionFenceHeartbeatMs": 60000,
+  "productionReleaseLeaseMs": 3000000,
+  "productionReleaseMaxReconciliationAttempts": 4,
   "iosApps": [
     {
       "id": "au",
