@@ -1,5 +1,11 @@
-import { checkVersionGate, freezeManifest, loadManifest } from "../release/version-aggregator.mjs";
+import {
+  checkVersionGate,
+  freezeManifest,
+  loadAllTaskSnapshots,
+  loadManifest,
+} from "../release/version-aggregator.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
+import { enabledIosApps, loadIosApps } from "../ios/app-registry.mjs";
 import { removeTaskWorktree } from "../runner/worktree.mjs";
 import { closeTaskPullRequest, deleteRemoteTaskBranch } from "../git/pr.mjs";
 import {
@@ -15,6 +21,7 @@ const DEFAULT_SERVICES = {
   checkVersionGate,
   freezeManifest,
   loadManifest,
+  loadAllTaskSnapshots,
   loadAggregate,
   removeTaskWorktree,
   closeTaskPullRequest,
@@ -31,6 +38,9 @@ export async function coordinateReleaseSnapshot({
   now,
   db,
   adapter,
+  iosAdapter = null,
+  apps = null,
+  releaseLease = null,
   client,
   runtime,
   repository,
@@ -46,15 +56,13 @@ export async function coordinateReleaseSnapshot({
   if (snapshot.status !== "releasing" && !cleanupRetry) {
     return { status: "skipped" };
   }
-  if (
+  if (!existingManifest && (
     !adapter
-    || typeof adapter.readback !== "function"
-    || (versionAggregate.state !== "published" && typeof adapter.release !== "function")
-    || (!existingManifest && (
+    || (
       typeof adapter.collectRegressionEvidence !== "function"
       || typeof adapter.identifyArtifact !== "function"
-    ))
-  ) {
+    )
+  )) {
     return { status: "rejected", error: "configured deployer and Candidate evidence providers required" };
   }
 
@@ -84,14 +92,16 @@ export async function coordinateReleaseSnapshot({
     freezeCandidate: (candidate) => services.freezeManifest({ db, ...candidate }),
     verifyCandidate: (candidate) => releaseGitOps.verifyCandidate(candidate),
     publishCandidate: async ({ manifest }) => {
-      if (versionAggregate.state === "published") {
-        try {
-          const publication = await services.confirmPublishedCandidate({ adapter, manifest });
-          return { status: "succeeded", publication };
-        } catch (error) {
-          return { status: "failed", error: error.message };
-        }
-      }
+      const releaseTaskSnapshots = (await services.loadAllTaskSnapshots(db)).filter(
+        (taskSnapshot) => taskIds.includes(taskSnapshot.id),
+      );
+      const configuredApps = apps ?? runtime?.iosApps ?? [];
+      const productionApps = configuredApps.length > 0
+        ? enabledIosApps(loadIosApps(configuredApps)).map((app) => ({
+          ...app,
+          marketingVersion: String(snapshot.name ?? versionId).replace(/^v(?=\d)/, ""),
+        }))
+        : [];
       return services.handleConfirmRelease({
         db,
         versionId,
@@ -99,6 +109,10 @@ export async function coordinateReleaseSnapshot({
         actorRoles: ["release_manager"],
         now,
         adapter,
+        iosAdapter,
+        apps: productionApps,
+        platforms: releaseTaskSnapshots,
+        lease: releaseLease,
         client,
       });
     },

@@ -332,6 +332,67 @@ test("cleanup persists each ordered attempt and safely resumes without repeating
   );
 });
 
+test("release snapshot wiring passes frozen platform and App identity into the persistent coordinator", async () => {
+  const manifest = {
+    versionId: "version-1",
+    versionBranch: "version/v1.2.3",
+    candidateCommit: "1111111111111111111111111111111111111111",
+    checksum: "manifest-checksum-v1",
+    taskIds: ["task-a"],
+    taskPrHeads: [{ taskId: "task-a", branch: "task/task-a" }],
+  };
+  const iosAdapter = { release() {}, readback() {} };
+  const releaseLease = { holder: "release-worker-1", durationMs: 60_000 };
+  let received;
+  const result = await coordinateReleaseSnapshot({
+    snapshot: { id: "version-1", name: "v1.2.3", status: "releasing" },
+    now: NOW,
+    db: {},
+    adapter: { release() {}, readback() {} },
+    iosAdapter,
+    apps: [{
+      id: "au",
+      name: "Overseas",
+      enabled: true,
+      scheme: "E365AU",
+      testScheme: "E365AUTests",
+      testTarget: "E365AUTests",
+      bundleId: "online.365english.app",
+      testFlightGroup: "Internal Testing",
+      buildNumberSource: "app-store-connect",
+      appStoreAppId: "0000000001",
+      releaseMode: "automatic",
+      reviewConfigurationRef: "app-store-review/au",
+    }],
+    releaseLease,
+    client: {},
+    runtime: { repoPath: "/repo", worktreesRoot: "/worktrees" },
+    repository: "owner/repo",
+    releaseGitOps: { verifyCandidate: async () => ({ verified: true }) },
+    services: {
+      loadManifest: async () => manifest,
+      loadAggregate: async () => ({ state: "releasing", version: 2 }),
+      loadAllTaskSnapshots: async () => [{ id: "task-a", platforms: ["web", "ios"] }],
+      handleConfirmRelease: async (options) => {
+        received = options;
+        return { status: "waiting_external", targets: [] };
+      },
+      loadCleanupAttempts: async () => [],
+      recordCleanupAttempt: async () => {},
+      closeTaskPullRequest: async () => {},
+      deleteRemoteTaskBranch: async () => {},
+      removeTaskWorktree: async () => {},
+    },
+  });
+
+  assert.equal(result.status, "waiting_external");
+  assert.deepEqual(received.platforms, [{ id: "task-a", platforms: ["web", "ios"] }]);
+  assert.equal(received.apps[0].id, "au");
+  assert.equal(received.apps[0].marketingVersion, "1.2.3");
+  assert.equal(received.iosAdapter, iosAdapter);
+  assert.equal(received.lease, releaseLease);
+});
+
 test("production coordinator wiring blocks stale local and advanced remote PR heads", async () => {
   const sideEffects = [];
   const services = {

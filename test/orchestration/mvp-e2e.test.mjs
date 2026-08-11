@@ -274,6 +274,7 @@ test("complete MVP loop preserves an image-only rejection through development an
       object: "releases/v1/abc/index.html",
       candidateCommit,
       artifactIdentity,
+      externalRequestId: "request-1",
     }),
     switchEntry: async ({ candidateCommit, artifactIdentity }) => {
       publishedDeployment = {
@@ -282,8 +283,12 @@ test("complete MVP loop preserves an image-only rejection through development an
         candidateCommit,
         artifactIdentity: structuredClone(artifactIdentity),
         url: "https://e365.example.com",
+        externalRequestId: "request-1",
+        productionReleaseId: "release-1",
+        healthStatus: "healthy",
+        evidence: { source: "production-readback" },
       };
-      return { url: publishedDeployment.url };
+      return { url: publishedDeployment.url, productionReleaseId: "release-1" };
     },
     healthCheck: async () => ({ ok: true, status: 200 }),
     readback: async () => structuredClone(publishedDeployment),

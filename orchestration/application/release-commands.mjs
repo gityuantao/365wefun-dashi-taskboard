@@ -1,11 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import {
+  loadAllTaskSnapshots,
   loadManifest,
   validateFrozenManifest,
 } from "../release/version-aggregator.mjs";
+import { assertProductionPlatformsSupported } from "../release/platform-gate.mjs";
 import { dispatchCommand } from "./dispatch-command.mjs";
+import { executeProductionRelease } from "./production-release-coordinator.mjs";
 import { stateChangeText } from "../clickup/state-comments.mjs";
 
 function deepFreeze(value) {
@@ -134,8 +138,14 @@ export async function handleConfirmRelease({
   actorRoles = [],
   now,
   adapter,
+  webAdapter = adapter,
+  iosAdapter = null,
+  apps = [],
+  platforms = null,
+  lease = null,
   client,
   dispatch = dispatchCommand,
+  executeRelease = executeProductionRelease,
 }) {
   if (!actorRoles.some((role) => ["release_manager", "admin"].includes(role))) {
     return { status: "rejected", error: "UNAUTHORIZED: release_manager role required" };
@@ -152,47 +162,115 @@ export async function handleConfirmRelease({
       error: `version frozen manifest is incomplete: ${manifestReasons.join("; ")}`,
     };
   }
+  const taskSnapshots = platforms ?? (await loadAllTaskSnapshots(db)).filter(
+    (snapshot) => manifest.taskIds.includes(snapshot.id),
+  );
+  const platformTaskIds = new Set(taskSnapshots.map((snapshot) => snapshot?.id));
   if (
-    !adapter
-    || adapter.placeholder === true
-    || typeof adapter.release !== "function"
-    || typeof adapter.readback !== "function"
+    platformTaskIds.size !== manifest.taskIds.length
+    || manifest.taskIds.some((taskId) => !platformTaskIds.has(taskId))
+  ) {
+    return { status: "rejected", error: "frozen manifest task platform scope is incomplete" };
+  }
+  let resolvedPlatforms;
+  try {
+    resolvedPlatforms = assertProductionPlatformsSupported(taskSnapshots);
+  } catch (error) {
+    return { status: "rejected", error: error.message };
+  }
+  if (
+    (resolvedPlatforms.web || resolvedPlatforms.api)
+    && (
+      !webAdapter
+      || webAdapter.placeholder === true
+      || typeof webAdapter.release !== "function"
+      || typeof webAdapter.readback !== "function"
+    )
   ) {
     return { status: "rejected", error: "release adapter/deployer is not configured" };
   }
+  if (
+    resolvedPlatforms.ios
+    && (
+      !iosAdapter
+      || iosAdapter.placeholder === true
+      || typeof iosAdapter.release !== "function"
+      || typeof iosAdapter.readback !== "function"
+    )
+  ) {
+    return { status: "rejected", error: "iOS release adapter is not configured" };
+  }
   const version = await loadAggregate(db, "version", versionId);
   const attempt = Date.now();
-  try {
-    await dispatch({
-      db,
-      command: parseCommandEnvelope({
-        id: `release-start-${versionId}-${attempt}`,
-        type: "start_release",
-        aggregateType: "version",
-        aggregateId: versionId,
-        expectedVersion: version.version + 1,
-        actorId,
-        issuedAt: now,
-        reason: "confirmed release",
-        parameters: { evidenceId: `release-attempt-${versionId}-${attempt}` },
-      }),
-      now,
-    });
-  } catch (error) {
-    return { status: "failed", stage: "start_release", error: error.message };
-  }
-  const startComment = stateChangeText("version", version.state, "releasing");
-  if (startComment && client) {
+  if (version.state !== "releasing" && version.state !== "published") {
     try {
-      await client.postComment(versionId, startComment);
-    } catch {
-      // 评论失败不影响发布
+      await dispatch({
+        db,
+        command: parseCommandEnvelope({
+          id: `release-start-${versionId}-${attempt}`,
+          type: "start_release",
+          aggregateType: "version",
+          aggregateId: versionId,
+          expectedVersion: version.version + 1,
+          actorId,
+          issuedAt: now,
+          reason: "confirmed release",
+          parameters: { evidenceId: `release-attempt-${versionId}-${attempt}` },
+        }),
+        now,
+      });
+    } catch (error) {
+      return { status: "failed", stage: "start_release", error: error.message };
+    }
+    const startComment = stateChangeText("version", version.state, "releasing");
+    if (startComment && client) {
+      try {
+        await client.postComment(versionId, startComment);
+      } catch {
+        // 评论失败不影响发布
+      }
     }
   }
 
+  const deployments = new Map();
+  const persistentWebAdapter = (resolvedPlatforms.web || resolvedPlatforms.api) ? {
+    release: async (options) => {
+      const released = await webAdapter.release(options);
+      deployments.set(options.platform, released);
+      return released;
+    },
+    readback: async (options) => {
+      const persistedLocator = options.deployment?.observedEvidence ?? options.deployment;
+      const deployment = deployments.get(options.platform) ?? persistedLocator;
+      const publication = await webAdapter.readback({ ...options, deployment });
+      return publication;
+    },
+  } : null;
+
+  const activeLease = lease ?? {
+    holder: `release:${versionId}:${actorId}:${randomUUID()}`,
+    durationMs: 10 * 60_000,
+  };
+  let productionResult;
   try {
-    const result = await adapter.release({ manifest });
-    const publication = await confirmPublishedCandidate({ adapter, manifest, deployment: result });
+    productionResult = await executeRelease({
+      db,
+      manifest,
+      platforms: taskSnapshots,
+      apps,
+      webAdapter: persistentWebAdapter,
+      iosAdapter,
+      lease: activeLease,
+      now,
+    });
+    if (productionResult.status === "waiting_external") {
+      return productionResult;
+    }
+    if (productionResult.status === "failed") {
+      const error = new Error(productionResult.error ?? "production release failed");
+      error.failureFingerprint = productionResult.failureFingerprint;
+      throw error;
+    }
     for (const taskId of manifest.taskIds) {
       const task = await loadAggregate(db, "task", taskId);
       if (task.state === "published") continue;
@@ -213,55 +291,76 @@ export async function handleConfirmRelease({
       });
     }
     const releasing = await loadAggregate(db, "version", versionId);
-    await dispatch({
-      db,
-      command: parseCommandEnvelope({
-        id: `release-succeeded-${versionId}-${attempt}`,
-        type: "release_succeeded",
-        aggregateType: "version",
-        aggregateId: versionId,
-        expectedVersion: releasing.version + 1,
-        actorId,
-        issuedAt: now,
-        reason: "release succeeded",
-        parameters: {},
-      }),
-      now,
-    });
-    const okComment = stateChangeText("version", "releasing", "published");
-    if (okComment && client) {
-      try {
-        await client.postComment(versionId, okComment);
-      } catch {
-        // 评论失败不影响发布结果
-      }
-    }
-    return { status: "succeeded", result, publication };
-  } catch (error) {
-    const failed = await loadAggregate(db, "version", versionId);
-    try {
+    if (releasing.state !== "published") {
       await dispatch({
         db,
         command: parseCommandEnvelope({
-          id: `release-failed-${versionId}-${attempt}`,
-          type: "release_failed",
+          id: `release-succeeded-${versionId}-${attempt}`,
+          type: "release_succeeded",
           aggregateType: "version",
           aggregateId: versionId,
-          expectedVersion: failed.version + 1,
+          expectedVersion: releasing.version + 1,
           actorId,
           issuedAt: now,
-          reason: "release failed",
-          parameters: { evidenceId: `release-failure-${versionId}-${Date.now()}` },
+          reason: "release succeeded",
+          parameters: {},
         }),
         now,
       });
-    } catch (dispatchError) {
-      return {
-        status: "failed",
-        stage: "release_failed",
-        error: error.message,
-        dispatchError: dispatchError.message,
-      };
+      const okComment = stateChangeText("version", "releasing", "published");
+      if (okComment && client) {
+        try {
+          await client.postComment(versionId, okComment);
+        } catch {
+          // 评论失败不影响发布结果
+        }
+      }
+    }
+    const publishedWeb = productionResult.targets.find(
+      (target) => target.platform === "web" || target.platform === "api",
+    );
+    return {
+      status: "succeeded",
+      result: productionResult,
+      publication: publishedWeb ? {
+        confirmed: true,
+        published: true,
+        candidateCommit: publishedWeb.productionReadbackSha,
+        artifactIdentity: publishedWeb.artifactIdentity,
+        productionReleaseId: publishedWeb.productionReleaseId,
+      } : null,
+    };
+  } catch (error) {
+    const failed = await loadAggregate(db, "version", versionId);
+    if (failed.state === "releasing") {
+      try {
+        await dispatch({
+          db,
+          command: parseCommandEnvelope({
+            id: `release-failed-${versionId}-${attempt}`,
+            type: "release_failed",
+            aggregateType: "version",
+            aggregateId: versionId,
+            expectedVersion: failed.version + 1,
+            actorId,
+            issuedAt: now,
+            reason: "release failed",
+            parameters: {
+              evidenceId: error.failureFingerprint
+                ? `production-release-failure-${error.failureFingerprint}`
+                : `release-failure-${versionId}-${attempt}`,
+            },
+          }),
+          now,
+        });
+      } catch (dispatchError) {
+        return {
+          status: "failed",
+          stage: "release_failed",
+          error: error.message,
+          dispatchError: dispatchError.message,
+        };
+      }
     }
     const failComment = stateChangeText("version", "releasing", "release_failed", error.message);
     if (failComment && client) {

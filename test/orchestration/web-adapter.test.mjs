@@ -17,6 +17,7 @@ const MANIFEST = {
 
 test("web adapter preflights, uploads, switches entry, and verifies health", async () => {
   const calls = [];
+  const fencedStages = [];
   const deployer = {
     preflight: async ({ manifest }) => {
       calls.push(["preflight", manifest.versionId]);
@@ -24,11 +25,11 @@ test("web adapter preflights, uploads, switches entry, and verifies health", asy
     },
     upload: async ({ versionId, digest }) => {
       calls.push(["upload", versionId, digest]);
-      return { object: `releases/${versionId}/${digest}/index.html` };
+      return { object: `releases/${versionId}/${digest}/index.html`, externalRequestId: "request-1" };
     },
     switchEntry: async ({ versionId }) => {
       calls.push(["switch", versionId]);
-      return { url: "https://e365.example.com" };
+      return { url: "https://e365.example.com", productionReleaseId: "release-1" };
     },
     healthCheck: async ({ url }) => {
       calls.push(["health", url]);
@@ -36,20 +37,31 @@ test("web adapter preflights, uploads, switches entry, and verifies health", asy
     },
   };
   const adapter = createWebAdapter({ deployer });
-  const result = await adapter.release({ manifest: MANIFEST });
+  const result = await adapter.release({
+    manifest: MANIFEST,
+    recordStage: async (stage) => fencedStages.push(`stage:${stage}`),
+    beforeExternalOperation: async () => fencedStages.push("before"),
+    afterExternalOperation: async () => fencedStages.push("after"),
+  });
   assert.equal(result.url, "https://e365.example.com");
   assert.equal(result.digest, "abc123");
   assert.ok(calls.some(([kind]) => kind === "preflight"));
   assert.ok(calls.some(([kind]) => kind === "upload"));
   assert.ok(calls.some(([kind]) => kind === "switch"));
   assert.ok(calls.some(([kind]) => kind === "health"));
+  assert.deepEqual(fencedStages, [
+    "stage:preflight", "before", "after",
+    "stage:upload", "before", "after",
+    "stage:switch", "before", "after",
+    "stage:health", "before", "after",
+  ]);
 });
 
 test("web adapter fails when health check does not pass", async () => {
   const deployer = {
     preflight: async () => ({ ok: true }),
-    upload: async () => ({ object: "x" }),
-    switchEntry: async () => ({ url: "https://e365.example.com" }),
+    upload: async () => ({ object: "x", externalRequestId: "request-1" }),
+    switchEntry: async () => ({ url: "https://e365.example.com", productionReleaseId: "release-1" }),
     healthCheck: async () => ({ ok: false, status: 503 }),
   };
   const adapter = createWebAdapter({ deployer });
@@ -59,11 +71,21 @@ test("web adapter fails when health check does not pass", async () => {
   );
 });
 
+test("web adapter marks a known preflight rejection deterministic", async () => {
+  const adapter = createWebAdapter({
+    deployer: { preflight: async () => ({ ok: false }) },
+  });
+  await assert.rejects(
+    adapter.release({ manifest: MANIFEST }),
+    (error) => error.deterministic === true && error.failureClassification === "validation",
+  );
+});
+
 test("web adapter collects evidence for the release", async () => {
   const deployer = {
     preflight: async () => ({ ok: true }),
-    upload: async () => ({ object: "releases/v1/abc/index.html", etag: "etag-1" }),
-    switchEntry: async () => ({ url: "https://e365.example.com" }),
+    upload: async () => ({ object: "releases/v1/abc/index.html", etag: "etag-1", externalRequestId: "request-1" }),
+    switchEntry: async () => ({ url: "https://e365.example.com", productionReleaseId: "release-1" }),
     healthCheck: async () => ({ ok: true, status: 200 }),
   };
   const adapter = createWebAdapter({ deployer });
@@ -88,6 +110,7 @@ test("web adapter reads Candidate identity from persisted deployment state", asy
       object: `releases/${versionId}/${artifactIdentity.digest}/index.html`,
       candidateCommit,
       artifactIdentity,
+      externalRequestId: "request-1",
     }),
     switchEntry: async ({ candidateCommit, artifactIdentity }) => {
       publishedState = {
@@ -96,8 +119,12 @@ test("web adapter reads Candidate identity from persisted deployment state", asy
         candidateCommit,
         artifactIdentity: structuredClone(artifactIdentity),
         url: "https://e365.example.com",
+        externalRequestId: "request-1",
+        productionReleaseId: "release-1",
+        healthStatus: "healthy",
+        evidence: { source: "production-readback" },
       };
-      return { url: publishedState.url };
+      return { url: publishedState.url, productionReleaseId: "release-1" };
     },
     healthCheck: async () => ({ ok: true, status: 200 }),
     readback: async () => structuredClone(publishedState),
@@ -134,6 +161,10 @@ test("web adapter never echoes requested Candidate over mismatched deployment st
         published: true,
         candidateCommit: "2222222222222222222222222222222222222222",
         artifactIdentity: { digest: "sha256:other" },
+        externalRequestId: "request-1",
+        productionReleaseId: "release-1",
+        healthStatus: "healthy",
+        evidence: { source: "production-readback" },
       }),
     },
   });

@@ -18,6 +18,37 @@ const ARTIFACT_IDENTITY = {
   object: "releases/version-1/sha256:artifact-v1",
 };
 
+function deterministicReleaseError(message) {
+  const error = new Error(message);
+  error.deterministic = true;
+  error.failureClassification = "release_infrastructure";
+  return error;
+}
+
+function webSubmission() {
+  return {
+    externalRequestId: "web-request-1",
+    productionReleaseId: "web-release-1",
+    artifactIdentity: ARTIFACT_IDENTITY,
+    observedEvidence: { releaseId: "web-release-1" },
+    url: "https://releases.example.com/v1",
+  };
+}
+
+function webPublication(candidateCommit = CANDIDATE_COMMIT, artifactIdentity = ARTIFACT_IDENTITY) {
+  return {
+    confirmed: true,
+    published: true,
+    candidateCommit,
+    artifactIdentity,
+    productionReleaseId: "web-release-1",
+    healthStatus: "healthy",
+    readbackStatus: "confirmed",
+    observedEvidence: { releaseId: "web-release-1" },
+    readbackEvidence: { candidateCommit, healthStatus: "healthy" },
+  };
+}
+
 async function seedVersion(harness, versionId) {
   const event = await createDomainEvent({
     id: `rel-seed-${versionId}-1`,
@@ -49,7 +80,7 @@ async function seedVersion(harness, versionId) {
   });
 }
 
-async function seedTaskToRelease(harness, taskId) {
+async function seedTaskToRelease(harness, taskId, platforms = ["web"]) {
   for (let index = 0; index < 7; index += 1) {
     const type = ["start_analysis", "analysis_completed", "start_development",
       "development_completed", "acceptance_passed", "start_test",
@@ -80,6 +111,7 @@ async function seedTaskToRelease(harness, taskId) {
       operationRequest: null,
       operationRequestId: null,
       targetVersion: "version-1",
+      platforms,
       assignee: null,
       updatedAt: NOW,
       fieldsHash: "hash",
@@ -88,9 +120,9 @@ async function seedTaskToRelease(harness, taskId) {
   });
 }
 
-async function prepareVersion(harness) {
+async function prepareVersion(harness, { platforms = ["web"] } = {}) {
   await seedVersion(harness, "version-1");
-  await seedTaskToRelease(harness, "task-a");
+  await seedTaskToRelease(harness, "task-a", platforms);
   await freezeManifest({
     db: harness.db,
     versionId: "version-1",
@@ -119,13 +151,8 @@ test("confirm release publishes the version and its tasks", async (t) => {
   t.after(() => harness.dispose());
   await prepareVersion(harness);
   const adapter = {
-    release: async ({ manifest }) => ({ url: "https://releases.example.com/v1" }),
-    readback: async () => ({
-      confirmed: true,
-      published: true,
-      candidateCommit: CANDIDATE_COMMIT,
-      artifactIdentity: ARTIFACT_IDENTITY,
-    }),
+    release: async () => webSubmission(),
+    readback: async () => webPublication(),
   };
   const result = await handleConfirmRelease({
     db: harness.db,
@@ -141,6 +168,93 @@ test("confirm release publishes the version and its tasks", async (t) => {
   const task = await loadAggregate(harness.db, "task", "task-a");
   assert.equal(task.state, "published");
   assert.equal(result.publication.candidateCommit, CANDIDATE_COMMIT);
+});
+
+test("an iOS review wait keeps the version releasing and publishes nothing until every target is live", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await prepareVersion(harness, { platforms: ["web", "ios"] });
+  const app = {
+    id: "au",
+    name: "Overseas",
+    enabled: true,
+    scheme: "E365AU",
+    testScheme: "E365AUTests",
+    testTarget: "E365AUTests",
+    appStoreAppId: "0000000001",
+    bundleId: "online.365english.app",
+    testFlightGroup: "Internal Testing",
+    buildNumberSource: "app-store-connect",
+    releaseMode: "automatic",
+    reviewConfigurationRef: "app-store-review/au",
+    marketingVersion: "1.2.3",
+  };
+  let waiting = true;
+  const iosCalls = [];
+  const options = {
+    db: harness.db,
+    versionId: "version-1",
+    actorId: "release-manager",
+    actorRoles: ["release_manager"],
+    adapter: {
+      release: async () => webSubmission(),
+      readback: async () => webPublication(),
+    },
+    apps: [app],
+    iosAdapter: {
+      release: async () => {
+        iosCalls.push("release");
+        return {
+          externalRequestId: "au-request-1",
+          buildNumber: "101",
+          uploadId: "au-upload-1",
+          processingStatus: "processed",
+          processingId: "au-processing-1",
+          reviewStatus: "submitted",
+          reviewSubmissionId: "au-submission-1",
+          releaseStatus: "not_released",
+          liveStatus: "not_live",
+          observedEvidence: { build: "101" },
+        };
+      },
+      readback: async () => {
+        iosCalls.push("readback");
+        if (waiting) return { status: "waiting_external", reviewStatus: "submitted" };
+        return {
+          status: "completed",
+          externalRequestId: "au-request-1",
+          buildNumber: "101",
+          uploadId: "au-upload-1",
+          processingStatus: "processed",
+          processingId: "au-processing-1",
+          reviewStatus: "approved",
+          reviewSubmissionId: "au-submission-1",
+          reviewId: "au-review-1",
+          releaseStatus: "released",
+          releaseId: "au-release-1",
+          liveStatus: "live",
+          liveId: "au-live-1",
+          liveMarketingVersion: "1.2.3",
+          liveBuildNumber: "101",
+          liveMembershipConfirmed: true,
+          observedEvidence: { build: "101" },
+          liveEvidence: { storefront: "live" },
+        };
+      },
+    },
+  };
+
+  const first = await handleConfirmRelease({ ...options, now: NOW });
+  assert.equal(first.status, "waiting_external");
+  assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "releasing");
+  assert.equal((await loadAggregate(harness.db, "task", "task-a")).state, "ready_for_release");
+
+  waiting = false;
+  const second = await handleConfirmRelease({ ...options, now: "2026-08-04T00:08:00.000Z" });
+  assert.equal(second.status, "succeeded");
+  assert.deepEqual(iosCalls, ["release", "readback", "readback"]);
+  assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "published");
+  assert.equal((await loadAggregate(harness.db, "task", "task-a")).state, "published");
 });
 
 test("confirm release rejects missing or placeholder deployers before state changes", async (t) => {
@@ -176,13 +290,8 @@ test("confirm release fails without exact remote Candidate readback and preserve
     actorRoles: ["release_manager"],
     now: NOW,
     adapter: {
-      release: async () => ({ url: "https://releases.example.com/v1" }),
-      readback: async () => ({
-        confirmed: true,
-        published: true,
-        candidateCommit: "2222222222222222222222222222222222222222",
-        artifactIdentity: ARTIFACT_IDENTITY,
-      }),
+      release: async () => webSubmission(),
+      readback: async () => webPublication("2222222222222222222222222222222222222222"),
     },
   });
 
@@ -245,6 +354,7 @@ test("confirm release rejects Candidate mutations from every web deployer stage"
             object: `releases/${versionId}/${artifactIdentity.digest}/index.html`,
             candidateCommit,
             artifactIdentity,
+            externalRequestId: "web-request-1",
           };
         },
         switchEntry: async ({ candidateCommit, artifactIdentity }) => {
@@ -260,8 +370,12 @@ test("confirm release rejects Candidate mutations from every web deployer stage"
             candidateCommit: mutationStage === "preflight" ? tamperedCommit : CANDIDATE_COMMIT,
             artifactIdentity: structuredClone(tamperedArtifactIdentity),
             url: "https://releases.example.com/v1",
+            externalRequestId: "web-request-1",
+            productionReleaseId: "web-release-1",
+            healthStatus: "healthy",
+            evidence: { source: "production-readback" },
           };
-          return { url: publishedState.url };
+          return { url: publishedState.url, productionReleaseId: "web-release-1" };
         },
         healthCheck: async () => ({ ok: true, status: 200 }),
         readback: async () => structuredClone(publishedState),
@@ -310,7 +424,7 @@ test("confirm release failure leaves tasks ready for release", async (t) => {
   t.after(() => harness.dispose());
   await prepareVersion(harness);
   const adapter = {
-    release: async () => { throw new Error("deploy failed"); },
+    release: async () => { throw deterministicReleaseError("deploy failed"); },
     readback: async () => {
       throw new Error("readback must not run after deployment failure");
     },
@@ -347,7 +461,7 @@ test("release_failed retries the existing immutable Candidate without recomputin
     actorRoles: ["release_manager"],
     now: NOW,
     adapter: {
-      release: async () => { throw new Error("first deployment failed"); },
+      release: async () => { throw deterministicReleaseError("first deployment failed"); },
       readback: async () => { throw new Error("unreachable"); },
     },
   });
@@ -364,14 +478,9 @@ test("release_failed retries the existing immutable Candidate without recomputin
     adapter: {
       release: async ({ manifest }) => {
         deployedManifest = manifest;
-        return { url: "https://releases.example.com/v1" };
+        return webSubmission();
       },
-      readback: async () => ({
-        confirmed: true,
-        published: true,
-        candidateCommit: CANDIDATE_COMMIT,
-        artifactIdentity: ARTIFACT_IDENTITY,
-      }),
+      readback: async () => webPublication(),
     },
   });
 
@@ -418,13 +527,8 @@ test("partial task publication retries remaining tasks before publishing the ver
     regressionEvidence: { passed: true, command: "node --test", collectedAt: NOW },
   });
   const adapter = {
-    release: async () => ({ url: "https://releases.example.com/v1" }),
-    readback: async () => ({
-      confirmed: true,
-      published: true,
-      candidateCommit: CANDIDATE_COMMIT,
-      artifactIdentity: ARTIFACT_IDENTITY,
-    }),
+    release: async () => webSubmission(),
+    readback: async () => webPublication(),
   };
   let failTaskB = true;
   const published = [];
