@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { createWebAdapter } from "./adapters/web.mjs";
+import { sanitizeObservedEvidenceString } from "../domain/redaction.mjs";
 
 const execFileAsync = promisify(execFile);
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
@@ -13,13 +14,14 @@ function requiredString(value, label) {
 }
 
 function sanitize(value) {
-  return String(value ?? "")
+  const redacted = String(value ?? "")
     .replace(/-----BEGIN[\s\S]*?PRIVATE KEY-----[\s\S]*?-----END[\s\S]*?PRIVATE KEY-----/gi, "[REDACTED]")
     .replace(/authorization\s*:\s*bearer\s+[^\s,;]+/gi, "[REDACTED]")
     .replace(/cookie\s*:\s*[^\r\n]+/gi, "[REDACTED]")
     .replace(/(?:token|secret|password|api[_-]?key|signature)\s*[=:]\s*[^\s,;]+/gi, "[REDACTED]")
     .replace(/https?:\/\/[^\s/@]+:[^\s/@]+@/gi, "https://[REDACTED]@")
     .replace(/\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED]");
+  return sanitizeObservedEvidenceString(redacted);
 }
 
 function finalJson(stdout) {
@@ -31,6 +33,33 @@ function finalJson(stdout) {
   } catch {
     throw new Error("production release command did not return final JSON evidence");
   }
+}
+
+function sanitizeEvidence(value) {
+  if (typeof value === "string") return sanitizeObservedEvidenceString(value);
+  if (Array.isArray(value)) return value.map(sanitizeEvidence);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+      sanitizeObservedEvidenceString(key), sanitizeEvidence(child),
+    ]));
+  }
+  return value;
+}
+
+function validateCommandResult(value) {
+  const result = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (sanitizeObservedEvidenceString(key) !== key) throw new Error("production release command returned unsafe evidence");
+    if (/evidence|log|comment/i.test(key)) {
+      result[key] = sanitizeEvidence(child);
+      continue;
+    }
+    if (typeof child === "string" && sanitizeObservedEvidenceString(child) !== child) {
+      throw new Error(`production release command returned unsafe ${key}`);
+    }
+    result[key] = child && typeof child === "object" ? validateCommandResult(child) : child;
+  }
+  return result;
 }
 
 function manifestEnvironment({ mode, manifest, platform = "", idempotencyKey = "", deployment = null, readbackLocator = null, runtime }) {
@@ -76,7 +105,8 @@ export function createReleaseAdapter({ runtime, projectRoot, runCommand = execFi
         signal: options.signal,
         env: manifestEnvironment({ mode, runtime, ...options }),
       });
-      return finalJson(result.stdout);
+      const parsed = finalJson(result.stdout);
+      return mode === "regression" ? sanitizeEvidence(parsed) : validateCommandResult(parsed);
     } catch (error) {
       if (/final JSON evidence/.test(error?.message ?? "")) throw error;
       const kind = error?.name === "AbortError"

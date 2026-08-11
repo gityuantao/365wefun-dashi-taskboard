@@ -12,6 +12,10 @@ import { handleTestDecision } from "../../orchestration/application/test-gate.mj
 import { executeStagingGate } from "../../orchestration/application/staging-coordinator.mjs";
 import { freezeManifest } from "../../orchestration/release/version-aggregator.mjs";
 import { handleConfirmRelease } from "../../orchestration/application/release-commands.mjs";
+import { executeProductionRelease } from "../../orchestration/application/production-release-coordinator.mjs";
+import { coordinateReleaseSnapshot } from "../../orchestration/application/release-coordinator.mjs";
+import { startDashboardServer } from "../../orchestration/dashboard/http-server.mjs";
+import { seedDashboardFixture } from "../helpers/dashboard-fixture.mjs";
 import { createWebAdapter } from "../../orchestration/release/adapters/web.mjs";
 import { loadAggregate } from "../../orchestration/persistence/d1-aggregate-store.mjs";
 import { loadManifest } from "../../orchestration/release/version-aggregator.mjs";
@@ -20,6 +24,8 @@ import { parseCommandEnvelope } from "../../orchestration/domain/commands.mjs";
 import { dispatchCommand } from "../../orchestration/application/dispatch-command.mjs";
 import { appendCommandResult } from "../../orchestration/persistence/d1-event-store.mjs";
 import { saveSnapshot } from "../../orchestration/clickup/snapshot.mjs";
+import { loadLastConfirmed } from "../../orchestration/clickup/snapshot.mjs";
+import { flushOutbox } from "../../orchestration/clickup/outbox.mjs";
 
 const NOW = "2026-08-04T00:10:00.000Z";
 const CANDIDATE_COMMIT = "1111111111111111111111111111111111111111";
@@ -67,10 +73,12 @@ const CONFIG = {
     task: {
       自动化纳管: { id: "field-managed", type: "checkbox" },
       目标版本: { id: "field-version", type: "short_text" },
+      影响平台: { id: "field-platforms", type: "labels" },
     },
     taskSandbox: {
       自动化纳管: { id: "field-managed", type: "checkbox" },
       目标版本: { id: "field-version", type: "short_text" },
+      影响平台: { id: "field-platforms", type: "labels" },
     },
     version: {
       发布阻塞: { id: "field-ver-block", type: "drop_down" },
@@ -113,6 +121,7 @@ async function makeEnv(
   taskProvider,
   commentsProvider = () => [],
   attachmentProvider = () => null,
+  versionProvider = () => ({ id: "version-e2e-1", name: "version-e2e-1", status: { status: "进行中" } }),
 ) {
   return {
     DB: harness.db,
@@ -123,9 +132,7 @@ async function makeEnv(
     CLICKUP_WORKTREES_ROOT: "/tmp/repo-e2e/.wt",
     clientFactory: async () => ({
       getTasksByList: async () => [taskProvider()],
-      getVersionsByList: async () => [
-        { id: "version-e2e-1", name: "version-e2e-1", status: { status: "进行中" } },
-      ],
+      getVersionsByList: async () => [versionProvider()],
       getTask: async () => taskProvider(),
       getComments: async () => commentsProvider(),
       downloadAttachment: async (url) => {
@@ -240,7 +247,7 @@ test("complete MVP loop preserves an image-only rejection through development an
   const codex = {
     run: async (options) => {
       const { prompt } = options;
-      if (prompt.includes("研发分析器")) {
+      if (prompt.startsWith("你是研发分析器")) {
         return { exitCode: 0, stdout: JSON.stringify({
           scope: "实现录音回放按钮",
           acceptance_criteria: [{ id: "ac-1", criterion: "按钮可点击", verification: "手动测试" }],
@@ -248,7 +255,7 @@ test("complete MVP loop preserves an image-only rejection through development an
           open_questions: [],
         }), stderr: "" };
       }
-      if (prompt.includes("验收器")) {
+      if (prompt.startsWith("你是代码验收器")) {
         acceptanceCodexOptions = options;
         acceptanceImageDirectory = await inspectLiveCodexImage(options);
         return { exitCode: 0, stdout: JSON.stringify({
@@ -303,6 +310,11 @@ test("complete MVP loop preserves an image-only rejection through development an
   // 2) Companion 领取并执行分析 -> 待开发
   const fetchImpl = async (url, init = {}) => {
     if (init.method === "POST") {
+      const body = JSON.parse(init.body);
+      const jobId = new URL(url).pathname.split("/").at(-2);
+      await harness.db.prepare(
+        "UPDATE runner_jobs SET status = ?, result = ?, completed_at = ? WHERE id = ?",
+      ).bind(body.status, JSON.stringify(body.result), NOW, jobId).run();
       return new Response(JSON.stringify({ status: "completed" }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -539,6 +551,7 @@ test("complete MVP loop preserves an image-only rejection through development an
     actorRoles: ["release_manager"],
     now: NOW,
     adapter: createWebAdapter({ deployer }),
+    targetPlanValidated: true,
   });
   assert.equal(release.status, "succeeded");
   assert.equal((await loadAggregate(harness.db, "version", "version-e2e-1")).state, "published");
@@ -715,4 +728,505 @@ test("missing adapter rejection resumes staging after configuration is restored"
 
   assert.equal(stageResult.status, "completed", JSON.stringify(stageResult));
   assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "ready_for_test");
+});
+
+test("frozen production scope advances Web and three configured Apps to exact aggregate live", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const manifest = {
+    versionId: "version-production-e2e",
+    candidateCommit: CANDIDATE_COMMIT,
+    checksum: "manifest-production-e2e",
+    artifactIdentity: CANDIDATE_ARTIFACT,
+  };
+  const apps = [
+    ["au", "0000000001", "online.365english.app"],
+    ["cn", "0000000002", "online.365english.china"],
+    ["nz", "0000000003", "online.365english.nz"],
+  ].map(([id, appStoreAppId, bundleId]) => ({
+    id, name: id.toUpperCase(), enabled: true, appStoreAppId, bundleId,
+    scheme: `E365${id.toUpperCase()}`, testScheme: `E365${id.toUpperCase()}Tests`,
+    testTarget: `E365${id.toUpperCase()}Tests`, testFlightGroup: `Internal ${id.toUpperCase()}`,
+    buildNumberSource: "app-store-connect", releaseMode: "automatic",
+    reviewConfigurationRef: `app-store-review/${id}`, marketingVersion: "1.2.3",
+  }));
+  const effects = [];
+  const live = new Set();
+  const submission = (app) => {
+    const values = {
+      externalRequestId: `${app.id}-request`, buildNumber: `${apps.indexOf(app) + 101}`,
+      uploadId: `${app.id}-upload`, processingId: `${app.id}-processing`,
+      reviewSubmissionId: `${app.id}-submission`, processingStatus: "processed",
+      reviewStatus: "submitted", releaseStatus: "not_released", liveStatus: "not_live",
+    };
+    return { ...values, lineage: { ...values }, observedEvidence: { appId: app.id } };
+  };
+  const iosAdapter = {
+    release: async ({ app, recordStage }) => {
+      effects.push(`release:${app.id}`);
+      const values = submission(app);
+      for (const stage of ["test", "archive", "upload", "processing", "review_submit", "review_wait"]) {
+        await recordStage(stage, values);
+      }
+      return values;
+    },
+    readback: async ({ app, submission: persisted, recordStage }) => {
+      effects.push(`readback:${app.id}`);
+      await recordStage(live.has(app.id) ? "live_readback" : "review_wait", persisted);
+      const base = submission(app);
+      if (!live.has(app.id)) return {
+        ...base, status: "waiting_external", authoritative: true, submissionExists: true,
+      };
+      const terminal = {
+        ...base, status: "completed", authoritative: true, reviewStatus: "approved",
+        reviewId: `${app.id}-review`, releaseStatus: "released", releaseId: `${app.id}-release-id`,
+        liveStatus: "live", liveId: `${app.id}-live`, liveMarketingVersion: app.marketingVersion,
+        liveBuildNumber: base.buildNumber, liveMembershipConfirmed: true,
+      };
+      terminal.lineage = {
+        ...base.lineage, reviewId: terminal.reviewId, releaseId: terminal.releaseId, liveId: terminal.liveId,
+      };
+      terminal.liveEvidence = {
+        appStoreAppId: app.appStoreAppId, marketingVersion: app.marketingVersion,
+        buildNumber: base.buildNumber, liveId: terminal.liveId, membershipConfirmed: true,
+      };
+      return terminal;
+    },
+  };
+  let webPublished = false;
+  const webAdapter = {
+    release: async () => {
+      effects.push("release:web");
+      webPublished = true;
+      return { externalRequestId: "web-request", artifactIdentity: CANDIDATE_ARTIFACT, productionReleaseId: "web-release", observedEvidence: { upload: "ok" } };
+    },
+    readback: async () => ({
+      confirmed: true, published: webPublished, status: "published", authoritative: true,
+      candidateCommit: CANDIDATE_COMMIT, artifactIdentity: CANDIDATE_ARTIFACT,
+      externalRequestId: "web-request", productionReleaseId: "web-release", healthStatus: "healthy",
+      readbackStatus: "confirmed", observedEvidence: { release: "web-release" }, readbackEvidence: { sha: CANDIDATE_COMMIT },
+    }),
+  };
+  const execute = () => executeProductionRelease({
+    db: harness.db, manifest,
+    platforms: [{ id: "task-production-e2e", platforms: ["web", "ios"] }],
+    apps, webAdapter, iosAdapter,
+    lease: { holder: "production-e2e", durationMs: 60_000, now: () => NOW }, now: NOW,
+  });
+
+  assert.equal((await execute()).status, "waiting_external");
+  live.add("au");
+  assert.equal((await execute()).status, "waiting_external");
+  live.add("cn");
+  assert.equal((await execute()).status, "waiting_external");
+  live.add("nz");
+  const completed = await execute();
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.publication.published, true);
+  assert.deepEqual(effects.filter((effect) => effect.startsWith("release:")), [
+    "release:web", "release:au", "release:cn", "release:nz",
+  ]);
+  assert.deepEqual(completed.targets.map(({ platform, appId, status }) => [platform, appId, status]), [
+    ["web", "", "succeeded"], ["ios", "au", "succeeded"],
+    ["ios", "cn", "succeeded"], ["ios", "nz", "succeeded"],
+  ]);
+});
+
+test("dashboard confirmation reaches frozen all-App publication and compensates partial cleanup", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.exec(`
+    DELETE FROM release_manifests WHERE version_id = 'version-1';
+    DELETE FROM orchestration_events WHERE id = 'evt-3';
+    UPDATE orchestration_events SET hash = '${"a".repeat(64)}' WHERE id = 'evt-1';
+    UPDATE orchestration_events SET previous_hash = NULL, hash = '${"b".repeat(64)}' WHERE id = 'evt-2';
+  `);
+  const taskRow = await harness.db.prepare(
+    "SELECT snapshot FROM clickup_snapshots WHERE object_type = 'task' AND object_id = 'task-1'",
+  ).first();
+  const taskSnapshot = { ...JSON.parse(taskRow.snapshot), platforms: ["web", "ios"] };
+  await harness.db.prepare(
+    "UPDATE clickup_snapshots SET snapshot = ? WHERE object_type = 'task' AND object_id = 'task-1'",
+  ).bind(JSON.stringify(taskSnapshot)).run();
+
+  const apps = [
+    ["au", "0000000001", "online.365english.app"],
+    ["cn", "0000000002", "online.365english.china"],
+    ["nz", "0000000003", "online.365english.nz"],
+  ].map(([id, appStoreAppId, bundleId]) => ({
+    id, name: id.toUpperCase(), enabled: true, appStoreAppId, bundleId,
+    scheme: `E365${id.toUpperCase()}`, testScheme: `E365${id.toUpperCase()}Tests`,
+    testTarget: `E365${id.toUpperCase()}Tests`, testFlightGroup: `Internal ${id.toUpperCase()}`,
+    buildNumberSource: "app-store-connect", releaseMode: "automatic",
+    reviewConfigurationRef: `app-store-review/${id}`,
+  }));
+
+  const secret = "production-e2e-secret";
+  const dashboard = await startDashboardServer({
+    db: harness.db, port: 0, mutationSecret: secret,
+    versionStatusMap: { 发布中: "releasing" }, productionReadiness: { ready: true }, productionTargetApps: apps,
+  });
+  t.after(() => dashboard.close());
+  const beforePublish = await fetch(`http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1`);
+  const beforePublishBody = await beforePublish.json();
+  assert.equal(beforePublishBody.releaseReadiness.ready, true, JSON.stringify(beforePublishBody.releaseReadiness));
+  for (let click = 0; click < 2; click += 1) {
+    const response = await fetch(
+      `http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${secret}`, "content-type": "application/json", "x-orchestration-actor-roles": '["release_manager"]' },
+        body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "production-e2e-request" }),
+      },
+    );
+    const responseBody = await response.json();
+    assert.equal(response.status, 200, `click ${click}: ${JSON.stringify(responseBody)}`);
+  }
+  assert.equal((await harness.db.prepare(
+    "SELECT COUNT(*) AS count FROM outbox_mutations WHERE object_id = 'version-1'",
+  ).first()).count, 1);
+  let remoteVersionStatus = "进行中";
+  await flushOutbox(harness.db, {
+    getTask: async () => ({ status: { status: remoteVersionStatus } }),
+    updateTaskStatus: async (_id, status) => { remoteVersionStatus = status; },
+  }, { now: NOW, config: CONFIG });
+  assert.equal(remoteVersionStatus, "发布中");
+  const pollEnv = await makeEnv(
+    harness,
+    () => ({ ...makeClickUpTask(), id: "task-1", name: "任务一", status: { status: "待发布" }, custom_fields: [
+      { id: "field-managed", name: "自动化纳管", value: true },
+      { id: "field-version", name: "目标版本", value: "1.0.1" },
+      { id: "field-platforms", name: "影响平台", value: ["platform-web", "platform-ios"], type_config: { options: [
+        { id: "platform-web", label: "Web" }, { id: "platform-ios", label: "iOS" },
+      ] } },
+    ] }),
+    () => [],
+    () => null,
+    () => ({ id: "version-1", name: "1.0.1", status: { status: remoteVersionStatus } }),
+  );
+  const releasePoll = await pollClickUpOnce(pollEnv, { now: NOW });
+  const releasingSnapshot = await loadLastConfirmed(harness.db, "version", "version-1");
+  assert.equal(releasingSnapshot.status, "releasing", JSON.stringify(releasePoll));
+
+  const live = new Set();
+  const effects = [];
+  const iosSubmission = (app) => {
+    const values = {
+      externalRequestId: `${app.id}-request`, buildNumber: `${apps.indexOf(app) + 201}`,
+      uploadId: `${app.id}-upload`, processingId: `${app.id}-processing`,
+      reviewSubmissionId: `${app.id}-submission`, processingStatus: "processed",
+      reviewStatus: "submitted", releaseStatus: "not_released", liveStatus: "not_live",
+    };
+    return { ...values, lineage: { ...values }, observedEvidence: { appId: app.id } };
+  };
+  const iosAdapter = {
+    release: async ({ app, recordStage }) => {
+      effects.push(`release:${app.id}`);
+      const values = iosSubmission(app);
+      for (const stage of ["test", "archive", "upload", "processing", "review_submit", "review_wait"]) await recordStage(stage, values);
+      return values;
+    },
+    readback: async ({ app, submission, recordStage }) => {
+      await recordStage(live.has(app.id) ? "live_readback" : "review_wait", submission);
+      const base = iosSubmission(app);
+      if (!live.has(app.id)) return { ...base, status: "waiting_external", authoritative: true, submissionExists: true };
+      const terminal = {
+        ...base, status: "completed", authoritative: true, reviewStatus: "approved", reviewId: `${app.id}-review`,
+        releaseStatus: "released", releaseId: `${app.id}-release-id`, liveStatus: "live", liveId: `${app.id}-live`,
+        liveMarketingVersion: "1.0.1", liveBuildNumber: base.buildNumber, liveMembershipConfirmed: true,
+      };
+      terminal.lineage = { ...base.lineage, reviewId: terminal.reviewId, releaseId: terminal.releaseId, liveId: terminal.liveId };
+      terminal.liveEvidence = { appStoreAppId: app.appStoreAppId, marketingVersion: "1.0.1", buildNumber: base.buildNumber, liveId: terminal.liveId, membershipConfirmed: true };
+      return terminal;
+    },
+  };
+  let webLive = false;
+  const adapter = {
+    collectRegressionEvidence: async () => ({ passed: true, command: "node --test" }),
+    identifyArtifact: async () => CANDIDATE_ARTIFACT,
+    release: async () => {
+      effects.push("release:web"); webLive = true;
+      return { externalRequestId: "web-request", artifactIdentity: CANDIDATE_ARTIFACT, productionReleaseId: "web-release", observedEvidence: { upload: "ok" } };
+    },
+    readback: async () => ({ confirmed: true, published: webLive, status: "published", authoritative: true,
+      candidateCommit: CANDIDATE_COMMIT, artifactIdentity: CANDIDATE_ARTIFACT, externalRequestId: "web-request",
+      productionReleaseId: "web-release", healthStatus: "healthy", readbackStatus: "confirmed",
+      observedEvidence: { release: "web-release" }, readbackEvidence: { sha: CANDIDATE_COMMIT } }),
+  };
+  let cleanupFailure = true;
+  const cleanup = [];
+  const common = {
+    snapshot: releasingSnapshot, now: NOW,
+    db: harness.db, adapter, iosAdapter, apps,
+    releaseLease: { holder: "production-e2e", durationMs: 60_000, now: () => NOW },
+    productionReadiness: { ready: true }, client: { postComment: async () => ({}) },
+    runtime: { repoPath: "/repo", worktreesRoot: "/worktrees" }, repository: "owner/repo",
+    releaseGitOps: {
+      integrateTaskPr: async () => ({ merged: true, versionBranch: "version/1.0.1", taskHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", candidateCommit: CANDIDATE_COMMIT, headRefName: "task/task-1", prNumber: 1, repository: "owner/repo" }),
+      persistCandidate: async () => ({ persisted: true, candidateRef: `refs/heads/release-candidate/version-1/${CANDIDATE_COMMIT}` }),
+      verifyCandidate: async () => ({ verified: true }),
+    },
+    services: {
+      closeTaskPullRequest: async () => cleanup.push("close"),
+      deleteRemoteTaskBranch: async () => { cleanup.push("remote"); if (cleanupFailure) { cleanupFailure = false; throw new Error("temporary cleanup failure"); } },
+      removeTaskWorktree: async () => cleanup.push("local"),
+    },
+  };
+
+  const initialRelease = await coordinateReleaseSnapshot(common);
+  assert.equal(initialRelease.status, "waiting_external", JSON.stringify(initialRelease));
+  for (const app of apps) {
+    live.add(app.id);
+    const result = await coordinateReleaseSnapshot(common);
+    if (app !== apps.at(-1)) assert.equal(result.status, "waiting_external");
+    else assert.equal(result.status, "succeeded");
+  }
+  assert.equal((await loadAggregate(harness.db, "version", "version-1")).state, "published");
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "published");
+  assert.deepEqual(effects.filter((value) => value.startsWith("release:")), ["release:web", "release:au", "release:cn", "release:nz"]);
+  assert.deepEqual(cleanup, ["close", "remote"]);
+
+  const retried = await coordinateReleaseSnapshot({ ...common, snapshot: { ...common.snapshot, status: "published" } });
+  assert.equal(retried.status, "succeeded");
+  assert.deepEqual(cleanup, ["close", "remote", "remote", "local"]);
+});
+
+test("production target order short-circuits first-App failure and records second-App review rejection after Web", async (t) => {
+  const apps = ["au", "cn"].map((id, index) => ({
+    id, name: id, enabled: true, appStoreAppId: `000000000${index + 1}`,
+    bundleId: `online.365english.${id}`, scheme: `E365${id.toUpperCase()}`,
+    testScheme: `E365${id.toUpperCase()}Tests`, testTarget: `E365${id.toUpperCase()}Tests`,
+    testFlightGroup: `Internal ${id}`, buildNumberSource: "app-store-connect",
+    releaseMode: "automatic", reviewConfigurationRef: `app-store-review/${id}`,
+    marketingVersion: "1.2.3",
+  }));
+  const webAdapter = {
+    release: async () => ({ externalRequestId: "web-request", artifactIdentity: CANDIDATE_ARTIFACT, productionReleaseId: "web-release", observedEvidence: { ok: true } }),
+    readback: async () => ({ confirmed: true, published: true, status: "published", authoritative: true,
+      candidateCommit: CANDIDATE_COMMIT, artifactIdentity: CANDIDATE_ARTIFACT, externalRequestId: "web-request",
+      productionReleaseId: "web-release", healthStatus: "healthy", readbackStatus: "confirmed",
+      observedEvidence: { ok: true }, readbackEvidence: { ok: true } }),
+  };
+  const submission = (app) => {
+    const base = { externalRequestId: `${app.id}-request`, buildNumber: "301", uploadId: `${app.id}-upload`, processingId: `${app.id}-processing`, reviewSubmissionId: `${app.id}-submission` };
+    return { ...base, processingStatus: "processed", reviewStatus: "submitted", lineage: base, observedEvidence: { appId: app.id } };
+  };
+  const executeCase = async ({ versionId, failApp, rejectApp }) => {
+    const harness = await createCloudWorkerHarness();
+    t.after(() => harness.dispose());
+    const calls = [];
+    const iosAdapter = {
+      release: async ({ app, recordStage }) => {
+        calls.push(`release:${app.id}`);
+        if (app.id === failApp) {
+          const error = new Error("deterministic App failure");
+          error.deterministic = true; error.failureClassification = "validation";
+          throw error;
+        }
+        const value = submission(app);
+        for (const stage of ["test", "archive", "upload", "processing", "review_submit", "review_wait"]) await recordStage(stage, value);
+        return value;
+      },
+      readback: async ({ app, submission: persisted, recordStage }) => {
+        calls.push(`readback:${app.id}`);
+        await recordStage("review_wait", persisted);
+        if (app.id === rejectApp) return { ...submission(app), status: "waiting_external", authoritative: true, submissionExists: true, reviewStatus: "rejected" };
+        const base = submission(app);
+        const terminal = { ...base, status: "completed", authoritative: true, reviewStatus: "approved", reviewId: `${app.id}-review`, releaseStatus: "released", releaseId: `${app.id}-release`, liveStatus: "live", liveId: `${app.id}-live`, liveMarketingVersion: "1.2.3", liveBuildNumber: base.buildNumber, liveMembershipConfirmed: true };
+        terminal.lineage = { ...base.lineage, reviewId: terminal.reviewId, releaseId: terminal.releaseId, liveId: terminal.liveId };
+        terminal.liveEvidence = { appStoreAppId: app.appStoreAppId, marketingVersion: "1.2.3", buildNumber: base.buildNumber, liveId: terminal.liveId, membershipConfirmed: true };
+        return terminal;
+      },
+    };
+    const result = await executeProductionRelease({
+      db: harness.db, manifest: { versionId, candidateCommit: CANDIDATE_COMMIT, checksum: `manifest-${versionId}`, artifactIdentity: CANDIDATE_ARTIFACT },
+      platforms: [{ id: "task", platforms: ["web", "ios"] }], apps, webAdapter, iosAdapter,
+      lease: { holder: versionId, durationMs: 60_000, now: () => NOW }, now: NOW,
+    });
+    return { result, calls };
+  };
+
+  const first = await executeCase({ versionId: "v-first-app-fails", failApp: "au" });
+  assert.equal(first.result.status, "failed");
+  assert.deepEqual(first.calls, ["release:au"]);
+
+  const second = await executeCase({ versionId: "v-second-app-rejected", rejectApp: "cn" });
+  assert.equal(second.result.status, "failed");
+  assert.deepEqual(second.calls, ["release:au", "readback:au", "release:cn", "readback:cn"]);
+  assert.equal(second.result.targets.find((target) => target.platform === "web").status, "succeeded");
+  assert.equal(second.result.targets.find((target) => target.appId === "au").status, "succeeded");
+  assert.equal(second.result.targets.find((target) => target.appId === "cn").failureClassification, "product_rework");
+  assert.equal(second.result.publication, undefined);
+});
+
+test("production recovery uses GET after restart, fences takeover, and blocks mini-program", async (t) => {
+  await t.test("unknown POST outcome is reconciled by a reconstructed adapter without another POST", async (t) => {
+    const harness = await createCloudWorkerHarness();
+    t.after(() => harness.dispose());
+    const manifest = {
+      versionId: "v-restart-reconcile", candidateCommit: CANDIDATE_COMMIT,
+      checksum: "manifest-restart-reconcile", artifactIdentity: CANDIDATE_ARTIFACT,
+    };
+    let postCalls = 0;
+    const first = await executeProductionRelease({
+      db: harness.db, manifest, platforms: [{ id: "task-restart", platforms: ["web"] }], apps: [],
+      webAdapter: {
+        release: async () => { postCalls += 1; throw new Error("connection reset after production switch"); },
+        readback: async () => { throw new Error("first worker must not reconcile its own unknown POST"); },
+      },
+      iosAdapter: null, lease: { holder: "worker-before-restart", durationMs: 60_000, now: () => NOW }, now: NOW,
+    });
+    assert.equal(first.status, "waiting_external");
+
+    let getCalls = 0;
+    const afterRestart = await executeProductionRelease({
+      db: harness.db, manifest, platforms: [{ id: "task-restart", platforms: ["web"] }], apps: [],
+      webAdapter: {
+        release: async () => { throw new Error("restart must not repeat production POST"); },
+        readback: async () => {
+          getCalls += 1;
+          return {
+            confirmed: true, published: true, status: "published", authoritative: true,
+            candidateCommit: CANDIDATE_COMMIT, artifactIdentity: CANDIDATE_ARTIFACT,
+            externalRequestId: "web-request-recovered", productionReleaseId: "web-release-recovered",
+            healthStatus: "healthy", readbackStatus: "confirmed",
+            observedEvidence: { source: "authoritative-get" }, readbackEvidence: { recovered: true },
+          };
+        },
+      },
+      iosAdapter: null,
+      lease: { holder: "worker-after-restart", durationMs: 60_000, now: () => "2026-08-04T00:12:00.000Z" },
+      now: "2026-08-04T00:12:00.000Z",
+    });
+    assert.equal(afterRestart.status, "completed");
+    assert.equal(postCalls, 1);
+    assert.equal(getCalls, 1);
+  });
+
+  await t.test("lease takeover fences every later external effect", async (t) => {
+    const harness = await createCloudWorkerHarness();
+    t.after(() => harness.dispose());
+    const manifest = {
+      versionId: "v-fencing-e2e", candidateCommit: CANDIDATE_COMMIT,
+      checksum: "manifest-fencing-e2e", artifactIdentity: CANDIDATE_ARTIFACT,
+    };
+    const calls = [];
+    const result = await executeProductionRelease({
+      db: harness.db, manifest,
+      platforms: [{ id: "task-fencing", platforms: ["web", "ios"] }],
+      apps: [{
+        id: "au", name: "AU", enabled: true, appStoreAppId: "0000000001", bundleId: "online.365english.app",
+        scheme: "E365AU", testScheme: "E365AUTests", testTarget: "E365AUTests", testFlightGroup: "Internal AU",
+        buildNumberSource: "app-store-connect", releaseMode: "automatic", reviewConfigurationRef: "app-store-review/au",
+        marketingVersion: "1.2.3",
+      }],
+      webAdapter: {
+        release: async () => {
+          calls.push("web:release");
+          await harness.db.prepare(
+            `UPDATE orchestration_leases SET holder = 'takeover-worker', fencing_token = fencing_token + 1,
+             expires_at = '2026-08-04T01:00:00.000Z' WHERE aggregate_type = 'version' AND aggregate_id = ?`,
+          ).bind(manifest.versionId).run();
+          return { externalRequestId: "web-request", artifactIdentity: CANDIDATE_ARTIFACT, productionReleaseId: "web-release", observedEvidence: { ok: true } };
+        },
+        readback: async () => calls.push("web:readback"),
+      },
+      iosAdapter: {
+        release: async () => calls.push("ios:release"),
+        readback: async () => calls.push("ios:readback"),
+      },
+      lease: { holder: "original-worker", durationMs: 60_000, now: () => NOW }, now: NOW,
+    });
+    assert.equal(result.status, "waiting_external");
+    assert.deepEqual(calls, ["web:release"]);
+  });
+
+  await t.test("restart during iOS review wait performs readback only with exact persisted lineage", async (t) => {
+    const harness = await createCloudWorkerHarness();
+    t.after(() => harness.dispose());
+    const manifest = {
+      versionId: "v-ios-review-restart", candidateCommit: CANDIDATE_COMMIT,
+      checksum: "manifest-ios-review-restart", artifactIdentity: CANDIDATE_ARTIFACT,
+    };
+    const app = {
+      id: "au", name: "AU", enabled: true, appStoreAppId: "0000000001", bundleId: "online.365english.app",
+      scheme: "E365AU", testScheme: "E365AUTests", testTarget: "E365AUTests", testFlightGroup: "Internal AU",
+      buildNumberSource: "app-store-connect", releaseMode: "automatic", reviewConfigurationRef: "app-store-review/au",
+      marketingVersion: "1.2.3",
+    };
+    const base = {
+      externalRequestId: "au-request", buildNumber: "401", uploadId: "au-upload",
+      processingId: "au-processing", reviewSubmissionId: "au-submission",
+      processingStatus: "processed", reviewStatus: "submitted", releaseStatus: "not_released", liveStatus: "not_live",
+    };
+    const submission = { ...base, lineage: { ...base }, observedEvidence: { phase: "review_wait" } };
+    const beforeRestartCalls = [];
+    const first = await executeProductionRelease({
+      db: harness.db, manifest, platforms: [{ id: "task-ios-restart", platforms: ["ios"] }], apps: [app],
+      webAdapter: null,
+      iosAdapter: {
+        release: async ({ recordStage }) => {
+          beforeRestartCalls.push("upload-and-submit");
+          for (const stage of ["test", "archive", "upload", "processing", "review_submit", "review_wait"]) await recordStage(stage, submission);
+          return submission;
+        },
+        readback: async ({ submission: persisted, recordStage }) => {
+          beforeRestartCalls.push("review-get");
+          assert.equal(persisted.reviewSubmissionId, base.reviewSubmissionId);
+          await recordStage("review_wait", persisted);
+          return { ...submission, status: "waiting_external", authoritative: true, submissionExists: true };
+        },
+      },
+      lease: { holder: "ios-worker-before-restart", durationMs: 60_000, now: () => NOW }, now: NOW,
+    });
+    assert.equal(first.status, "waiting_external");
+    assert.deepEqual(beforeRestartCalls, ["upload-and-submit", "review-get"]);
+
+    const afterRestartCalls = [];
+    const second = await executeProductionRelease({
+      db: harness.db, manifest, platforms: [{ id: "task-ios-restart", platforms: ["ios"] }], apps: [app],
+      webAdapter: null,
+      iosAdapter: {
+        release: async () => { afterRestartCalls.push("unexpected-upload-or-submit"); throw new Error("must not repeat submission"); },
+        readback: async ({ submission: persisted, recordStage }) => {
+          afterRestartCalls.push("review-get");
+          assert.equal(persisted.externalRequestId, base.externalRequestId);
+          assert.equal(persisted.buildNumber, base.buildNumber);
+          assert.equal(persisted.uploadId, base.uploadId);
+          assert.equal(persisted.reviewSubmissionId, base.reviewSubmissionId);
+          const terminal = {
+            ...submission, status: "completed", authoritative: true, reviewStatus: "approved", reviewId: "au-review",
+            releaseStatus: "released", releaseId: "au-release", liveStatus: "live", liveId: "au-live",
+            liveMarketingVersion: "1.2.3", liveBuildNumber: base.buildNumber, liveMembershipConfirmed: true,
+          };
+          terminal.lineage = { ...base, reviewId: terminal.reviewId, releaseId: terminal.releaseId, liveId: terminal.liveId };
+          terminal.liveEvidence = { appStoreAppId: app.appStoreAppId, marketingVersion: "1.2.3", buildNumber: base.buildNumber, liveId: terminal.liveId, membershipConfirmed: true };
+          await recordStage("live_readback", submission);
+          return terminal;
+        },
+      },
+      lease: { holder: "ios-worker-after-restart", durationMs: 60_000, now: () => "2026-08-04T00:12:00.000Z" },
+      now: "2026-08-04T00:12:00.000Z",
+    });
+    assert.equal(second.status, "completed", JSON.stringify(second));
+    assert.deepEqual(afterRestartCalls, ["review-get"]);
+  });
+
+  await t.test("mini-program is rejected before persistence or adapter side effects", async (t) => {
+    const harness = await createCloudWorkerHarness();
+    t.after(() => harness.dispose());
+    const calls = [];
+    await assert.rejects(executeProductionRelease({
+      db: harness.db,
+      manifest: { versionId: "v-mini-program", candidateCommit: CANDIDATE_COMMIT, checksum: "manifest-mini-program", artifactIdentity: CANDIDATE_ARTIFACT },
+      platforms: [{ id: "task-mini", platforms: ["mini-program"] }], apps: [],
+      webAdapter: { release: async () => calls.push("release"), readback: async () => calls.push("readback") },
+      iosAdapter: null, lease: { holder: "mini-worker", durationMs: 60_000, now: () => NOW }, now: NOW,
+    }), (error) => error?.code === "UNSUPPORTED_PRODUCTION_PLATFORM");
+    assert.deepEqual(calls, []);
+    for (const table of ["production_release_attempts", "production_release_targets"]) {
+      assert.equal((await harness.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first()).count, 0);
+    }
+  });
 });

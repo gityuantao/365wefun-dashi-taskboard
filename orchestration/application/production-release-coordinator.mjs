@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 
 import { DomainError } from "../domain/errors.mjs";
+import { sanitizeObservedEvidenceString } from "../domain/redaction.mjs";
 import { enabledIosApps, loadIosApps } from "../ios/app-registry.mjs";
 import { assertProductionPlatformsSupported } from "../release/platform-gate.mjs";
 import {
@@ -27,6 +28,42 @@ function invalid(message) {
 
 function nonEmpty(value) {
   return typeof value === "string" && value.trim() !== "";
+}
+
+function sanitizeEvidenceValue(value) {
+  if (typeof value === "string") return sanitizeObservedEvidenceString(value);
+  if (Array.isArray(value)) return value.map(sanitizeEvidenceValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+      sanitizeObservedEvidenceString(key), sanitizeEvidenceValue(child),
+    ]));
+  }
+  return value;
+}
+
+function sanitizeAdapterResponse(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw postEffectContractFailure("production release adapter returned invalid evidence");
+  }
+  const result = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (sanitizeObservedEvidenceString(key) !== key) {
+      throw postEffectContractFailure("production release adapter returned an unsafe evidence field");
+    }
+    if (/evidence/i.test(key)) {
+      result[key] = sanitizeEvidenceValue(child);
+      continue;
+    }
+    if (typeof child === "string" && sanitizeObservedEvidenceString(child) !== child) {
+      throw postEffectContractFailure(`production release adapter returned unsafe ${key}`);
+    }
+    if (child && typeof child === "object") {
+      result[key] = sanitizeAdapterResponse(child);
+      continue;
+    }
+    result[key] = child;
+  }
+  return result;
 }
 
 function validateManifest(manifest) {
@@ -514,7 +551,7 @@ async function executeTarget({
       });
     }
     try {
-      submission = await fencedExternalEffect(
+      submission = sanitizeAdapterResponse(await fencedExternalEffect(
         { db, activeLease, leaseOptions, now },
         (fencing) => adapter.release({
           manifest,
@@ -524,7 +561,7 @@ async function executeTarget({
           recordStage,
           ...fencing,
         }),
-      );
+      ));
       const distinctRecordedStages = recordedStages.filter((stage, index) => index === 0 || recordedStages[index - 1] !== stage);
       if (descriptor.platform === "ios" && !isDeepStrictEqual(distinctRecordedStages, [
         "test", "archive", "upload", "processing", "review_submit", "review_wait",
@@ -604,7 +641,7 @@ async function executeTarget({
   let observed;
   recordedStages.length = 0;
   try {
-    observed = await fencedExternalEffect(
+    observed = sanitizeAdapterResponse(await fencedExternalEffect(
       { db, activeLease, leaseOptions, now },
       (fencing) => adapter.readback({
         manifest,
@@ -619,7 +656,7 @@ async function executeTarget({
         recordStage,
         ...fencing,
       }),
-    );
+    ));
     if (descriptor.platform === "ios" && recordedStages.length === 0) {
       throw validationFailure("iOS production release readback omitted a fenced stage");
     }

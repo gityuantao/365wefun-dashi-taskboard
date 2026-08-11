@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { redactCredentials } from "../domain/redaction.mjs";
+import { redactCredentials, sanitizeObservedEvidenceString } from "../domain/redaction.mjs";
 
 const DEFAULT_RELEASE_LEASE_MS = 10 * 60_000;
 
@@ -52,7 +52,17 @@ async function assertLeaseCurrent({ db, lease, now }) {
 
 function jsonEvidence(value) {
   if (value === null || value === undefined) return null;
-  const serialized = redactCredentials(JSON.stringify(value));
+  const sanitize = (entry) => {
+    if (typeof entry === "string") return sanitizeObservedEvidenceString(entry);
+    if (Array.isArray(entry)) return entry.map(sanitize);
+    if (entry && typeof entry === "object") {
+      return Object.fromEntries(Object.entries(entry).map(([key, child]) => [
+        sanitizeObservedEvidenceString(key), sanitize(child),
+      ]));
+    }
+    return entry;
+  };
+  const serialized = JSON.stringify(sanitize(value));
   if (serialized.length <= 4096) return serialized;
   return JSON.stringify({ truncated: true, sha256: failureFingerprint(serialized) });
 }
@@ -63,7 +73,9 @@ function artifactIdentity(value) {
 }
 
 function errorSummary(value) {
-  const summary = redactCredentials(value?.message ?? value ?? "unknown production release error")
+  const summary = sanitizeObservedEvidenceString(
+    redactCredentials(value?.message ?? value ?? "unknown production release error"),
+  )
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 1024);

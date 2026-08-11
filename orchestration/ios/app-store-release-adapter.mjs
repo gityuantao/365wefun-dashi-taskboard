@@ -38,7 +38,9 @@ function parseFinalJson(stdout, label) {
 }
 
 function sanitizeError(error, mode) {
-  const message = redactCredentials(String(error?.message ?? error ?? "unknown App Store release error"));
+  const message = sanitizeObservedEvidenceString(
+    redactCredentials(String(error?.message ?? error ?? "unknown App Store release error")),
+  );
   const sanitized = new Error(`${mode} failed: ${message}`);
   sanitized.name = "AppStoreReleaseCommandError";
   sanitized.failureClassification = error?.failureClassification ?? "external_unknown";
@@ -165,7 +167,9 @@ export function createAppStoreReleaseAdapter({ runtime = {}, projectRoot, runCom
     if (operationError) throw sanitizeError(operationError, mode);
     const parsed = parseFinalJson(result?.stdout, `App Store ${mode} command`);
     if (parsed.ok === false && parsed.error) {
-      const safeMessage = redactCredentials(String(parsed.error.message ?? "App Store production command failed")).slice(0, 1024);
+      const safeMessage = sanitizeObservedEvidenceString(
+        redactCredentials(String(parsed.error.message ?? "App Store production command failed")),
+      );
       const allowedClassifications = new Set(["validation", "product_rework", "release_infrastructure", "external_unknown"]);
       const error = new Error(safeMessage);
       error.failureClassification = allowedClassifications.has(parsed.error.classification) ? parsed.error.classification : "external_unknown";

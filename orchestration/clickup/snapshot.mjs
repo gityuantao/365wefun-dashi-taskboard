@@ -1,5 +1,6 @@
 import { DomainError } from "../domain/errors.mjs";
 import { targetVersionName } from "../application/version-gate.mjs";
+import { resolveTaskPlatforms } from "../domain/platforms.mjs";
 import {
   fieldConfig,
   fieldId,
@@ -77,6 +78,7 @@ export function normalizeTask(payload, config, listKind = "task") {
     status,
     targetVersion,
     assignee,
+    platforms: resolveTaskPlatforms(payload),
   };
   return {
     id: payload.id,
