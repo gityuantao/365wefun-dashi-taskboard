@@ -85,6 +85,14 @@ async function loadStagingRecovery(db, taskId) {
   if (attempt.status !== "failed") {
     return { kind: "blocked", reason: `latest staging attempt is ${attempt.status}` };
   }
+  if (
+    attempt.failure_owner === "product_rework"
+    && nonEmptyString(attempt.completed_at)
+    && attempt.completed_at <= rejection.occurred_at
+    && (!previousRejection?.occurred_at || attempt.completed_at > previousRejection.occurred_at)
+  ) {
+    return { kind: "product_rework" };
+  }
   if (attempt.failure_owner !== "staging_infrastructure") {
     return {
       kind: "blocked",

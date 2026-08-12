@@ -1857,6 +1857,36 @@ test("poller retries staging from persisted evidence after an infrastructure rej
   assert.equal(queuedAfterRepeatPoll.count, 1, "unchanged status must not create an automatic loop");
 });
 
+test("poller routes a current staging-owned product rework back to development", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const persistedPayload = {
+    taskId: "task-1",
+    pr: { url: "https://github.com/example/repo/pull/42" },
+    commitSha: "2222222222222222222222222222222222222222",
+    versionBranch: "version/1.0.1",
+    targetVersion: "1.0.1",
+    platforms: ["ios"],
+  };
+  await seedInfrastructureRejectedTask(harness, { stagePayload: persistedPayload });
+  await harness.db.prepare(
+    `UPDATE staging_deployments
+     SET failure_owner = 'product_rework', failure_classification = 'stale_acceptance'
+     WHERE task_id = 'task-1'`,
+  ).run();
+
+  const result = await pollClickUpOnce(await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]), { now: NOW });
+
+  assert.ok(result.commands.some((command) => command.type === "acceptance_rejected_to_develop"));
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "ready_for_development");
+  const queued = await harness.db.prepare(
+    "SELECT job_type FROM runner_jobs WHERE status = 'queued'",
+  ).all();
+  assert.deepEqual(queued.results.map((row) => row.job_type), ["develop"]);
+});
+
 test("poller binds infrastructure recovery to the exact failed stage job named by rejection evidence", async (t) => {
   const exactPayload = {
     taskId: "task-1",
