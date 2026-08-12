@@ -258,10 +258,7 @@ const dashboardServer = await startDashboardServer({
   mutationSecret: await getProcessOrchestrationMutationSecret({
     secretPath: DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH,
   }),
-  productionReadiness: async () => ({
-    ...await productionRuntime.probeReadiness(),
-    configuredTargets: productionRuntime.configuredTargets,
-  }),
+  productionReadiness: () => productionRuntime.probeReadiness(),
   productionTargetApps: productionRuntime.configuredApps,
 });
 log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
@@ -463,6 +460,7 @@ async function ensureVersionActive(versionId, now) {
 
 async function releaseCoordinator(now) {
   const client = await clientFactory({ token });
+  const productionReadiness = await productionRuntime.probeReadiness();
   const repository = resolveRemoteRepo(runtime.repoPath);
   const releaseGitOps = createReleaseGitOps({
     repoPath: runtime.repoPath,
@@ -479,13 +477,11 @@ async function releaseCoordinator(now) {
       now,
       db,
       adapter: productionRuntime.webAdapter,
+      miniProgramAdapter: productionRuntime.miniProgramAdapter,
       iosAdapter: productionRuntime.iosAdapter,
       apps: productionRuntime.apps,
       releaseLease: productionRuntime.releaseLease(() => new Date().toISOString()),
-      productionReadiness: {
-        ...productionRuntime.readiness,
-        configuredTargets: productionRuntime.configuredTargets,
-      },
+      productionReadiness,
       prepareProductionRuntime: async () => {
         const readiness = await productionRuntime.probeReadiness();
         if (!readiness.ready) throw new Error(readiness.error);

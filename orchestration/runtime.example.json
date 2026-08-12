@@ -22,7 +22,7 @@
     "web": { "enabled": true, "adapter": "release_adapter" },
     "api": { "enabled": true, "adapter": "release_adapter" },
     "ios": { "enabled": true, "adapter": "ios_adapter" },
-    "mini_program": { "enabled": false, "adapter": "release_adapter" }
+    "mini_program": { "enabled": false, "adapter": "mini_program_adapter" }
   },
   "releaseAdapterModule": "orchestration/release/production-command-adapter.mjs",
   "productionReleaseCommand": ["node", "scripts/deploy-production-candidate.mjs"],

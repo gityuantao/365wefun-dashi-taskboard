@@ -841,6 +841,7 @@ export async function executeProductionRelease({
   platforms,
   apps = [],
   webAdapter,
+  miniProgramAdapter = null,
   iosAdapter,
   lease,
   now,
@@ -848,7 +849,8 @@ export async function executeProductionRelease({
   validateManifest(manifest);
   const resolvedPlatforms = assertProductionPlatformsSupported(platforms);
   const descriptors = requiredTargets(resolvedPlatforms, apps);
-  if (resolvedPlatforms.web || resolvedPlatforms.api || resolvedPlatforms.mini_program) validateAdapter(webAdapter, "Web/API/mini-program");
+  if (resolvedPlatforms.web || resolvedPlatforms.api) validateAdapter(webAdapter, "Web/API");
+  if (resolvedPlatforms.mini_program) validateAdapter(miniProgramAdapter, "mini-program");
   if (resolvedPlatforms.ios) validateAdapter(iosAdapter, "iOS");
   if (!lease || !nonEmpty(lease.holder)) invalid("version-scoped release lease holder is required");
 
@@ -942,7 +944,11 @@ export async function executeProductionRelease({
           db,
           manifest,
           descriptor,
-          adapter: descriptor.platform === "ios" ? iosAdapter : webAdapter,
+          adapter: descriptor.platform === "ios"
+            ? iosAdapter
+            : descriptor.platform === "mini_program"
+              ? miniProgramAdapter
+              : webAdapter,
           activeLease,
           leaseOptions: lease,
           now,

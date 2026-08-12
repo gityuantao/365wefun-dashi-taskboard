@@ -27,7 +27,7 @@ const BASE_RUNTIME = {
     web: { enabled: true, adapter: "release_adapter" },
     api: { enabled: true, adapter: "release_adapter" },
     ios: { enabled: true, adapter: "ios_adapter" },
-    mini_program: { enabled: true, adapter: "release_adapter" },
+    mini_program: { enabled: false, adapter: "mini_program_adapter" },
   },
   iosApps: [{
     id: "au", name: "AU", enabled: true, scheme: "AU", testScheme: "AUTests",
@@ -39,11 +39,88 @@ const BASE_RUNTIME = {
 
 test("configured release targets are derived from explicit runtime descriptors and default closed", () => {
   assert.deepEqual(configuredReleaseTargets({}), []);
-  assert.deepEqual(configuredReleaseTargets(BASE_RUNTIME), ["api", "ios", "mini_program", "web"]);
+  assert.deepEqual(configuredReleaseTargets(BASE_RUNTIME), ["api", "ios", "web"]);
   assert.deepEqual(configuredReleaseTargets({
     ...BASE_RUNTIME,
-    releaseTargets: { ...BASE_RUNTIME.releaseTargets, mini_program: { enabled: false, adapter: "release_adapter" } },
+    releaseTargets: { ...BASE_RUNTIME.releaseTargets, mini_program: { enabled: false, adapter: "mini_program_adapter" } },
   }), ["api", "ios", "web"]);
+});
+
+test("a generic Web/API adapter can never configure mini-program release", () => {
+  const genericMiniRuntime = {
+    ...BASE_RUNTIME,
+    releaseTargets: {
+      ...BASE_RUNTIME.releaseTargets,
+      mini_program: { enabled: true, adapter: "release_adapter" },
+    },
+  };
+
+  assert.deepEqual(configuredReleaseTargets(genericMiniRuntime), ["api", "ios", "web"]);
+  const readiness = validateProductionRuntime(genericMiniRuntime, { projectRoot: "/repo", pathExists: () => true });
+  assert.equal(readiness.ready, false);
+  assert.match(readiness.error, /mini_program.*mini_program_adapter/);
+});
+
+test("a dedicated mini-program capability is verified and never routed through the Web/API adapter", async () => {
+  const calls = [];
+  const dedicatedRuntime = {
+    ...BASE_RUNTIME,
+    miniProgramReleaseAdapterModule: "./mini-program-adapter.mjs",
+    releaseTargets: {
+      ...BASE_RUNTIME.releaseTargets,
+      mini_program: { enabled: true, adapter: "mini_program_adapter" },
+    },
+  };
+  const runtime = createProductionRuntime({
+    runtime: dedicatedRuntime,
+    projectRoot: "/repo",
+    pathExists: () => true,
+    importModule: async (url) => {
+      if (url.endsWith("web-adapter.mjs")) return {
+        createReleaseAdapter: () => ({
+          release: () => calls.push("generic-release"), readback() {}, collectRegressionEvidence() {}, identifyArtifact() {},
+        }),
+      };
+      if (url.endsWith("ios-adapter.mjs")) return {
+        createAppStoreReleaseAdapter: () => ({ release() {}, readback() {} }),
+      };
+      return {
+        createMiniProgramReleaseAdapter: () => ({
+          release: () => calls.push("mini-release"), readback() {},
+        }),
+      };
+    },
+  });
+
+  assert.deepEqual((await runtime.probeReadiness()).configuredTargets, ["api", "ios", "mini_program", "web"]);
+  await runtime.miniProgramAdapter.release({ platform: "mini_program" });
+  assert.deepEqual(calls, ["mini-release"]);
+});
+
+test("an unavailable dedicated mini-program factory exposes no configured production target", async () => {
+  const runtime = createProductionRuntime({
+    runtime: {
+      ...BASE_RUNTIME,
+      miniProgramReleaseAdapterModule: "./mini-program-adapter.mjs",
+      releaseTargets: { ...BASE_RUNTIME.releaseTargets, mini_program: { enabled: true, adapter: "mini_program_adapter" } },
+    },
+    projectRoot: "/repo",
+    pathExists: () => true,
+    importModule: async (url) => {
+      if (url.endsWith("web-adapter.mjs")) return {
+        createReleaseAdapter: () => ({ release() {}, readback() {}, collectRegressionEvidence() {}, identifyArtifact() {} }),
+      };
+      if (url.endsWith("ios-adapter.mjs")) return {
+        createAppStoreReleaseAdapter: () => ({ release() {}, readback() {} }),
+      };
+      return {};
+    },
+  });
+
+  const readiness = await runtime.probeReadiness();
+  assert.equal(readiness.ready, false);
+  assert.deepEqual(readiness.configuredTargets, []);
+  assert.match(readiness.error, /createMiniProgramReleaseAdapter/);
 });
 
 test("production release hold defaults closed and blocks every adapter boundary before import", async () => {
@@ -334,11 +411,12 @@ test("orchestrator tick pauses before release polling and wires both adapters, r
   const tick = source.slice(source.indexOf("async function tick()"), source.indexOf("async function main()"));
   assert.ok(tick.indexOf("if (!shouldProcess(control))") < tick.indexOf("await releaseCoordinator(now)"));
   assert.match(source, /adapter: productionRuntime\.webAdapter/);
+  assert.match(source, /miniProgramAdapter: productionRuntime\.miniProgramAdapter/);
   assert.match(source, /iosAdapter: productionRuntime\.iosAdapter/);
   assert.match(source, /apps: productionRuntime\.apps/);
   assert.match(source, /releaseLease: productionRuntime\.releaseLease/);
-  assert.match(source, /\.\.\.productionRuntime\.readiness/);
-  assert.match(source, /configuredTargets: productionRuntime\.configuredTargets/);
+  assert.match(source, /const productionReadiness = await productionRuntime\.probeReadiness\(\)/);
+  assert.match(source, /productionReadiness,/);
 });
 
 test("release_failed snapshots do not retry until an explicit command returns them to releasing", async () => {

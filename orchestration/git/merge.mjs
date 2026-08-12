@@ -54,6 +54,17 @@ function githubPullRequest({ repository, pullRequest, versionBranch, run }) {
   return { ok: true, ...pr };
 }
 
+function currentIntegrationRef({ repoPath, versionBranch, fetchedBase, run }) {
+  const local = git(repoPath, ["rev-parse", "--verify", versionBranch], run);
+  if (local.status !== 0 || !/^[0-9a-f]{40,64}$/i.test(local.stdout.trim())) return fetchedBase;
+  const containsRefreshedRemote = git(
+    repoPath,
+    ["merge-base", "--is-ancestor", fetchedBase, versionBranch],
+    run,
+  );
+  return containsRefreshedRemote.status === 0 ? versionBranch : fetchedBase;
+}
+
 export function mergeTaskPrToVersionBranch({
   repoPath,
   versionBranch,
@@ -174,6 +185,11 @@ export function fetchAndMergeTaskPullRequest({
       return { merged: false, conflict: false, error: "refreshed version branch head is invalid" };
     }
     const candidateCommit = refreshedHead.stdout.trim();
+    const integrationRef = currentIntegrationRef({ repoPath, versionBranch, fetchedBase, run });
+    const integrationHead = git(repoPath, ["rev-parse", "--verify", integrationRef], run);
+    if (integrationHead.status !== 0 || !/^[0-9a-f]{40,64}$/i.test(integrationHead.stdout.trim())) {
+      return { merged: false, conflict: false, error: "local Candidate integration head is invalid" };
+    }
     const mergeBase = git(repoPath, ["rev-parse", "--verify", `${mergeCommit}^1`], run);
     if (mergeBase.status !== 0 || !/^[0-9a-f]{40,64}$/i.test(mergeBase.stdout.trim())) {
       return { merged: false, conflict: false, error: "merged PR base commit is invalid" };
@@ -185,9 +201,9 @@ export function fetchAndMergeTaskPullRequest({
       prNumber: pr.number,
       headRefName: pr.headRefName,
       taskHead: pr.headRefOid,
-      candidateCommit,
+      candidateCommit: integrationHead.stdout.trim(),
       candidateBaseCommit: mergeBase.stdout.trim(),
-      candidateSourceRef: fetchedBase,
+      candidateSourceRef: integrationRef,
       versionBranch,
       alreadyMerged: true,
     };
@@ -223,7 +239,7 @@ export function fetchAndMergeTaskPullRequest({
   const merged = mergeTaskPrToVersionBranch({
     repoPath,
     versionBranch,
-    baseRef: fetchedBase,
+    baseRef: currentIntegrationRef({ repoPath, versionBranch, fetchedBase, run }),
     prRef: fetchedRef,
     run,
   });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -279,6 +279,74 @@ test("Candidate base is order-independent across merged and open task integratio
   assert.deepEqual(forward, reversed);
   assert.equal(forward.candidateBaseCommit, original);
   assert.deepEqual(git(root, ["diff", "--name-only", forward.candidateBaseCommit, merged.candidateCommit]).trim().split("\n").sort(), ["apps-mp.txt", "apps-web.txt"]);
+});
+
+test("mixed open and merged PR integration preserves every change in either task order", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "taskboard-mixed-pr-order-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const remote = path.join(root, "remote.git");
+  const seed = path.join(root, "seed");
+  git(root, ["init", "--bare", remote]);
+  git(root, ["init", "-b", "main", seed]);
+  git(seed, ["config", "user.email", "test@example.com"]);
+  git(seed, ["config", "user.name", "Test"]);
+  git(seed, ["remote", "add", "origin", remote]);
+  await writeFile(path.join(seed, "base.txt"), "base\n");
+  git(seed, ["add", "."]); git(seed, ["commit", "-m", "base"]);
+  const initialBase = git(seed, ["rev-parse", "HEAD"]).trim();
+  git(seed, ["checkout", "-b", "version/v-1"]); git(seed, ["push", "origin", "version/v-1"]);
+  git(seed, ["checkout", "-b", "task/merged"]);
+  await mkdir(path.join(seed, "apps/mp"), { recursive: true });
+  await writeFile(path.join(seed, "apps/mp/merged.mjs"), "merged\n", { recursive: true });
+  git(seed, ["add", "."]); git(seed, ["commit", "-m", "merged task"]);
+  const mergedHead = git(seed, ["rev-parse", "HEAD"]).trim();
+  git(seed, ["checkout", "version/v-1"]); git(seed, ["merge", "--no-ff", "task/merged", "-m", "merge task"]);
+  const mergedCommit = git(seed, ["rev-parse", "HEAD"]).trim();
+  git(seed, ["push", "origin", "version/v-1"]);
+  git(seed, ["checkout", "-b", "task/open"]);
+  await mkdir(path.join(seed, "apps/web"), { recursive: true });
+  await writeFile(path.join(seed, "apps/web/open.mjs"), "open\n");
+  git(seed, ["add", "."]); git(seed, ["commit", "-m", "open task"]);
+  const openHead = git(seed, ["rev-parse", "HEAD"]).trim();
+  git(seed, ["push", "origin", "HEAD:refs/pull/43/head"]);
+
+  const run = (command, args) => {
+    if (command === "gh") {
+      const number = Number(args[args.indexOf("view") + 1]);
+      const merged = number === 42;
+      return { status: 0, stderr: "", stdout: JSON.stringify({
+        number, state: merged ? "MERGED" : "OPEN", baseRefName: "version/v-1",
+        headRefName: merged ? "task/merged" : "task/open",
+        headRefOid: merged ? mergedHead : openHead,
+        ...(merged ? { mergeCommit: { oid: mergedCommit } } : {}),
+      }) };
+    }
+    try { return { status: 0, stdout: execFileSync(command, args, { encoding: "utf8" }), stderr: "" }; }
+    catch (error) { return { status: error.status ?? 1, stdout: error.stdout?.toString() ?? "", stderr: error.stderr?.toString() ?? "" }; }
+  };
+  const integrate = async (order) => {
+    const repo = path.join(root, `repo-${order.join("-")}`);
+    git(root, ["clone", remote, repo]);
+    git(repo, ["config", "user.email", "test@example.com"]); git(repo, ["config", "user.name", "Test"]);
+    git(repo, ["checkout", "version/v-1"]);
+    const ops = createReleaseGitOps({ repoPath: repo, repository: "owner/repo", run });
+    const results = [];
+    for (const number of order) results.push(await ops.integrateTaskPr({
+      taskId: `task-${number}`, pullRequest: `https://github.com/owner/repo/pull/${number}`, versionBranch: "version/v-1",
+    }));
+    const candidate = results.at(-1).candidateCommit;
+    const base = ops.resolveCandidateBase({ candidateCommit: candidate, candidateBaseCommits: results.map((result) => result.candidateBaseCommit) });
+    return {
+      paths: git(repo, ["diff", "--name-only", base.candidateBaseCommit, candidate]).trim().split("\n").filter(Boolean).sort(),
+      base: base.candidateBaseCommit,
+    };
+  };
+
+  const openThenMerged = await integrate([43, 42]);
+  const mergedThenOpen = await integrate([42, 43]);
+  assert.equal(openThenMerged.base, initialBase);
+  assert.deepEqual(openThenMerged, mergedThenOpen);
+  assert.deepEqual(openThenMerged.paths, ["apps/mp/merged.mjs", "apps/web/open.mjs"]);
 });
 
 test("production release git ops fetch the exact GitHub PR head and persist a remote Candidate ref", async (t) => {

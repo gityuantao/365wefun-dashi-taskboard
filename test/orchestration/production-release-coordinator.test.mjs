@@ -548,6 +548,40 @@ test("unsupported task platforms fail closed before persistence or adapter side 
   assert.deepEqual((await releaseRows(harness.db)).results, []);
 });
 
+test("mini-program target uses its dedicated adapter and never the Web/API adapter", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const calls = [];
+  const genericAdapter = {
+    release: async () => { calls.push("generic-release"); throw new Error("generic adapter must not receive mini-program"); },
+    readback: async () => { calls.push("generic-readback"); throw new Error("generic adapter must not receive mini-program"); },
+  };
+  const miniProgramAdapter = {
+    release: async ({ platform }) => {
+      calls.push(`${platform}:release`);
+      return webReleaseEvidence();
+    },
+    readback: async ({ platform }) => {
+      calls.push(`${platform}:readback`);
+      return webLiveEvidence();
+    },
+  };
+
+  const result = await executeProductionRelease({
+    db: harness.db,
+    manifest: MANIFEST,
+    platforms: [{ id: "task-mini", platforms: ["mini_program"] }],
+    webAdapter: genericAdapter,
+    miniProgramAdapter,
+    iosAdapter: null,
+    lease: releaseLease(),
+    now: NOW,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls, ["mini_program:release", "mini_program:readback"]);
+});
+
 test("Web terminal success rejects published contradictions", async (t) => {
   for (const contradiction of [
     { published: false, status: "published" },

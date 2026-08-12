@@ -149,6 +149,7 @@ export async function handleConfirmRelease({
   now,
   adapter,
   webAdapter = adapter,
+  miniProgramAdapter = null,
   iosAdapter = null,
   apps = null,
   platforms = null,
@@ -198,7 +199,7 @@ export async function handleConfirmRelease({
     return { status: "rejected", error: error.message };
   }
   if (
-    (resolvedPlatforms.web || resolvedPlatforms.api || resolvedPlatforms.mini_program)
+    (resolvedPlatforms.web || resolvedPlatforms.api)
     && (
       !webAdapter
       || webAdapter.placeholder === true
@@ -207,6 +208,17 @@ export async function handleConfirmRelease({
     )
   ) {
     return { status: "rejected", error: "release adapter/deployer is not configured" };
+  }
+  if (
+    resolvedPlatforms.mini_program
+    && (
+      !miniProgramAdapter
+      || miniProgramAdapter.placeholder === true
+      || typeof miniProgramAdapter.release !== "function"
+      || typeof miniProgramAdapter.readback !== "function"
+    )
+  ) {
+    return { status: "rejected", error: "mini-program release adapter/deployer is not configured" };
   }
   if (
     resolvedPlatforms.ios
@@ -252,7 +264,7 @@ export async function handleConfirmRelease({
   }
 
   const deployments = new Map();
-  const persistentWebAdapter = (resolvedPlatforms.web || resolvedPlatforms.api || resolvedPlatforms.mini_program) ? {
+  const persistentWebAdapter = (resolvedPlatforms.web || resolvedPlatforms.api) ? {
     release: async (options) => {
       const released = await webAdapter.release(options);
       deployments.set(options.platform, released);
@@ -271,6 +283,24 @@ export async function handleConfirmRelease({
       return publication;
     },
   } : null;
+  const persistentMiniProgramAdapter = resolvedPlatforms.mini_program ? {
+    release: async (options) => {
+      const released = await miniProgramAdapter.release(options);
+      deployments.set(options.platform, released);
+      return released;
+    },
+    readback: async (options) => {
+      const persistedLocator = options.readbackLocator
+        ?? options.deployment?.observedEvidence
+        ?? options.deployment;
+      const readbackLocator = deployments.get(options.platform) ?? persistedLocator;
+      return miniProgramAdapter.readback({
+        ...options,
+        deployment: options.deployment,
+        readbackLocator,
+      });
+    },
+  } : null;
 
   const activeLease = lease ?? {
     holder: `release:${versionId}:${actorId}:${randomUUID()}`,
@@ -284,6 +314,7 @@ export async function handleConfirmRelease({
       platforms: frozenTaskSnapshots,
       apps: frozenApps,
       webAdapter: persistentWebAdapter,
+      miniProgramAdapter: persistentMiniProgramAdapter,
       iosAdapter,
       lease: activeLease,
       now,

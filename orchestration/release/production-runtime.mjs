@@ -41,6 +41,11 @@ export function configuredReleaseTargets(runtime) {
     descriptors[platform]?.enabled === true
     && typeof descriptors[platform]?.adapter === "string"
     && descriptors[platform].adapter.trim() !== ""
+    && (platform !== "mini_program" || (
+      descriptors[platform].adapter === "mini_program_adapter"
+      && typeof runtime?.miniProgramReleaseAdapterModule === "string"
+      && runtime.miniProgramReleaseAdapterModule.trim() !== ""
+    ))
   )).sort();
 }
 
@@ -62,16 +67,27 @@ export function validateProductionRuntime(runtime, { projectRoot = null, pathExi
       throw new Error("iosApps must include at least one enabled App");
     }
     loadIosApps(runtime.iosApps);
+    if (runtime.releaseTargets?.mini_program?.enabled === true && (
+      runtime.releaseTargets.mini_program.adapter !== "mini_program_adapter"
+      || typeof runtime.miniProgramReleaseAdapterModule !== "string"
+      || runtime.miniProgramReleaseAdapterModule.trim() === ""
+    )) {
+      throw new Error("releaseTargets.mini_program must use mini_program_adapter with miniProgramReleaseAdapterModule");
+    }
     const targets = configuredReleaseTargets(runtime);
     if (targets.length === 0) throw new Error("releaseTargets must explicitly enable at least one production target");
     for (const platform of targets) {
-      const expectedAdapter = platform === "ios" ? "ios_adapter" : "release_adapter";
+      const expectedAdapter = platform === "ios"
+        ? "ios_adapter"
+        : platform === "mini_program"
+          ? "mini_program_adapter"
+          : "release_adapter";
       if (runtime.releaseTargets[platform].adapter !== expectedAdapter) {
         throw new Error(`releaseTargets.${platform} must use ${expectedAdapter}`);
       }
     }
     if (projectRoot) {
-      for (const field of ["releaseAdapterModule", "iosProductionReleaseAdapterModule"]) {
+      for (const field of ["releaseAdapterModule", "iosProductionReleaseAdapterModule", ...(targets.includes("mini_program") ? ["miniProgramReleaseAdapterModule"] : [])]) {
         if (!pathExists(path.resolve(projectRoot, runtime[field]))) {
           throw new Error(`${field} does not exist`);
         }
@@ -125,6 +141,7 @@ export function createProductionRuntime({
   pathExists = existsSync,
 } = {}) {
   const readiness = validateProductionRuntime(runtime, { projectRoot, pathExists });
+  const declaredTargets = Object.freeze(configuredReleaseTargets(runtime));
   let configuredApps = Object.freeze([]);
   try {
     configuredApps = Object.freeze(loadIosApps(runtime?.iosApps).map((app) => Object.freeze({
@@ -153,7 +170,7 @@ export function createProductionRuntime({
 
   const boundary = {
     readiness,
-    configuredTargets: Object.freeze(configuredReleaseTargets(runtime)),
+    configuredTargets: Object.freeze(declaredTargets.filter((target) => target !== "mini_program")),
     apps,
     configuredApps,
     async loadAdapters() {
@@ -162,9 +179,13 @@ export function createProductionRuntime({
       try {
         const webUrl = pathToFileURL(path.resolve(projectRoot, runtime.releaseAdapterModule)).href;
         const iosUrl = pathToFileURL(path.resolve(projectRoot, runtime.iosProductionReleaseAdapterModule)).href;
-        const [webModule, iosModule] = await Promise.all([
+        const miniProgramUrl = declaredTargets.includes("mini_program")
+          ? pathToFileURL(path.resolve(projectRoot, runtime.miniProgramReleaseAdapterModule)).href
+          : null;
+        const [webModule, iosModule, miniProgramModule] = await Promise.all([
           importModule(webUrl),
           importModule(iosUrl),
+          miniProgramUrl ? importModule(miniProgramUrl) : Promise.resolve(null),
         ]);
         if (typeof webModule.createReleaseAdapter !== "function") {
           throw new Error("releaseAdapterModule must export createReleaseAdapter");
@@ -182,7 +203,12 @@ export function createProductionRuntime({
           ["release", "readback"],
           "iOS production adapter",
         );
-        loaded = Object.freeze({ webAdapter, iosAdapter });
+        const miniProgramAdapter = miniProgramModule === null ? null : assertAdapter(
+          await miniProgramModule.createMiniProgramReleaseAdapter({ runtime, projectRoot }),
+          ["release", "readback"],
+          "Mini-program production adapter",
+        );
+        loaded = Object.freeze({ webAdapter, iosAdapter, miniProgramAdapter });
         return loaded;
       } catch (error) {
         throw unavailable(error);
@@ -193,9 +219,9 @@ export function createProductionRuntime({
       if (!current.ready) return current;
       try {
         await boundary.loadAdapters();
-        return Object.freeze({ ready: true, error: null });
+        return Object.freeze({ ready: true, error: null, configuredTargets: declaredTargets });
       } catch (error) {
-        return Object.freeze({ ready: false, error: redactCredentials(error.message) });
+        return Object.freeze({ ready: false, error: redactCredentials(error.message), configuredTargets: Object.freeze([]) });
       }
     },
     releaseLease(now = () => new Date().toISOString()) {
@@ -217,5 +243,11 @@ export function createProductionRuntime({
     release: invoke("iosAdapter", "release"),
     readback: invoke("iosAdapter", "readback"),
   });
+  boundary.miniProgramAdapter = declaredTargets.includes("mini_program")
+    ? Object.freeze({
+      release: invoke("miniProgramAdapter", "release"),
+      readback: invoke("miniProgramAdapter", "readback"),
+    })
+    : null;
   return Object.freeze(boundary);
 }
