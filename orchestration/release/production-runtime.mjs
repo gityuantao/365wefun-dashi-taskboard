@@ -32,6 +32,18 @@ function httpsUrl(value, field) {
   }
 }
 
+const RELEASE_TARGETS = Object.freeze(["web", "api", "ios", "mini_program"]);
+
+export function configuredReleaseTargets(runtime) {
+  const descriptors = runtime?.releaseTargets;
+  if (!descriptors || typeof descriptors !== "object" || Array.isArray(descriptors)) return [];
+  return RELEASE_TARGETS.filter((platform) => (
+    descriptors[platform]?.enabled === true
+    && typeof descriptors[platform]?.adapter === "string"
+    && descriptors[platform].adapter.trim() !== ""
+  )).sort();
+}
+
 export function validateProductionRuntime(runtime, { projectRoot = null, pathExists = existsSync } = {}) {
   try {
     nonEmptyString(runtime?.deviceId, "deviceId");
@@ -50,6 +62,14 @@ export function validateProductionRuntime(runtime, { projectRoot = null, pathExi
       throw new Error("iosApps must include at least one enabled App");
     }
     loadIosApps(runtime.iosApps);
+    const targets = configuredReleaseTargets(runtime);
+    if (targets.length === 0) throw new Error("releaseTargets must explicitly enable at least one production target");
+    for (const platform of targets) {
+      const expectedAdapter = platform === "ios" ? "ios_adapter" : "release_adapter";
+      if (runtime.releaseTargets[platform].adapter !== expectedAdapter) {
+        throw new Error(`releaseTargets.${platform} must use ${expectedAdapter}`);
+      }
+    }
     if (projectRoot) {
       for (const field of ["releaseAdapterModule", "iosProductionReleaseAdapterModule"]) {
         if (!pathExists(path.resolve(projectRoot, runtime[field]))) {
@@ -133,6 +153,7 @@ export function createProductionRuntime({
 
   const boundary = {
     readiness,
+    configuredTargets: Object.freeze(configuredReleaseTargets(runtime)),
     apps,
     configuredApps,
     async loadAdapters() {

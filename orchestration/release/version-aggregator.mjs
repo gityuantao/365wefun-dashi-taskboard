@@ -14,7 +14,13 @@ export async function loadAllTaskSnapshots(db) {
   return rows.results.map((row) => JSON.parse(row.snapshot));
 }
 
-export async function checkVersionGate({ db, versionId, candidateScope = null, runtimeReadiness = { ready: true } }) {
+export async function checkVersionGate({
+  db,
+  versionId,
+  candidateScope = null,
+  runtimeReadiness = { ready: false, error: "production runtime readiness was not configured" },
+  configuredTargets = runtimeReadiness?.configuredTargets ?? [],
+}) {
   const versionSnapshot = await loadLastConfirmed(db, "version", versionId);
   const matchKey = versionSnapshot?.name ?? versionId;
   const manifestRow = await db.prepare("SELECT manifest FROM release_manifests WHERE version_id = ?").bind(versionId).first();
@@ -45,7 +51,7 @@ export async function checkVersionGate({ db, versionId, candidateScope = null, r
     blockers: [...blockedIds],
     platformEvidence: taskPlatforms,
     candidateScope: candidateScope ?? manifest?.candidateScope ?? null,
-    configuredTargets: ["web", "api", "ios", "mini_program"],
+    configuredTargets,
     runtimeReadiness,
   });
   return {
@@ -138,12 +144,16 @@ export async function freezeManifest({
   regressionEvidence,
   productionTargetPlan,
   candidateScope = null,
+  runtimeReadiness = { ready: false, error: "production runtime readiness was not configured" },
+  configuredTargets = runtimeReadiness?.configuredTargets ?? [],
 }) {
   const existing = await loadManifest({ db, versionId });
   if (existing) {
     return { status: "already_frozen", manifest: existing };
   }
-  const gate = await checkVersionGate({ db, versionId, candidateScope });
+  const gate = await checkVersionGate({
+    db, versionId, candidateScope, runtimeReadiness, configuredTargets,
+  });
   if (!gate.pass) {
     return { status: "rejected", reasons: gate.reasons };
   }

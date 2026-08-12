@@ -350,6 +350,9 @@ export async function executeDevelopment({
         ...(acceptanceCriteria ?? []).map((criterion) => `- 验收 ${criterion.id}: ${criterion.criterion}`),
       ].join("\n"),
     });
+    const changedPaths = typeof gitOps.changedPaths === "function"
+      ? await gitOps.changedPaths({ repoPath, baseRef: versionBranch ?? baseRef, commitSha })
+      : null;
 
     activity = await currentDevelopment(db, taskId, executionVersion);
     if (!activity.active) return staleDevelopmentResult(activity.aggregate);
@@ -375,6 +378,7 @@ export async function executeDevelopment({
       commandId: result.commandId,
       pr,
       commitSha,
+      ...(Array.isArray(changedPaths) ? { changedPaths } : {}),
       platforms,
       changeSummary: parsed.change_summary,
       findingResponses: Array.isArray(parsed.finding_responses) ? parsed.finding_responses : [],

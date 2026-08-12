@@ -1,4 +1,5 @@
 import { normalizePlatforms } from "../domain/platforms.mjs";
+import { classifyChangedPaths } from "./path-classification.mjs";
 
 function nonEmpty(value) {
   return Array.isArray(value) && normalizePlatforms(value).length > 0;
@@ -20,6 +21,12 @@ function newestCurrent(jobs, context, platformsOf) {
     if (nonEmpty(platforms)) return { job, platforms };
   }
   return null;
+}
+
+function matchingAcceptedEvidence(job, acceptedCommitSha) {
+  if (!acceptedCommitSha) return true;
+  const commitSha = job.result?.commitSha ?? job.payload?.commitSha ?? job.payload?.acceptedCommitSha ?? null;
+  return commitSha === acceptedCommitSha;
 }
 
 export function activeVersionTasks({ tasks, versionName, manifest }) {
@@ -74,7 +81,7 @@ export function resolveReleasePlatformEvidence({
   acceptedChangeScope = null,
 }) {
   const context = { taskId: task.id, aggregateVersion: aggregate.version, acceptedCommitSha };
-  if (nonEmpty(task.platforms)) {
+  if (nonEmpty(task.platforms) && (!acceptedCommitSha || task.acceptedCommitSha === acceptedCommitSha)) {
     return result({
       taskId: task.id, platforms: task.platforms, source: "clickup_snapshot",
       acceptedCommitSha,
@@ -114,7 +121,9 @@ export function resolveReleasePlatformEvidence({
     });
   }
 
-  const analyzed = newestCurrent(analyzeJobs, context, (job) => job.result?.summary?.platforms);
+  const analyzed = newestCurrent(analyzeJobs, { ...context, requireCommit: Boolean(acceptedCommitSha) }, (job) => (
+    matchingAcceptedEvidence(job, acceptedCommitSha) ? job.result?.summary?.platforms : []
+  ));
   if (analyzed) {
     return result({
       taskId: task.id,
@@ -127,11 +136,11 @@ export function resolveReleasePlatformEvidence({
     });
   }
 
-  if (acceptedCommitSha && nonEmpty(acceptedChangeScope?.platforms)) {
+  if (acceptedCommitSha && acceptedChangeScope?.commitSha === acceptedCommitSha && nonEmpty(acceptedChangeScope?.platforms)) {
     return result({
       taskId: task.id, platforms: acceptedChangeScope.platforms, source: "accepted_pr_changes",
       evidenceId: acceptedChangeScope.evidenceId ?? null, commitSha: acceptedCommitSha, acceptedCommitSha,
-      aggregateVersion: aggregate.version,
+      aggregateVersion: aggregate.version, androidDelivery: acceptedChangeScope.androidDelivery ?? null,
     });
   }
 
@@ -172,13 +181,24 @@ export async function loadReleasePlatformEvidence(db, tasks) {
   }
   return tasks.map((task) => {
     const jobs = byTask.get(task.id);
-    const acceptedCommitSha = jobs.acceptJobs.find((job) => (
+    const accepted = jobs.acceptJobs.find((job) => (
       job.result?.result === "accepted" && typeof job.result?.commitSha === "string"
-    ))?.result.commitSha ?? null;
+    ));
+    const acceptedCommitSha = accepted?.result.commitSha ?? null;
+    const acceptedPaths = accepted?.result?.changedPaths;
+    const acceptedChangeScope = acceptedCommitSha && Array.isArray(acceptedPaths)
+      ? {
+        evidenceId: accepted.id,
+        commitSha: acceptedCommitSha,
+        changedPaths: [...new Set(acceptedPaths.filter((path) => typeof path === "string" && path.trim() !== ""))].sort(),
+        ...classifyChangedPaths(acceptedPaths),
+      }
+      : null;
     return resolveReleasePlatformEvidence({
       task,
       aggregate: { version: task.aggregateVersion ?? null },
       acceptedCommitSha,
+      acceptedChangeScope,
       ...jobs,
     });
   });

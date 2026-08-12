@@ -328,8 +328,27 @@ export function pushCandidateToRemote({
   return { persisted: true, candidateRef, remoteCandidateCommit: candidateCommit };
 }
 
+export function resolveCandidateBase({ repoPath, candidateCommit, candidateBaseCommits, run = runCommand }) {
+  const bases = [...new Set((candidateBaseCommits ?? []).filter((value) => /^[0-9a-f]{40,64}$/i.test(value)))];
+  if (bases.length === 0 || !/^[0-9a-f]{40,64}$/i.test(candidateCommit ?? "")) {
+    return { resolved: false, error: "Candidate integration bases are incomplete" };
+  }
+  const common = git(repoPath, ["merge-base", "--octopus", ...bases, candidateCommit], run);
+  const baseCommit = common.stdout.trim();
+  if (common.status !== 0 || !/^[0-9a-f]{40,64}$/i.test(baseCommit)) {
+    return { resolved: false, error: "Candidate integration bases have no common ancestor" };
+  }
+  if (git(repoPath, ["merge-base", "--is-ancestor", baseCommit, candidateCommit], run).status !== 0) {
+    return { resolved: false, error: "Candidate base is not an ancestor of Candidate commit" };
+  }
+  return { resolved: true, candidateBaseCommit: baseCommit };
+}
+
 export function createReleaseGitOps({ repoPath, repository, run = runCommand }) {
   return {
+    resolveCandidateBase: ({ candidateCommit, candidateBaseCommits }) => resolveCandidateBase({
+      repoPath, candidateCommit, candidateBaseCommits, run,
+    }),
     integrateTaskPr: ({ taskId, pullRequest, versionBranch }) => fetchAndMergeTaskPullRequest({
       repoPath,
       repository,

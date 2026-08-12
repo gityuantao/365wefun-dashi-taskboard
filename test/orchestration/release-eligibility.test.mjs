@@ -48,7 +48,7 @@ test("Candidate scope supplements a missing task platform only as an auditable v
   assert.equal(eligibility.ready, true);
   assert.deepEqual(eligibility.taskPlatforms, [{
     taskId: "task-mp", platforms: ["mini_program"], source: "candidate_scope", evidenceId: null,
-    commitSha: null, acceptedCommitSha: null,
+    commitSha: null, acceptedCommitSha: null, aggregateVersion: null, androidDelivery: null,
   }]);
   assert.strictEqual(eligibility.candidateScope, scope);
   assert.deepEqual(eligibility.plannedTargets, ["mini_program"]);

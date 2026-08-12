@@ -401,6 +401,7 @@ export async function coordinateVersionRelease({
   collectRegressionEvidence,
   identifyArtifact,
   persistCandidate,
+  resolveCandidateBase = null,
   freezeCandidate,
   verifyCandidate,
   publishCandidate,
@@ -414,7 +415,7 @@ export async function coordinateVersionRelease({
     const taskPrHeads = [];
     let candidateCommit = null;
     let candidateSourceRef = null;
-    let candidateBaseCommit = null;
+    const candidateBaseCommits = [];
     for (const taskId of taskIds) {
       const integrated = await integrateTaskPr({ taskId, versionBranch });
       if (!integrated?.merged || !integrated.taskHead || !integrated.candidateCommit) {
@@ -426,7 +427,7 @@ export async function coordinateVersionRelease({
       }
       candidateCommit = integrated.candidateCommit;
       candidateSourceRef = integrated.candidateSourceRef ?? versionBranch;
-      candidateBaseCommit ??= integrated.candidateBaseCommit ?? null;
+      if (integrated.candidateBaseCommit) candidateBaseCommits.push(integrated.candidateBaseCommit);
       taskPrHeads.push({
         taskId,
         branch: integrated.headRefName,
@@ -436,6 +437,17 @@ export async function coordinateVersionRelease({
       });
     }
 
+    const base = candidateBaseCommits.length === 0
+      ? { resolved: true, candidateBaseCommit: candidateCommit }
+      : typeof resolveCandidateBase === "function"
+      ? await resolveCandidateBase({ candidateCommit, candidateBaseCommits })
+      : candidateBaseCommits.length > 0
+        ? { resolved: true, candidateBaseCommit: candidateBaseCommits[0] }
+        : { resolved: true, candidateBaseCommit: candidateCommit };
+    if (base?.resolved !== true || (!base.candidateBaseCommit && taskIds.length > 0)) {
+      return { status: "failed", stage: "candidate_base", error: base?.error ?? "Candidate base could not be resolved" };
+    }
+    const candidateBaseCommit = base.candidateBaseCommit;
     const regressionEvidence = await collectRegressionEvidence({
       versionId,
       versionBranch,

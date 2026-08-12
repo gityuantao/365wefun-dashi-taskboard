@@ -1,18 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { classifyChangedPaths } from "./path-classification.mjs";
 
 const SHA = /^[0-9a-f]{40}$/i;
-const PATH_RULES = Object.freeze([
-  ["apps/android-web-wrapper/", "android_twa"],
-  ["apps/android/", "android_native", true],
-  ["apps/ios/", "ios"],
-  ["apps/mp/", "mini_program"],
-  ["apps/web/", "web"],
-  ["apps/api/", "api"],
-  ["api/", "api"],
-  ["database/", "api"],
-  ["db/", "api"],
-  ["services/api/", "api"],
-]);
 
 function fail(message) {
   throw new Error(`Candidate scope closed: ${message}`);
@@ -47,21 +36,13 @@ export function classifyCandidateChanges({ repoPath, baseCommit, candidateCommit
   const diff = run(repoPath, ["diff", "--name-only", "-z", baseCommit, candidateCommit], runGit);
   if (diff.status !== 0) fail("Candidate diff could not be read");
   const changedPaths = [...new Set(diff.stdout.split("\0").map((value) => value.trim()).filter(Boolean))].sort();
-  const platforms = new Set();
-  const unsupported = new Set();
-  for (const changedPath of changedPaths) {
-    const rule = PATH_RULES.find(([prefix]) => changedPath.startsWith(prefix));
-    if (!rule) continue;
-    const [, platform, unsupportedPlatform = false] = rule;
-    if (unsupportedPlatform) unsupported.add(platform);
-    else platforms.add(platform);
-  }
+  const scope = classifyChangedPaths(changedPaths);
   return {
     baseCommit,
     candidateCommit,
     mappingVersion: 1,
     changedPaths,
-    platforms: [...platforms].sort(),
-    unsupported: [...unsupported].sort(),
+    platforms: scope.platforms,
+    unsupported: scope.unsupported,
   };
 }

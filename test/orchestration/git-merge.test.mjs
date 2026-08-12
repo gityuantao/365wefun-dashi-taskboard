@@ -8,6 +8,7 @@ import {
   createReleaseGitOps,
   fetchAndMergeTaskPullRequest,
   mergeTaskPrToVersionBranch,
+  resolveCandidateBase,
   verifyCandidateIntegration,
 } from "../../orchestration/git/merge.mjs";
 
@@ -259,6 +260,25 @@ test("mergeTaskPrToVersionBranch reports conflicts without resolving", async (t)
   assert.deepEqual(result.conflictedPaths, ["file.txt"]);
   assert.match(result.error, /CONFLICT|file\.txt/);
   assert.equal(git(root, ["status", "--porcelain"]).trim(), "");
+});
+
+test("Candidate base is order-independent across merged and open task integration anchors", async (t) => {
+  const root = await makeRepo();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const original = git(root, ["rev-parse", "main"]).trim();
+  git(root, ["checkout", "version/v-1"]);
+  await writeFile(path.join(root, "apps-mp.txt"), "merged\n");
+  git(root, ["add", "."]); git(root, ["commit", "-m", "merged task"]);
+  const mergedBase = git(root, ["rev-parse", "HEAD^" ]).trim();
+  git(root, ["checkout", "-b", "task/open", original]);
+  await writeFile(path.join(root, "apps-web.txt"), "open\n");
+  git(root, ["add", "."]); git(root, ["commit", "-m", "open task"]);
+  const merged = mergeTaskPrToVersionBranch({ repoPath: root, versionBranch: "version/v-1", prRef: "task/open" });
+  const forward = resolveCandidateBase({ repoPath: root, candidateCommit: merged.candidateCommit, candidateBaseCommits: [mergedBase, original] });
+  const reversed = resolveCandidateBase({ repoPath: root, candidateCommit: merged.candidateCommit, candidateBaseCommits: [original, mergedBase] });
+  assert.deepEqual(forward, reversed);
+  assert.equal(forward.candidateBaseCommit, original);
+  assert.deepEqual(git(root, ["diff", "--name-only", forward.candidateBaseCommit, merged.candidateCommit]).trim().split("\n").sort(), ["apps-mp.txt", "apps-web.txt"]);
 });
 
 test("production release git ops fetch the exact GitHub PR head and persist a remote Candidate ref", async (t) => {

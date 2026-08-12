@@ -22,6 +22,7 @@ const LEGACY_SENTINELS = new Map([
     column: "failure_owner",
   }],
   ["0013_production_release_attempts.sql", { check: hasCompleteProductionReleaseSchema }],
+  ["0014_mini_program_production_target.sql", { table: "production_release_targets" }],
 ]);
 
 // Generated from each sqlite_schema.sql definition after applying canonical 0013.

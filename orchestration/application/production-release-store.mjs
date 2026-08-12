@@ -374,7 +374,7 @@ export async function listReusableProductionTargetSuccesses({ db, manifest }) {
      WHERE version_id = ? AND candidate_commit = ? AND manifest_checksum = ?
        AND status = 'succeeded'
        AND reconciliation_status IN ('not_required', 'readback_confirmed')
-       AND ((platform IN ('web', 'api') AND stage = 'readback')
+       AND ((platform IN ('web', 'api', 'mini_program') AND stage = 'readback')
          OR (platform = 'ios' AND stage = 'live_readback'
            AND json_extract(sanitized_observed_evidence, '$.authoritative') = 1
            AND (live_membership_confirmed = 1

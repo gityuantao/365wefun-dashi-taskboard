@@ -647,6 +647,9 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
         ...(jobType === "develop" ? { rejectionFindings: rejectionFindings ?? [] } : {}),
         ...(contextErrors.length > 0 ? { contextError: contextErrors.join("; ") } : {}),
         commitSha: acceptedResult?.commitSha ?? developmentResult?.commitSha ?? null,
+        ...(jobType === "accept" && Array.isArray(developmentResult?.changedPaths)
+          ? { changedPaths: developmentResult.changedPaths }
+          : {}),
         pr: developmentResult?.pr ?? null,
         platforms: (() => {
           const snapshotPlatforms = normalizePlatforms(snapshot.platforms);

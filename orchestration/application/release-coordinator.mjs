@@ -140,6 +140,9 @@ export async function coordinateReleaseSnapshot({
     collectRegressionEvidence: (candidate) => adapter.collectRegressionEvidence(candidate),
     identifyArtifact: (candidate) => adapter.identifyArtifact(candidate),
     persistCandidate: (candidate) => releaseGitOps.persistCandidate(candidate),
+    ...(typeof releaseGitOps.resolveCandidateBase === "function"
+      ? { resolveCandidateBase: (candidate) => releaseGitOps.resolveCandidateBase(candidate) }
+      : {}),
     freezeCandidate: async (candidate) => {
       let candidateScope;
       try {
@@ -151,7 +154,11 @@ export async function coordinateReleaseSnapshot({
       } catch (error) {
         return { status: "rejected", reasons: [error.message] };
       }
-      const gate = await services.checkVersionGate({ db, versionId, candidateScope });
+      const runtimeReadiness = {
+        ...productionReadiness,
+        configuredTargets: runtime?.configuredTargets ?? productionReadiness?.configuredTargets ?? [],
+      };
+      const gate = await services.checkVersionGate({ db, versionId, candidateScope, runtimeReadiness });
       if (!gate.pass) return { status: "rejected", reasons: gate.reasons };
       const eligibility = gate.releaseEligibility ?? gate;
       try {
@@ -169,6 +176,7 @@ export async function coordinateReleaseSnapshot({
         ...candidate,
         candidateScope,
         productionTargetPlan,
+        runtimeReadiness,
       });
     },
     verifyCandidate: (candidate) => releaseGitOps.verifyCandidate(candidate),

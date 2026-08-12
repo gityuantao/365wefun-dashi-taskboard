@@ -27,6 +27,7 @@ export function buildReleaseEligibility({
   candidateScope = null,
   configuredTargets = [],
   runtimeReadiness = { ready: true },
+  additionalGaps = [],
 }) {
   const gaps = [];
   const taskIds = tasks.map((task) => task.id).filter(Boolean).sort();
@@ -62,12 +63,17 @@ export function buildReleaseEligibility({
       evidenceId: evidence?.evidenceId ?? null,
       commitSha: evidence?.commitSha ?? null,
       acceptedCommitSha: evidence?.acceptedCommitSha ?? null,
+      aggregateVersion: evidence?.aggregateVersion ?? null,
+      androidDelivery: evidence?.androidDelivery ?? null,
     });
   }
   if (version.blocked === true) gaps.push("version has open blockers");
   if (["published", "canceled", "releasing"].includes(version.status)) gaps.push("version status is not releasable");
   for (const platform of unsupported) gaps.push(`unsupported Candidate platform: ${platform}`);
   if (runtimeReadiness?.ready !== true) gaps.push(runtimeReadiness?.error ?? "production runtime is not ready");
+  for (const gap of additionalGaps) {
+    if (typeof gap === "string" && gap.trim() !== "") gaps.push(gap);
+  }
   const plannedTargets = [...new Set([
     ...candidateTargets,
     ...taskPlatforms.flatMap((item) => item.platforms),

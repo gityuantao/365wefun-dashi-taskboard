@@ -15,6 +15,9 @@ import {
 import { assertProductionTargetPlanMatches } from "../../orchestration/release/production-target-plan.mjs";
 
 const NOW = "2026-08-04T00:06:00.000Z";
+const RUNTIME_TARGETS = Object.freeze({
+  runtimeReadiness: { ready: true, configuredTargets: ["web", "api", "ios", "mini_program"] },
+});
 const CANDIDATE = {
   versionBranch: "version/version-1",
   candidateCommit: "1111111111111111111111111111111111111111",
@@ -110,7 +113,7 @@ test("version gate fails with no tasks", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedActiveVersion(harness);
-  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1" });
+  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1", ...RUNTIME_TARGETS });
   assert.equal(gate.pass, false);
   assert.ok(gate.reasons.some((reason) => reason.includes("no tasks")));
 });
@@ -121,7 +124,7 @@ test("version gate fails when a task is not ready for release", async (t) => {
   await seedActiveVersion(harness);
   await seedTaskSnapshot(harness, "task-a", "developing", "version-1");
   await seedTaskSnapshot(harness, "task-b", "ready_for_release", "version-1");
-  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1" });
+  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1", ...RUNTIME_TARGETS });
   assert.equal(gate.pass, false);
   assert.ok(gate.reasons.some((reason) => reason.includes("task-a")));
 });
@@ -133,7 +136,7 @@ test("version gate excludes canceled tasks before the Manifest is frozen", async
   await seedTaskSnapshot(harness, "task-ready", "ready_for_release", "version-1");
   await seedTaskSnapshot(harness, "task-canceled", "canceled", "version-1");
 
-  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1" });
+  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1", ...RUNTIME_TARGETS });
   assert.equal(gate.pass, true);
   assert.deepEqual(gate.taskIds, ["task-ready"]);
 });
@@ -152,14 +155,29 @@ test("version gate resolves structured platform evidence and accepts configured 
     VALUES ('task-a-develop-1','development-task-a-develop-1','develop',?,'hash','completed',?,?,?)`)
     .bind(JSON.stringify({ taskId: "task-a" }), JSON.stringify({ status: "completed", platforms: ["服务端", "小程序"] }), NOW, NOW).run();
 
-  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1" });
+  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1", ...RUNTIME_TARGETS });
   assert.equal(gate.pass, true);
   assert.deepEqual(gate.taskIds, ["task-a"]);
   assert.deepEqual(gate.taskPlatforms, [{
     taskId: "task-a", platforms: ["api", "mini_program"], source: "develop_job",
-    evidenceId: "task-a-develop-1", commitSha: null, acceptedCommitSha: null,
+    evidenceId: "task-a-develop-1", commitSha: null, acceptedCommitSha: null, aggregateVersion: null, androidDelivery: null,
   }]);
   assert.equal(gate.reasons.some((reason) => reason.includes("mini_program")), false);
+});
+
+test("version gate fails closed when runtime does not explicitly configure the Candidate target", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedActiveVersion(harness);
+  await seedTaskSnapshot(harness, "task-mp", "ready_for_release", "version-1", ["mini_program"]);
+
+  const gate = await checkVersionGate({
+    db: harness.db, versionId: "version-1",
+    runtimeReadiness: { ready: true, configuredTargets: ["web", "api", "ios"] },
+  });
+
+  assert.equal(gate.pass, false);
+  assert.ok(gate.reasons.includes("production target is not configured: mini_program"));
 });
 
 test("version gate fails when a task is blocked", async (t) => {
@@ -174,7 +192,7 @@ test("version gate fails when a task is blocked", async (t) => {
     )
     .bind("block-task-a", "task-a", "exhausted", NOW)
     .run();
-  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1" });
+  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1", ...RUNTIME_TARGETS });
   assert.equal(gate.pass, false);
   assert.ok(gate.reasons.some((reason) => reason.includes("blocked")));
 });
@@ -189,6 +207,7 @@ test("freezeManifest records the exact immutable Candidate without advancing ver
     db: harness.db,
     versionId: "version-1",
     now: NOW,
+    ...RUNTIME_TARGETS,
     ...CANDIDATE,
   });
   assert.equal(result.status, "frozen");
@@ -213,6 +232,7 @@ test("freezeManifest records the exact immutable Candidate without advancing ver
     db: harness.db,
     versionId: "version-1",
     now: "2026-08-04T00:10:00.000Z",
+    ...RUNTIME_TARGETS,
     ...CANDIDATE,
     candidateCommit: "2222222222222222222222222222222222222222",
   });
@@ -230,6 +250,7 @@ test("freezeManifest rejects Candidate metadata gaps", async (t) => {
     db: harness.db,
     versionId: "version-1",
     now: NOW,
+    ...RUNTIME_TARGETS,
     versionBranch: "version/version-1",
     candidateCommit: CANDIDATE.candidateCommit,
     taskPrHeads: [],
@@ -247,7 +268,7 @@ test("freezeManifest refuses when the gate fails", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedActiveVersion(harness);
-  const result = await freezeManifest({ db: harness.db, versionId: "version-1", now: NOW });
+  const result = await freezeManifest({ db: harness.db, versionId: "version-1", now: NOW, ...RUNTIME_TARGETS });
   assert.equal(result.status, "rejected");
 });
 

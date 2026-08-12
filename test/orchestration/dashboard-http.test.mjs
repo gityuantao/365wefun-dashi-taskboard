@@ -31,6 +31,7 @@ test("orchestrator dashboard server exposes read-only JSON endpoints", async (t)
     db: harness.db,
     port: 0,
     versionListUrl: "https://app.clickup.com/space-1/v/l/version-list",
+    productionReadiness: { ready: true, configuredTargets: ["web", "api", "ios", "mini_program"] },
   });
   t.after(() => dashboard.close());
 
@@ -59,7 +60,7 @@ test("orchestrator dashboard server exposes read-only JSON endpoints", async (t)
   assert.deepEqual(Object.keys(version.releaseReadiness).sort(), [
     "candidateScope", "gaps", "plannedTargets", "ready", "taskIds", "taskPlatforms",
   ]);
-  assert.equal(version.productionRuntimeReadiness.ready, false);
+  assert.equal(version.productionRuntimeReadiness.ready, true);
 
   const post = await fetch(`http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard`, {
     method: "POST",
@@ -105,7 +106,7 @@ test("orchestrator dashboard server enqueues a publish mutation when releasable"
       已发布: "published",
       已取消: "canceled",
     },
-    productionReadiness: { ready: true, error: null },
+    productionReadiness: { ready: true, error: null, configuredTargets: ["web", "api", "ios", "mini_program"] },
   });
   t.after(() => dashboard.close());
 
@@ -173,7 +174,7 @@ test("publish confirmation is role-bound, exact, and idempotent", async (t) => {
   await seedDashboardFixture(harness.db);
   const common = {
     db: harness.db, port: 0, mutationSecret: "confirmation-secret",
-    versionStatusMap: { 发布中: "releasing" }, productionReadiness: { ready: true },
+    versionStatusMap: { 发布中: "releasing" }, productionReadiness: { ready: true, configuredTargets: ["web", "api", "ios", "mini_program"] },
   };
   const denied = await startDashboardServer(common);
   let response = await fetch(`http://127.0.0.1:${denied.port}/api/orchestration/dashboard/versions/version-1/publish`, {
@@ -223,7 +224,7 @@ test("publish rejects unsupported task platforms before enqueue", async (t) => {
   await harness.db.prepare("UPDATE clickup_snapshots SET snapshot = ? WHERE object_type = 'task' AND object_id = 'task-1'").bind(JSON.stringify(snapshot)).run();
   const dashboard = await startDashboardServer({
     db: harness.db, port: 0, mutationSecret: "platform-secret",
-    versionStatusMap: { 发布中: "releasing" }, productionReadiness: { ready: true },
+    versionStatusMap: { 发布中: "releasing" }, productionReadiness: { ready: true, configuredTargets: ["web", "api", "ios", "mini_program"] },
   });
   t.after(() => dashboard.close());
   const response = await fetch(`http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`, {
@@ -239,7 +240,7 @@ test("publish rejects an open task blocker and preserves expected prior status",
   t.after(() => harness.dispose());
   await seedDashboardFixture(harness.db);
   await harness.db.prepare("INSERT INTO blockers (id, object_type, object_id, type, reason, status, created_at) VALUES ('release-blocker', 'task', 'task-1', 'blocked', 'hold', 'open', ?)").bind("2026-08-06T08:00:00.000Z").run();
-  const dashboard = await startDashboardServer({ db: harness.db, port: 0, mutationSecret: "blocker-secret", versionStatusMap: { 发布中: "releasing" }, productionReadiness: { ready: true } });
+  const dashboard = await startDashboardServer({ db: harness.db, port: 0, mutationSecret: "blocker-secret", versionStatusMap: { 发布中: "releasing" }, productionReadiness: { ready: true, configuredTargets: ["web", "api", "ios", "mini_program"] } });
   t.after(() => dashboard.close());
   const response = await fetch(`http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard/versions/version-1/publish`, {
     method: "POST", headers: { authorization: "Bearer blocker-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["admin"]' },
@@ -275,6 +276,26 @@ test("dashboard exposes production readiness and rejects publish before enqueue 
   assert.equal((await publish.json()).error.code, "PRODUCTION_RUNTIME_NOT_READY");
   const row = await harness.db.prepare("SELECT COUNT(*) AS count FROM outbox_mutations WHERE object_id = 'version-1'").first();
   assert.equal(row.count, 0);
+});
+
+test("version API returns frozen canonical eligibility without removing provenance", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  const eligibility = {
+    ready: true, gaps: [], taskIds: ["task-1"], plannedTargets: ["mini_program"],
+    candidateScope: { platforms: ["mini_program"], changedPaths: ["apps/mp/page.ts"] },
+    taskPlatforms: [{ taskId: "task-1", platforms: ["mini_program"], source: "accepted_pr_changes", evidenceId: "accept-1", commitSha: "c".repeat(40), acceptedCommitSha: "c".repeat(40), aggregateVersion: 7, androidDelivery: null }],
+  };
+  await harness.db.prepare("UPDATE release_manifests SET manifest = ? WHERE version_id = 'version-1'").bind(JSON.stringify({
+    versionId: "version-1", taskIds: ["task-1"], candidateCommit: "candidate-1", checksum: "checksum", releaseEligibility: eligibility,
+    productionTargetPlan: { schemaVersion: 1, taskPlatforms: [{ taskId: "task-1", platforms: ["mini_program"] }], platforms: { web: false, api: false, ios: false, mini_program: true }, iosApps: [] },
+  })).run();
+  const server = await startDashboardServer({ db: harness.db, port: 0, productionReadiness: { ready: true, configuredTargets: ["web", "api", "ios", "mini_program"] } });
+  t.after(() => server.close());
+  const response = await fetch(`http://127.0.0.1:${server.port}/api/orchestration/dashboard/versions/version-1`);
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).releaseReadiness, eligibility);
 });
 
 test("version detail previews configured iOS Apps while runtime remains held and not executable", async (t) => {
@@ -321,7 +342,7 @@ test("publish re-probes lazy adapter factories before enqueueing ClickUp releasi
     { method: "POST", headers: { authorization: "Bearer factory-readiness-secret", "content-type": "application/json", "x-orchestration-actor-roles": '["admin"]' }, body: JSON.stringify({ confirmationVersion: "1.0.1", requestId: "factory-request" }) },
   );
   assert.equal(publish.status, 503);
-  assert.equal(probes, 1);
+  assert.equal(probes, 2);
   const row = await harness.db.prepare("SELECT COUNT(*) AS count FROM outbox_mutations WHERE object_id = 'version-1'").first();
   assert.equal(row.count, 0);
 });

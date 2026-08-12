@@ -85,6 +85,24 @@ test("production release persistence records exact version and target identities
   ]);
 });
 
+test("mini-program terminal success is immutable and reusable on the exact frozen Candidate", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await harness.db.exec(webApiTerminalSuccessSql({
+    platform: "mini_program", versionId: "v-mp", candidateCommit: "candidate-mp", readbackSha: "candidate-mp",
+  }));
+  const reusable = await harness.db.prepare(`SELECT production_release_id FROM production_release_targets
+    WHERE version_id = ? AND candidate_commit = ? AND manifest_checksum = ? AND platform = ? AND app_id = ?
+      AND status = 'succeeded' AND stage = 'readback'`).bind(
+    "v-mp", "candidate-mp", "checksum-sha", "mini_program", "",
+  ).all();
+  assert.deepEqual(reusable.results, [{ production_release_id: "release-sha" }]);
+  await assert.rejects(
+    () => harness.db.exec("UPDATE production_release_targets SET updated_at = '2026-08-11T00:02:00.000Z' WHERE version_id = 'v-mp'"),
+    /immutable/,
+  );
+});
+
 test("production release persistence binds exact checksum identity and accepts only legal platform stages", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

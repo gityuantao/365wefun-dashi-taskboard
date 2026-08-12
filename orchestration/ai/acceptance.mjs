@@ -159,7 +159,7 @@ export async function executeAcceptance({
   now,
   fieldIds = { feedback: null },
 }) {
-  const { taskId, acceptanceCriteria, commitSha } = job.payload;
+  const { taskId, acceptanceCriteria, commitSha, changedPaths } = job.payload;
   try {
     const startAggregate = await loadAggregate(db, "task", taskId);
     if (startAggregate.state !== "accepting") return staleAcceptanceResult(startAggregate);
@@ -283,6 +283,7 @@ export async function executeAcceptance({
         status: "completed",
         result: "accepted",
         commitSha,
+        ...(Array.isArray(changedPaths) ? { changedPaths } : {}),
         targetVersion,
         findings: [],
       };

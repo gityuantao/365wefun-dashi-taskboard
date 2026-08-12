@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   createProductionRuntime,
+  configuredReleaseTargets,
   validateProductionRuntime,
 } from "../../orchestration/release/production-runtime.mjs";
 import { coordinateReleaseSnapshot } from "../../orchestration/application/release-coordinator.mjs";
@@ -22,6 +23,12 @@ const BASE_RUNTIME = {
   iosProductionReleaseTimeoutMs: 120_000,
   productionReleaseLeaseMs: 180_000,
   productionReleaseMaxReconciliationAttempts: 4,
+  releaseTargets: {
+    web: { enabled: true, adapter: "release_adapter" },
+    api: { enabled: true, adapter: "release_adapter" },
+    ios: { enabled: true, adapter: "ios_adapter" },
+    mini_program: { enabled: true, adapter: "release_adapter" },
+  },
   iosApps: [{
     id: "au", name: "AU", enabled: true, scheme: "AU", testScheme: "AUTests",
     testTarget: "AUTests", bundleId: "example.au", testFlightGroup: "Internal",
@@ -29,6 +36,15 @@ const BASE_RUNTIME = {
     releaseMode: "automatic", reviewConfigurationRef: "review/au",
   }],
 };
+
+test("configured release targets are derived from explicit runtime descriptors and default closed", () => {
+  assert.deepEqual(configuredReleaseTargets({}), []);
+  assert.deepEqual(configuredReleaseTargets(BASE_RUNTIME), ["api", "ios", "mini_program", "web"]);
+  assert.deepEqual(configuredReleaseTargets({
+    ...BASE_RUNTIME,
+    releaseTargets: { ...BASE_RUNTIME.releaseTargets, mini_program: { enabled: false, adapter: "release_adapter" } },
+  }), ["api", "ios", "web"]);
+});
 
 test("production release hold defaults closed and blocks every adapter boundary before import", async () => {
   for (const heldValue of [undefined, true]) {
@@ -321,7 +337,8 @@ test("orchestrator tick pauses before release polling and wires both adapters, r
   assert.match(source, /iosAdapter: productionRuntime\.iosAdapter/);
   assert.match(source, /apps: productionRuntime\.apps/);
   assert.match(source, /releaseLease: productionRuntime\.releaseLease/);
-  assert.match(source, /productionReadiness: productionRuntime\.readiness/);
+  assert.match(source, /\.\.\.productionRuntime\.readiness/);
+  assert.match(source, /configuredTargets: productionRuntime\.configuredTargets/);
 });
 
 test("release_failed snapshots do not retry until an explicit command returns them to releasing", async () => {

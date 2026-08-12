@@ -4,8 +4,10 @@ import test from "node:test";
 import {
   activeVersionTasks,
   canonicalizeReleasePlatforms,
+  loadReleasePlatformEvidence,
   resolveReleasePlatformEvidence,
 } from "../../orchestration/release/release-scope.mjs";
+import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 
 const task = (id, status = "ready_for_release", platforms = []) => ({
   id, status, targetVersion: "v1.0.3", platforms,
@@ -117,7 +119,7 @@ test("exact accepted PR changes supplement otherwise missing platform evidence",
   const accepted = "92e071495bde1971c17f4a98fa6a0caec70756b3";
   const resolved = resolveReleasePlatformEvidence({
     task: task("task-mp"), aggregate: { version: 17 }, acceptedCommitSha: accepted,
-    acceptedChangeScope: { evidenceId: "accepted-pr-task-mp", platforms: ["mini_program"] },
+    acceptedChangeScope: { evidenceId: "accepted-pr-task-mp", commitSha: accepted, platforms: ["mini_program"] },
   });
 
   assert.equal(resolved.source, "accepted_pr_changes");
@@ -133,4 +135,39 @@ test("accepted commit rejects development evidence with a different commit", () 
 
   assert.equal(resolved.source, "missing");
   assert.deepEqual(resolved.platforms, []);
+});
+
+test("accepted commit rejects ClickUp and analysis scope that is not bound to that commit", () => {
+  const accepted = "a".repeat(40);
+  const clickup = resolveReleasePlatformEvidence({
+    task: { ...task("task-evidence", "ready_for_release", ["web"]), acceptedCommitSha: "b".repeat(40) },
+    aggregate: { version: 1 }, acceptedCommitSha: accepted,
+  });
+  const analysis = resolveReleasePlatformEvidence({
+    task: task("task-analysis"), aggregate: { version: 1 }, acceptedCommitSha: accepted,
+    analyzeJobs: [{ id: "analysis", status: "completed", result: { commitSha: "b".repeat(40), summary: { platforms: ["web"] } } }],
+  });
+  assert.equal(clickup.source, "missing");
+  assert.equal(analysis.source, "missing");
+});
+
+test("persisted accepted PR changed paths become exact task platform evidence", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const accepted = "a".repeat(40);
+  await harness.db.prepare(`INSERT INTO runner_jobs
+    (id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at)
+    VALUES (?, ?, 'accept', ?, 'hash', 'completed', ?, ?, ?)`)
+    .bind(
+      "task-mp-accept-1", "accept-task-mp", JSON.stringify({ taskId: "task-mp" }),
+      JSON.stringify({ result: "accepted", commitSha: accepted, changedPaths: ["apps/mp/pages/index.ts", "apps/api/routes/health.ts"] }),
+      "2026-08-12T00:00:00.000Z", "2026-08-12T00:00:01.000Z",
+    ).run();
+
+  const evidence = await loadReleasePlatformEvidence(harness.db, [{ id: "task-mp", platforms: [], aggregateVersion: 1 }]);
+  assert.deepEqual(evidence, [{
+    taskId: "task-mp", platforms: ["api", "mini_program"], source: "accepted_pr_changes",
+    evidenceId: "task-mp-accept-1", commitSha: accepted, acceptedCommitSha: accepted,
+    aggregateVersion: 1, androidDelivery: null,
+  }]);
 });

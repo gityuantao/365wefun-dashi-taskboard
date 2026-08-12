@@ -213,6 +213,12 @@ function jobGitOps(job) {
       }
       return runInWorktree(worktreePath, ["rev-parse", "HEAD"]).stdout.trim();
     },
+    changedPaths: async ({ repoPath, baseRef, commitSha }) => {
+      const diff = execFileSync("git", ["-C", repoPath, "diff", "--name-only", "-z", baseRef, commitSha], {
+        encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      });
+      return [...new Set(diff.split("\0").map((value) => value.trim()).filter(Boolean))].sort();
+    },
     createPullRequest: async ({ repoPath, branch, base, baseRef, title, body }) => {
       if (base && base !== "main") {
         const remote = execFileSync(
@@ -252,7 +258,10 @@ const dashboardServer = await startDashboardServer({
   mutationSecret: await getProcessOrchestrationMutationSecret({
     secretPath: DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH,
   }),
-  productionReadiness: () => productionRuntime.probeReadiness(),
+  productionReadiness: async () => ({
+    ...await productionRuntime.probeReadiness(),
+    configuredTargets: productionRuntime.configuredTargets,
+  }),
   productionTargetApps: productionRuntime.configuredApps,
 });
 log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
@@ -473,7 +482,10 @@ async function releaseCoordinator(now) {
       iosAdapter: productionRuntime.iosAdapter,
       apps: productionRuntime.apps,
       releaseLease: productionRuntime.releaseLease(() => new Date().toISOString()),
-      productionReadiness: productionRuntime.readiness,
+      productionReadiness: {
+        ...productionRuntime.readiness,
+        configuredTargets: productionRuntime.configuredTargets,
+      },
       prepareProductionRuntime: async () => {
         const readiness = await productionRuntime.probeReadiness();
         if (!readiness.ready) throw new Error(readiness.error);

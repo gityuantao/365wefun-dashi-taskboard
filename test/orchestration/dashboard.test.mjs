@@ -3,10 +3,23 @@ import { test } from "node:test";
 import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import { DASHBOARD_NOW, seedDashboardFixture } from "../helpers/dashboard-fixture.mjs";
 import {
-  buildDashboard,
+  buildDashboard as buildDashboardQuery,
   buildTaskDetail,
-  buildVersionDetail,
+  buildVersionDetail as buildVersionDetailQuery,
 } from "../../orchestration/dashboard/queries.mjs";
+
+const RUNTIME_READY = Object.freeze({
+  ready: true,
+  configuredTargets: ["web", "api", "ios", "mini_program"],
+});
+const buildDashboard = (db, options = {}) => buildDashboardQuery(db, {
+  runtimeReadiness: RUNTIME_READY,
+  ...options,
+});
+const buildVersionDetail = (db, versionId, options = {}) => buildVersionDetailQuery(db, versionId, {
+  runtimeReadiness: RUNTIME_READY,
+  ...options,
+});
 
 test("buildDashboard aggregates releasable versions, pipeline, versions and activity", async (t) => {
   const harness = await createCloudWorkerHarness();
@@ -374,7 +387,7 @@ test("version detail recovers canonical platforms from structured jobs and repor
   const detail = await buildVersionDetail(harness.db, "version-1");
   assert.deepEqual(detail.taskPlatforms, [{
     taskId: "task-1", platforms: ["api", "mini_program"], source: "develop_job",
-    evidenceId: "task-1-develop-1", commitSha: null, acceptedCommitSha: null,
+    evidenceId: "task-1-develop-1", commitSha: null, acceptedCommitSha: null, aggregateVersion: 4, androidDelivery: null,
   }]);
   assert.equal(detail.releaseReadiness.ready, true);
   assert.equal(detail.releaseReadiness.gaps.some((gap) => gap.includes("mini_program")), false);
@@ -440,6 +453,26 @@ test("dashboard card and version detail expose the same canonical release eligib
 
   assert.equal(card.releasable, detail.releaseReadiness.ready);
   assert.deepEqual(card.releaseEligibility, detail.releaseReadiness);
+});
+
+test("frozen card, detail and API preserve the same immutable eligibility provenance", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  const eligibility = {
+    ready: true, gaps: [], taskIds: ["task-1"], plannedTargets: ["mini_program"],
+    candidateScope: { baseCommit: "a".repeat(40), candidateCommit: "b".repeat(40), mappingVersion: 1, changedPaths: ["apps/mp/page.ts"], platforms: ["mini_program"], unsupported: [] },
+    taskPlatforms: [{ taskId: "task-1", platforms: ["mini_program"], source: "accepted_pr_changes", evidenceId: "task-1-accept-1", commitSha: "c".repeat(40), acceptedCommitSha: "c".repeat(40), aggregateVersion: 7, androidDelivery: "web_twa" }],
+  };
+  await harness.db.prepare("UPDATE release_manifests SET manifest = ? WHERE version_id = 'version-1'").bind(JSON.stringify({
+    versionId: "version-1", taskIds: ["task-1"], candidateCommit: "candidate-1", checksum: "checksum", releaseEligibility: eligibility,
+    productionTargetPlan: { schemaVersion: 1, taskPlatforms: [{ taskId: "task-1", platforms: ["mini_program"] }], platforms: { web: false, api: false, ios: false, mini_program: true }, iosApps: [] },
+  })).run();
+  const card = (await buildDashboard(harness.db)).versions.find((version) => version.id === "version-1");
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.deepEqual(card.releaseEligibility, eligibility);
+  assert.deepEqual(detail.releaseReadiness, eligibility);
+  assert.deepEqual(eligibility.gaps, []);
 });
 
 test("version detail treats a ready snapshot as ready when no internal aggregate exists", async (t) => {

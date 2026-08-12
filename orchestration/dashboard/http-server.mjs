@@ -219,9 +219,10 @@ export async function startDashboardServer({
 
       if (pathname === "/api/orchestration/dashboard") {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        const runtimeReadiness = await currentProductionReadiness();
         return sendJson(response, 200, {
-          ...await buildDashboard(db, { versionListUrl }),
-          productionReleaseReadiness: await currentProductionReadiness(),
+          ...await buildDashboard(db, { versionListUrl, runtimeReadiness }),
+          productionReleaseReadiness: runtimeReadiness,
         });
       }
 
@@ -268,7 +269,8 @@ export async function startDashboardServer({
             error: { code: "INVALID_PATH", message: "Version id contains invalid encoding" },
           });
         }
-        const detail = await buildVersionDetail(db, versionId, { iosApps: productionTargetApps });
+        const runtimeReadiness = await currentProductionReadiness();
+        const detail = await buildVersionDetail(db, versionId, { iosApps: productionTargetApps, runtimeReadiness });
         if (!detail) {
           return sendJson(response, 404, {
             error: { code: "NOT_FOUND", message: "Version not found" },
@@ -334,13 +336,13 @@ export async function startDashboardServer({
             error: { code: "INVALID_PATH", message: "Version id contains invalid encoding" },
           });
         }
-        const detail = await buildVersionDetail(db, versionId, { iosApps: productionTargetApps });
+        const runtimeReadiness = await currentProductionReadiness();
+        const detail = await buildVersionDetail(db, versionId, { iosApps: productionTargetApps, runtimeReadiness });
         if (!detail) {
           return sendJson(response, 404, {
             error: { code: "NOT_FOUND", message: "Version not found" },
           });
         }
-        const runtimeReadiness = await currentProductionReadiness();
         return sendJson(response, 200, {
           ...detail,
           productionRuntimeReadiness: runtimeReadiness,
