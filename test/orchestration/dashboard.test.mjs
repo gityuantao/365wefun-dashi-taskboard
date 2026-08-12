@@ -403,4 +403,21 @@ test("dashboard progress and pipeline use internal workflow readiness instead of
   assert.equal(version.releasable, false);
   assert.equal(dashboard.pipeline.waiting_info, 2);
   assert.equal(dashboard.pipeline.ready_for_release, 2);
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.equal(detail.tasks.filter(({ ready }) => ready).length, version.readyCount);
+});
+
+test("version detail treats a ready snapshot as ready when no internal aggregate exists", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare(
+    "DELETE FROM orchestration_aggregates WHERE aggregate_type='task' AND aggregate_id='task-1'",
+  ).run();
+
+  const dashboard = await buildDashboard(harness.db);
+  const version = dashboard.versions.find(({ id }) => id === "version-1");
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.equal(version.readyCount, 1);
+  assert.equal(detail.tasks.find(({ id }) => id === "task-1").ready, true);
 });

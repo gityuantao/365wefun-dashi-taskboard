@@ -376,7 +376,7 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
       id: task.id,
       name: task.name ?? task.id,
       status: task.status,
-      ready: task.aggregateState === "ready_for_release",
+      ready: (task.aggregateState ?? task.snapshotStatus) === "ready_for_release",
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
   const releasable = versionTasks.length > 0
