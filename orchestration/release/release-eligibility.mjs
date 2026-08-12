@@ -78,9 +78,10 @@ export function buildReleaseEligibility({
     ...candidateTargets,
     ...taskPlatforms.flatMap((item) => item.platforms),
   ])].sort();
+  const uniqueGaps = [...new Set(gaps)];
   return {
-    ready: gaps.length === 0,
-    gaps,
+    ready: uniqueGaps.length === 0,
+    gaps: uniqueGaps,
     taskIds,
     taskPlatforms,
     candidateScope,

@@ -5,6 +5,9 @@ function evidence(parameters) {
 }
 
 export const VERSION_COMMAND_HANDLERS = {
+  activate_version(state) {
+    return decideVersionTransition({ from: state, to: "active" });
+  },
   start_release(state, parameters) {
     return decideVersionTransition({
       from: state,

@@ -2766,3 +2766,24 @@ test("poller imports external task placed directly in 开发中", async (t) => {
     .first();
   assert.ok(job, "develop job should be enqueued");
 });
+
+test("poller reconciles an unchanged ClickUp published version without external mutations", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const version = { id: "version-published", name: "1.0.3", status: { status: "已发布" } };
+  const snapshot = {
+    id: version.id, listId: null, name: version.name, status: "published",
+    blocked: false, updatedAt: null, fieldsHash: "stored-published",
+  };
+  await saveSnapshot(harness.db, { type: "version", snapshot, readAt: NOW });
+  const comments = [];
+  const fieldUpdates = [];
+  const env = await makeEnv(harness, [], [version], comments, fieldUpdates);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+
+  assert.equal((await loadAggregate(harness.db, "version", version.id)).state, "published");
+  assert.deepEqual(result.commands, []);
+  assert.deepEqual(comments, []);
+  assert.deepEqual(fieldUpdates, []);
+});

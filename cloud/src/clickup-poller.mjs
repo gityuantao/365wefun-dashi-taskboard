@@ -723,6 +723,34 @@ async function ensureVersionAssignmentJob(env, snapshot, now) {
   });
 }
 
+async function reconcilePublishedVersion(env, snapshot, now, commands) {
+  if (snapshot.status !== "published") return;
+  let aggregate = await loadAggregate(env.DB, "version", snapshot.id);
+  const transitions = {
+    planning: ["activate_version", {}],
+    active: ["start_release", {}],
+    release_failed: ["start_release", { evidenceId: `clickup-published-${snapshot.id}` }],
+    releasing: ["release_succeeded", {}],
+  };
+  while (aggregate.state !== "published") {
+    const [type, parameters] = transitions[aggregate.state ?? "planning"] ?? [];
+    if (!type) return;
+    const command = parseCommandEnvelope({
+      id: `poller-reconcile-published-${snapshot.id}-${aggregate.version + 1}`,
+      type,
+      aggregateType: "version",
+      aggregateId: snapshot.id,
+      expectedVersion: aggregate.version + 1,
+      actorId: "system-poller",
+      issuedAt: now,
+      reason: "ClickUp version is already published",
+      parameters,
+    });
+    await dispatchCommand({ db: env.DB, command, now });
+    aggregate = await loadAggregate(env.DB, "version", snapshot.id);
+  }
+}
+
 export async function pollClickUpOnce(env, {
   now,
   clientFactory,
@@ -846,6 +874,7 @@ export async function pollClickUpOnce(env, {
 
   for (const payload of versions) {
     const snapshot = normalizeVersion(payload, config, versionListKey);
+    await reconcilePublishedVersion(env, snapshot, now, commands);
     const confirmed = await loadLastConfirmed(env.DB, "version", snapshot.id);
     if (compareSnapshots(confirmed, snapshot).length === 0) continue;
     processed += 1;

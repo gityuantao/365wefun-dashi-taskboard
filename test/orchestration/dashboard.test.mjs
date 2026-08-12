@@ -130,6 +130,27 @@ test("version detail returns safe readiness gaps and per-target release progress
   assert.equal(JSON.stringify(detail).includes("/private/review.json"), false);
 });
 
+test("published version detail does not show pre-release configuration gaps", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare(
+    "UPDATE clickup_snapshots SET status = 'published', snapshot = json_set(snapshot, '$.status', 'published') WHERE object_type = 'version' AND object_id = 'version-2'",
+  ).run();
+
+  const detail = await buildVersionDetailQuery(harness.db, "version-2", {
+    runtimeReadiness: {
+      ready: false,
+      configuredTargets: [],
+      error: "releaseTargets must explicitly enable at least one production target",
+    },
+  });
+
+  assert.equal(detail.status, "published");
+  assert.equal(detail.releasable, false);
+  assert.deepEqual(detail.releaseReadiness.gaps, []);
+});
+
 test("first-release iOS target preview derives the exact marketing version", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

@@ -95,3 +95,26 @@ test("missing 86d40ejq2 evidence remains closed", () => {
   assert.equal(eligibility.ready, false);
   assert.ok(eligibility.gaps.some((gap) => gap.includes("86d40ejq2")));
 });
+
+test("identical production target gaps are reported once", () => {
+  const eligibility = buildReleaseEligibility({
+    version: { id: "v1", status: "active" },
+    tasks: [
+      { id: "task-1", status: "ready_for_release" },
+      { id: "task-2", status: "ready_for_release" },
+    ],
+    blockers: [],
+    platformEvidence: [
+      { taskId: "task-1", platforms: ["web"], source: "accepted_pr" },
+      { taskId: "task-2", platforms: ["web"], source: "accepted_pr" },
+    ],
+    candidateScope: candidateScope(["web"]),
+    configuredTargets: [],
+    runtimeReadiness: { ready: true },
+  });
+
+  assert.deepEqual(
+    eligibility.gaps.filter((gap) => gap === "production target is not configured: web"),
+    ["production target is not configured: web"],
+  );
+});

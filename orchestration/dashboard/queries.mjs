@@ -94,7 +94,7 @@ async function releaseEligibilityFor({ db, version, tasks, manifest, openTaskBlo
   const platformEvidence = manifest?.productionTargetPlan?.taskPlatforms
     ? manifest.productionTargetPlan.taskPlatforms.map((item) => ({ ...item, source: "frozen_manifest" }))
     : await loadReleasePlatformEvidence(db, tasks);
-  return buildReleaseEligibility({
+  const eligibility = buildReleaseEligibility({
     version,
     tasks,
     blockers: [...openTaskBlockers],
@@ -104,6 +104,10 @@ async function releaseEligibilityFor({ db, version, tasks, manifest, openTaskBlo
     runtimeReadiness,
     additionalGaps,
   });
+  if (["published", "canceled"].includes(version.status)) {
+    return { ...eligibility, ready: false, gaps: [] };
+  }
+  return eligibility;
 }
 
 async function latestJob(db, taskId, jobType) {
@@ -352,7 +356,9 @@ export async function buildVersionDetail(db, versionId, { iosApps = [], runtimeR
   ]);
   if (!snapshotRow) return null;
   const snapshot = JSON.parse(snapshotRow.snapshot);
-  const status = aggregateRow?.state ?? snapshotRow.status;
+  const status = ["published", "canceled"].includes(snapshotRow.status)
+    ? snapshotRow.status
+    : aggregateRow?.state ?? snapshotRow.status;
   const storedManifest = manifestRow ? JSON.parse(manifestRow.manifest) : null;
   const matchingTasks = activeVersionTasks({
     tasks, versionName: snapshot.name ?? versionId, manifest: storedManifest,
