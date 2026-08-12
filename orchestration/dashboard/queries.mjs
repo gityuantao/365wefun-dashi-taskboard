@@ -53,6 +53,7 @@ async function loadTasks(db) {
         ...parseSnapshot(row),
         status: state === "accepting" ? "developing" : state,
         snapshotStatus: row.snapshot_status ?? null,
+        canceled: row.snapshot_status === "canceled",
         aggregateState: row.aggregate_state ?? null,
         aggregateVersion: row.aggregate_version ?? null,
       };

@@ -28,7 +28,7 @@ export function activeVersionTasks({ tasks, versionName, manifest }) {
     return manifest.taskIds.map((taskId) => byId.get(taskId)).filter(Boolean);
   }
   return (tasks ?? []).filter((task) => (
-    task.targetVersion === versionName && task.status !== "canceled"
+    task.targetVersion === versionName && task.status !== "canceled" && task.canceled !== true
   ));
 }
 

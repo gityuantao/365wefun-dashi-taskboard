@@ -328,6 +328,10 @@ test("dashboard card and detail exclude canceled tasks before a Manifest is froz
     (object_type,object_id,list_id,status,snapshot,fields_hash,read_at)
     VALUES ('task','task-canceled','list-task','canceled',?,'cancel-hash',?)`)
     .bind(JSON.stringify({ id: "task-canceled", name: "取消任务", status: "canceled", targetVersion: "1.0.1", platforms: ["web"] }), DASHBOARD_NOW).run();
+  await harness.db.prepare(`INSERT INTO orchestration_aggregates
+    (aggregate_type,aggregate_id,aggregate_version,state,snapshot,updated_at)
+    VALUES ('task','task-canceled',3,'ready_for_development',NULL,?)`)
+    .bind(DASHBOARD_NOW).run();
 
   const dashboard = await buildDashboard(harness.db);
   const card = dashboard.versions.find((version) => version.id === "version-1");
