@@ -23,6 +23,7 @@ import {
   inferPlatformsFromText,
   normalizePlatforms,
 } from "../../orchestration/domain/platforms.mjs";
+import { resolveSatisfiedReworkBlockers } from "../../orchestration/application/blocker-reconciliation.mjs";
 
 function jobTypeForState(status) {
   if (status === "inbox") return "analyze";
@@ -744,6 +745,9 @@ export async function pollClickUpOnce(env, {
       await ensureInboxAnalysis(env, snapshot, now, commands, config);
       await ensureExternalTaskImport(env, snapshot, now, commands, config);
       await ensureStateJob(env, snapshot, now, currentDevVersion);
+      if (snapshot.status === "ready_for_release") {
+        await resolveSatisfiedReworkBlockers({ db: env.DB, taskId: snapshot.id, now, dryRun: false });
+      }
       continue;
     }
     processed += 1;
@@ -797,6 +801,9 @@ export async function pollClickUpOnce(env, {
     await ensureExternalTaskImport(env, snapshot, now, commands, config);
     await ensureStateJob(env, snapshot, now, currentDevVersion);
     await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });
+    if (snapshot.status === "ready_for_release") {
+      await resolveSatisfiedReworkBlockers({ db: env.DB, taskId: snapshot.id, now, dryRun: false });
+    }
   }
 
   for (const payload of versions) {

@@ -326,6 +326,9 @@ test("poller treats a move to 待发布 as test passed", async (t) => {
     await dispatchTask(harness, `poll-task-cmd-${index}`, type, index + 1);
   }
   const env = await makeEnv(harness, [sandboxTask({ status: "待发布" })]);
+  await harness.db.prepare(`INSERT INTO blockers
+    (id,object_type,object_id,type,reason,status,created_at,resolved_at)
+    VALUES ('block-task-1','task','task-1','rework_budget','old failure','open','2026-08-03T00:00:00.000Z',NULL)`).run();
   const result = await pollClickUpOnce(env, { now: NOW });
   assert.equal(result.processed, 1);
   assert.equal(result.commands.length, 1);
@@ -334,6 +337,8 @@ test("poller treats a move to 待发布 as test passed", async (t) => {
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
   assert.equal(aggregate.state, "ready_for_release");
   assert.equal(aggregate.version, 7);
+  const blocker = await harness.db.prepare("SELECT status,resolved_at FROM blockers WHERE id='block-task-1'").first();
+  assert.deepEqual(blocker, { status: "resolved", resolved_at: NOW });
 });
 
 test("poller treats a move back to 待开发 as test failed", async (t) => {
