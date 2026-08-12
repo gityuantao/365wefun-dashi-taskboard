@@ -384,7 +384,11 @@ test("development reloads stale state when its needs_info transition is not pers
     codex: {
       run: async () => ({
         exitCode: 0,
-        stdout: JSON.stringify({ needs_info: true, reason: "需要更多复现信息" }),
+        stdout: JSON.stringify({
+          outcome: "needs_info",
+          reason: "两个互斥的官方素材没有指定",
+          questions: ["使用营销徽章还是应用图标？"],
+        }),
         stderr: "",
       }),
     },
@@ -433,7 +437,11 @@ test("needs_info comments redact common credential formats", async (t) => {
         codex: {
           run: async () => ({
             exitCode: 0,
-            stdout: JSON.stringify({ needs_info: true, reason: credentialCase.reason }),
+            stdout: JSON.stringify({
+              outcome: "needs_info",
+              reason: credentialCase.reason,
+              questions: ["请选择具体业务方案"],
+            }),
             stderr: "",
           }),
         },
@@ -526,7 +534,7 @@ test("unexpected development infrastructure failure stays active without a produ
   assert.equal(comments.some((body) => String(body).includes("开发失败")), false);
 });
 
-test("rollback diagnostics redact common credential formats", async (t) => {
+test("infrastructure result diagnostics redact common credential formats without ClickUp comments", async (t) => {
   const cases = [
     {
       name: "quoted JSON credentials",
@@ -556,7 +564,7 @@ test("rollback diagnostics redact common credential formats", async (t) => {
       subtest.after(() => harness.dispose());
       await setupTask(harness);
       const comments = [];
-      await executeDevelopment({
+      const result = await executeDevelopment({
         job: JOB,
         db: harness.db,
         client: makeClient({
@@ -571,11 +579,11 @@ test("rollback diagnostics redact common credential formats", async (t) => {
         now: NOW,
       });
 
-      const failureComment = comments.find((body) => String(body).includes("开发失败"));
-      assert.ok(failureComment);
-      assert.match(failureComment, /\[REDACTED\]/);
+      assert.equal(result.classification, "orchestrator_infrastructure");
+      assert.match(result.error, /\[REDACTED\]/);
+      assert.equal(comments.some((body) => String(body).includes("开发失败")), false);
       for (const secret of credentialCase.secrets) {
-        assert.equal(String(failureComment).includes(secret), false);
+        assert.equal(String(result.error).includes(secret), false);
       }
     });
   }

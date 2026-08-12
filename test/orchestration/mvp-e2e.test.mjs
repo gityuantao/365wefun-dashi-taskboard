@@ -575,7 +575,7 @@ async function claimFromQueue(harness, jobType) {
   };
 }
 
-test("failed development blocks without advancing the task", async (t) => {
+test("retryable development infrastructure failure stays active without a product rollback", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   const clickUpTask = makeClickUpTask({ status: { status: "待开发" } });
@@ -595,8 +595,10 @@ test("failed development blocks without advancing the task", async (t) => {
     now: NOW,
   });
   assert.equal(result.status, "failed");
+  assert.equal(result.classification, "orchestrator_infrastructure");
+  assert.equal(result.retryable, true);
   const aggregate = await loadAggregate(harness.db, "task", "task-e2e-1");
-  assert.equal(aggregate.state, "ready_for_development");
+  assert.equal(aggregate.state, "developing");
   const events = await harness.db
     .prepare(
       `SELECT aggregate_version, type
@@ -610,7 +612,6 @@ test("failed development blocks without advancing the task", async (t) => {
     { aggregate_version: 1, type: "task.analysis_started" },
     { aggregate_version: 2, type: "task.analysis_completed" },
     { aggregate_version: 3, type: "task.development_started" },
-    { aggregate_version: 4, type: "task.development_failed" },
   ]);
 });
 
