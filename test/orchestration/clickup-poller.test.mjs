@@ -121,7 +121,7 @@ async function seedCompletedAnalysis(harness) {
     jobId: "task-1-analyze-exact",
     commandId: "auto-analyze-task-1",
     jobType: "analyze",
-    payload: { taskId: "task-1" },
+    payload: { taskId: "task-1", aggregateVersion: 4 },
     result: {
       status: "completed",
       summary: {
@@ -1747,7 +1747,7 @@ test("stage payload preserves iOS inferred by analysis when ClickUp and developm
     jobId: "task-1-accept-ios",
     commandId: "auto-accept-task-1",
     jobType: "accept",
-    payload: { taskId: "task-1" },
+    payload: { taskId: "task-1", aggregateVersion: 4 },
     result: {
       status: "completed",
       result: "accepted",
@@ -1766,6 +1766,53 @@ test("stage payload preserves iOS inferred by analysis when ClickUp and developm
   ).first();
   assert.ok(queued, "expected staging to be queued after acceptance");
   assert.deepEqual(JSON.parse(queued.payload).platforms, ["ios"]);
+});
+
+test("a new development commit cannot reuse an acceptance result from an earlier aggregate version", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const transitions = [
+    "start_analysis",
+    "analysis_completed",
+    "start_development",
+    "development_completed",
+    "acceptance_failed",
+    "start_development",
+    "development_completed",
+  ];
+  for (let index = 0; index < transitions.length; index += 1) {
+    const type = transitions[index];
+    await dispatchTask(
+      harness,
+      `fresh-acceptance-${index}`,
+      type,
+      index + 1,
+      type === "acceptance_failed" ? { evidenceId: "old-acceptance" } : {},
+    );
+  }
+  await seedCompletedAnalysis(harness);
+  await seedCompletedRunnerJob(harness, {
+    jobId: "task-1-accept-4",
+    commandId: "auto-accept-task-1",
+    jobType: "accept",
+    payload: { taskId: "task-1", aggregateVersion: 4 },
+    result: {
+      status: "completed",
+      result: "accepted",
+      commitSha: "1111111111111111111111111111111111111111",
+    },
+    createdAt: "2026-08-11T00:01:00.000Z",
+    completedAt: "2026-08-11T00:01:01.000Z",
+  });
+
+  await pollClickUpOnce(await makeEnv(harness, [
+    sandboxTask({ status: "开发中", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]), { now: NOW });
+
+  const jobs = await harness.db.prepare(
+    "SELECT job_type FROM runner_jobs WHERE status = 'queued' ORDER BY job_type",
+  ).all();
+  assert.deepEqual(jobs.results.map((row) => row.job_type), ["accept"]);
 });
 
 test("poller retries staging from persisted evidence after an infrastructure rejection", async (t) => {

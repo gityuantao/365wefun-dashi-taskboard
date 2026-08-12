@@ -470,10 +470,11 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
         `SELECT result FROM runner_jobs
          WHERE job_type = 'accept' AND status = 'completed'
            AND json_extract(payload, '$.taskId') = ?
+           AND json_extract(payload, '$.aggregateVersion') = ?
            AND json_extract(result, '$.result') = 'accepted'
          ORDER BY completed_at DESC LIMIT 1`,
       )
-      .bind(snapshot.id)
+      .bind(snapshot.id, aggregate.version)
       .first();
     if (!stagingRecoveryPayload && accepted?.result) {
       acceptedResult = JSON.parse(accepted.result);
