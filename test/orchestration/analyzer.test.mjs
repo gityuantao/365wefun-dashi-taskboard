@@ -118,6 +118,41 @@ test("analysis persists an inferred iOS platform when the ClickUp platform field
   assert.deepEqual(result.platforms, ["ios"]);
 });
 
+test("analysis platform inference ignores platforms explicitly excluded from scope", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const result = await executeAnalysis({
+    job: { id: "job-a-negated", commandId: "cmd-a-negated", jobType: "analyze", payload: { taskId: "task-1" } },
+    db: harness.db,
+    client: makeClient({
+      getTask: async () => ({
+        id: "task-1",
+        name: "iOS 视频分页",
+        description: "仅修改 iOS 客户端；Android、Web、小程序不在本任务范围内。",
+        status: { status: "分析中" },
+        custom_fields: [{ id: "field-version", name: "目标版本", value: "version-9" }],
+      }),
+    }),
+    codex: { run: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        summary: "修复 iOS 分页",
+        scope: "范围仅为 iOS；Android、Web、小程序不涉及。",
+        acceptance_criteria: [
+          { id: "ac-ios", criterion: "iOS 显示下一页", verification: "iOS focused test" },
+        ],
+        test_notes: ["iOS focused test"],
+        risks: [],
+        open_questions: [],
+      }),
+      stderr: "",
+    }) },
+    now: NOW,
+  });
+  assert.deepEqual(result.platforms, ["ios"]);
+});
+
 test("analysis blocks when the task has no target version", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

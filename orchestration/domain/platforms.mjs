@@ -15,11 +15,16 @@ export function normalizePlatforms(value) {
 
 export function inferPlatformsFromText(value) {
   const text = String(value ?? "").toLowerCase();
+  const clauses = text.split(/[；;。！!？?\n]/).map((clause) => clause.trim()).filter(Boolean);
   const platforms = [];
-  if (/\b(?:ios|iphone|ipad)\b|苹果端|苹果 app/.test(text)) platforms.push("ios");
-  if (/\bandroid\b|安卓/.test(text)) platforms.push("android");
-  if (/\bweb\b|网页|前台页面/.test(text)) platforms.push("web");
-  if (/小程序|mini[- ]?program/.test(text)) platforms.push("mini-program");
+  const excluded = /不在.*范围|不涉及|无需|不用|排除|不修改/;
+  const mentionedInScope = (pattern) => clauses.some((clause) => (
+    pattern.test(clause) && !excluded.test(clause)
+  ));
+  if (mentionedInScope(/\b(?:ios|iphone|ipad)\b|苹果端|苹果 app/)) platforms.push("ios");
+  if (mentionedInScope(/\bandroid\b|安卓/)) platforms.push("android");
+  if (mentionedInScope(/\bweb\b|网页|前台页面/)) platforms.push("web");
+  if (mentionedInScope(/小程序|mini[- ]?program/)) platforms.push("mini-program");
   return platforms;
 }
 
