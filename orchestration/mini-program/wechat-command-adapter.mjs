@@ -233,6 +233,8 @@ function environmentFor(stage, { manifest, app, evidence = {}, idempotencyKey },
     PRODUCTION_CANDIDATE_REF: requiredString(manifest?.candidateRef, "manifest.candidateRef"),
     PRODUCTION_MANIFEST_CHECKSUM: requiredString(manifest?.checksum, "manifest.checksum"),
     PRODUCTION_VERSION_ID: requiredString(manifest?.versionId, "manifest.versionId"),
+    MINI_PROGRAM_SANDBOX_PROVIDER_MODULE: requiredString(configuration.sandboxProviderModule, "sandboxProviderModule"),
+    MINI_PROGRAM_STAGE_RUNNER_MODULE: requiredString(configuration.stageRunnerModule, "stageRunnerModule"),
   };
   if (LOCAL_STAGES.has(stage)) Object.assign(env, {
     MINI_PROGRAM_APP_IDENTITY: requiredString(app?.id, "app.id"),
@@ -259,6 +261,8 @@ export function createWechatReleaseAdapter({
   repoPath,
   artifactRoot,
   productionApiAllowlist = [],
+  sandboxProviderModule = "platform-sandbox.mjs",
+  stageRunnerModule = "wechat-stage-runner.mjs",
   runCommand = runCommandBoundary,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   cwd,
@@ -287,6 +291,7 @@ export function createWechatReleaseAdapter({
         signal: context?.signal,
         env: environmentFor(stage, context, {
           credentialsPath, reviewConfigurationPath, repoPath, artifactRoot, productionApiAllowlist,
+          sandboxProviderModule, stageRunnerModule,
         }),
       });
     } catch (error) {

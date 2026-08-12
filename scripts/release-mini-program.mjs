@@ -3,13 +3,14 @@
 import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readdir, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { redactCredentials } from "../orchestration/domain/redaction.mjs";
+import { createTrustedMiniProgramRuntimeLoader, requireTrustedMiniProgramRuntime } from "../orchestration/mini-program/trusted-runtime-loader.mjs";
 
 const execFile = promisify(execFileCallback);
 const APP_ID = "wx1fdac5e27c6b5366";
@@ -25,6 +26,7 @@ const ALLOWED_ENV = new Set([
   "MINI_PROGRAM_IDEMPOTENCY_KEY", "MINI_PROGRAM_EVIDENCE", "MINI_PROGRAM_ARTIFACT_DIGEST",
   "MINI_PROGRAM_ARTIFACT_SIZE", "MINI_PROGRAM_ARTIFACT_IDENTITY", "MINI_PROGRAM_REPO_PATH",
   "MINI_PROGRAM_ARTIFACT_ROOT", "MINI_PROGRAM_PRODUCTION_API_ALLOWLIST",
+  "MINI_PROGRAM_SANDBOX_PROVIDER_MODULE", "MINI_PROGRAM_STAGE_RUNNER_MODULE",
   "PRODUCTION_CANDIDATE_COMMIT", "PRODUCTION_CANDIDATE_REF",
   "PRODUCTION_MANIFEST_CHECKSUM", "PRODUCTION_VERSION_ID",
 ]);
@@ -34,27 +36,6 @@ const OUTPUT_FIELDS = new Set([
   "reviewSubmissionId", "reviewId", "reviewStatus", "releaseId", "releaseStatus",
   "liveId", "liveStatus", "authoritative", "checkedAt", "status", "error",
 ]);
-const TRUSTED_SANDBOXES = new WeakMap();
-
-export function createTrustedSandboxCapability({
-  implementationId,
-  profileId,
-  deniedRoots = [],
-  execute,
-}) {
-  required(implementationId, "sandbox implementationId");
-  required(profileId, "sandbox profileId");
-  if (typeof execute !== "function") throw new Error("mini-program trusted sandbox execute boundary is required");
-  const capability = Object.freeze({ implementationId, profileId });
-  TRUSTED_SANDBOXES.set(capability, Object.freeze({
-    implementationId,
-    profileId,
-    deniedRoots: Object.freeze(deniedRoots.map((item) => path.resolve(required(item, "sandbox deniedRoot")))),
-    execute,
-  }));
-  return capability;
-}
-
 function required(value, field) {
   if (typeof value !== "string" || value.trim() === "") throw new Error(`mini-program configuration missing ${field}`);
   return value.trim();
@@ -237,6 +218,7 @@ export async function inspectArtifact({
   candidateCommit,
   manifestChecksum,
   productionApiAllowlist,
+  exportedArtifact,
 }) {
   const canonicalRoot = await canonicalOwnedArtifactRoot(artifactRoot);
   const absoluteArtifact = path.resolve(required(artifactPath, "artifactPath"));
@@ -248,7 +230,12 @@ export async function inspectArtifact({
     throw new Error("mini-program artifactPath is outside the owned artifact root");
   }
   artifactPath = canonicalArtifact;
-  const artifactFiles = await readArtifactFilesNoFollow(artifactPath);
+  const artifactFiles = exportedArtifact
+    ? await exportedArtifact.readFiles()
+    : await readArtifactFilesNoFollow(artifactPath);
+  if (!Array.isArray(artifactFiles) || artifactFiles.some(({ relative, content }) => typeof relative !== "string" || !Buffer.isBuffer(content))) {
+    throw new Error("mini-program trusted provider exported artifact handle is invalid");
+  }
   const descriptorFile = artifactFiles.find(({ relative }) => relative === "project.config.json");
   if (!descriptorFile) throw new Error("mini-program artifact project.config.json is missing");
   const descriptor = JSON.parse(descriptorFile.content.toString("utf8"));
@@ -329,9 +316,22 @@ async function assertPathInsideNoSymlinks(root, relative, field) {
   }
 }
 
-async function runSandboxed(trustedSandbox, command, worktreePath, writableOutputRoot, deniedRoots = []) {
-  const trusted = TRUSTED_SANDBOXES.get(trustedSandbox);
-  if (!trusted) throw new Error("mini-program local execution requires an injected trusted sandbox capability");
+async function drainSession(session, failure) {
+  let error = failure;
+  if (failure) {
+    try { await session?.terminate?.(); } catch (terminateError) { error ??= terminateError; }
+  }
+  try { await session?.wait?.(); } catch (waitError) {
+    error ??= waitError;
+    try { await session?.terminate?.(); } catch (terminateError) { error ??= terminateError; }
+    try { await session?.wait?.(); } catch (secondWaitError) { error ??= secondWaitError; }
+  }
+  return error;
+}
+
+async function runSandboxed(trustedRuntime, command, worktreePath, writableOutputRoot, app, deniedRoots = []) {
+  const { provider } = requireTrustedMiniProgramRuntime(trustedRuntime);
+  const defaultArtifactPath = path.join(worktreePath, app.sourceDirectory, app.artifactDirectory);
   const request = Object.freeze({
     file: "pnpm",
     args: Object.freeze([...command]),
@@ -339,31 +339,36 @@ async function runSandboxed(trustedSandbox, command, worktreePath, writableOutpu
     env: Object.freeze({
       PATH: process.env.PATH ?? "",
       LANG: process.env.LANG ?? "C.UTF-8",
-      MINI_PROGRAM_BUILD_OUTPUT_DIR: writableOutputRoot,
     }),
-    network: Object.freeze({ mode: "deny-all", profileId: trusted.profileId }),
+    network: Object.freeze({ mode: "deny-all", profileId: provider.profileId }),
     filesystem: Object.freeze({
       readOnlyRoots: Object.freeze([worktreePath]),
       writableRoots: Object.freeze([writableOutputRoot]),
-      deniedRoots: Object.freeze([...new Set([...trusted.deniedRoots, ...deniedRoots].map((item) => path.resolve(item)))]),
+      deniedRoots: Object.freeze([...new Set([...(provider.deniedRoots ?? []), ...deniedRoots].map((item) => path.resolve(item)))]),
+      mounts: Object.freeze([Object.freeze({ sourcePath: defaultArtifactPath, targetPath: writableOutputRoot, mode: "candidate-output" })]),
     }),
     processGroup: Object.freeze({ detached: true, terminateOnFailure: true, awaitExit: true }),
-    implementationId: trusted.implementationId,
+    implementationId: provider.implementationId,
   });
-  const handle = await trusted.execute(request);
-  if (!handle || typeof handle.terminateProcessGroup !== "function"
-    || typeof handle.waitForProcessGroupExit !== "function" || !("completion" in handle)) {
-    throw new Error("mini-program trusted sandbox returned an invalid lifecycle handle");
+  let session;
+  try { session = provider.createSession(request); } catch (error) {
+    throw Object.assign(new Error(`mini-program trusted sandbox session creation failed: ${cleanText(error.message)}`), { failureClassification: "release_infrastructure" });
+  }
+  if (!session || typeof session.start !== "function" || typeof session.terminate !== "function"
+    || typeof session.wait !== "function" || typeof session.exportArtifact !== "function") {
+    await drainSession(session, new Error("mini-program trusted sandbox returned an invalid lifecycle session"));
+    throw Object.assign(new Error("mini-program trusted sandbox returned an invalid lifecycle session"), { failureClassification: "release_infrastructure" });
   }
   let result;
-  let completionError;
-  try { result = await handle.completion; } catch (error) {
-    completionError = error;
-    try { await handle.terminateProcessGroup(); } catch (terminateError) { completionError = terminateError; }
-  }
-  await handle.waitForProcessGroupExit();
-  if (completionError) throw completionError;
-  return result;
+  let failure;
+  try {
+    result = await session.start();
+    const exitCode = result?.exitCode ?? result?.code ?? 0;
+    if (exitCode !== 0) throw new Error("mini-program sandboxed command exited unsuccessfully");
+  } catch (error) { failure = error; }
+  failure = await drainSession(session, failure);
+  if (failure) throw Object.assign(failure, { failureClassification: failure.failureClassification ?? "release_infrastructure" });
+  return { result, session, outputRoot: writableOutputRoot };
 }
 
 async function withDetachedCandidate({ repoPath, candidateCommit, runCommand, operation }) {
@@ -414,98 +419,18 @@ function validateCandidateIdentity({ candidateCommit, manifestChecksum, app }) {
   };
 }
 
-export async function validateDetachedCandidate({ repoPath, candidateCommit, manifestChecksum, app, runCommand = defaultRunCommand, trustedSandbox }) {
+export async function validateDetachedCandidate({ repoPath, candidateCommit, manifestChecksum, app, runCommand = defaultRunCommand, trustedRuntime }) {
   validateCandidateIdentity({ candidateCommit, manifestChecksum, app });
-  if (!TRUSTED_SANDBOXES.has(trustedSandbox)) throw new Error("mini-program local execution requires an injected trusted sandbox capability");
+  requireTrustedMiniProgramRuntime(trustedRuntime);
   return withDetachedCandidate({ repoPath, candidateCommit, runCommand, operation: async (worktreePath) => {
     const outputRoot = await mkdtemp(path.join(os.tmpdir(), "wechat-candidate-validation-output-"));
     try {
       for (const args of [["--filter", "@e365/mp", "lint"], ["--filter", "@e365/mp", "typecheck"], ["--filter", "@e365/mp", "test"]]) {
-        await runSandboxed(trustedSandbox, args, worktreePath, outputRoot);
+        await runSandboxed(trustedRuntime, args, worktreePath, outputRoot, app);
       }
       return { appId: APP_ID, version: app.version, candidateCommit, manifestChecksum, status: "validated" };
     } finally { await rm(outputRoot, { recursive: true, force: true }); }
   } });
-}
-
-async function snapshotTreeNoFollow(source, target, hooks = {}, relative = "") {
-  const sourceDirectory = path.join(source, relative);
-  const directoryInfo = await lstat(sourceDirectory);
-  if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()) throw new Error("mini-program artifact snapshot source must be a non-symlink directory");
-  const targetDirectory = path.join(target, relative);
-  if (relative) await mkdir(targetDirectory, { mode: 0o700 });
-  const entries = await readdir(sourceDirectory, { withFileTypes: true });
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const child = path.join(relative, entry.name);
-    await hooks.beforeEntryOpen?.({ source, target, relative: child });
-    if (entry.isSymbolicLink()) throw new Error("mini-program artifact snapshot rejects symbolic links");
-    if (entry.isDirectory()) {
-      await snapshotTreeNoFollow(source, target, hooks, child);
-      continue;
-    }
-    if (!entry.isFile()) throw new Error("mini-program artifact snapshot rejects non-regular entries");
-    const sourceHandle = await open(path.join(source, child), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-    try {
-      const info = await sourceHandle.stat();
-      if (!info.isFile()) throw new Error("mini-program artifact snapshot source is not regular");
-      const canonicalSource = await realpath(source);
-      const canonicalFile = await realpath(path.join(source, child));
-      const sourceRelative = path.relative(canonicalSource, canonicalFile);
-      if (sourceRelative === ".." || sourceRelative.startsWith(`..${path.sep}`) || path.isAbsolute(sourceRelative)) {
-        throw new Error("mini-program artifact snapshot path escaped through a symlink race");
-      }
-      const pathInfo = await lstat(path.join(source, child));
-      if (pathInfo.isSymbolicLink() || pathInfo.dev !== info.dev || pathInfo.ino !== info.ino) {
-        throw new Error("mini-program artifact snapshot path changed during no-follow open");
-      }
-      await hooks.afterSourceOpen?.({ source, target, relative: child });
-      const content = await sourceHandle.readFile();
-      const targetHandle = await open(
-        path.join(target, child),
-        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
-        0o600,
-      );
-      try { await targetHandle.writeFile(content); } finally { await targetHandle.close(); }
-    } finally { await sourceHandle.close(); }
-  }
-}
-
-async function makeTreeReadOnly(root, relative = "") {
-  const directory = path.join(root, relative);
-  const entries = await readdir(directory, { withFileTypes: true });
-  for (const entry of entries) {
-    const child = path.join(relative, entry.name);
-    if (entry.isDirectory()) await makeTreeReadOnly(root, child);
-    else await chmod(path.join(root, child), 0o400);
-  }
-  await chmod(directory, 0o500);
-}
-
-async function makeTreeOwnerWritable(root) {
-  const info = await lstat(root).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
-  if (!info) return;
-  if (info.isDirectory()) {
-    await chmod(root, 0o700);
-    for (const entry of await readdir(root, { withFileTypes: true })) {
-      if (entry.isDirectory()) await makeTreeOwnerWritable(path.join(root, entry.name));
-      else await chmod(path.join(root, entry.name), 0o600);
-    }
-  } else await chmod(root, 0o600);
-}
-
-async function ensureOwnedPublicationParent(root, segments) {
-  let current = root;
-  for (const segment of segments) {
-    current = path.join(current, segment);
-    await mkdir(current, { mode: 0o700 }).catch((error) => { if (error?.code !== "EEXIST") throw error; });
-    const info = await lstat(current);
-    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("mini-program publication parent is not an owned directory");
-    if (typeof process.getuid === "function" && info.uid !== process.getuid()) throw new Error("mini-program publication parent is not owned by the current user");
-    const canonical = await realpath(current);
-    const relative = path.relative(root, canonical);
-    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error("mini-program publication parent escapes owned root");
-  }
-  return current;
 }
 
 export async function buildDetachedCandidate({
@@ -516,35 +441,27 @@ export async function buildDetachedCandidate({
   productionApiAllowlist,
   artifactRoot,
   runCommand = defaultRunCommand,
-  trustedSandbox,
-  snapshotHooks,
+  trustedRuntime,
 }) {
   const identity = validateCandidateIdentity({ candidateCommit, manifestChecksum, app });
-  if (!TRUSTED_SANDBOXES.has(trustedSandbox)) throw new Error("mini-program local execution requires an injected trusted sandbox capability");
+  requireTrustedMiniProgramRuntime(trustedRuntime);
   const canonicalArtifacts = await canonicalOwnedArtifactRoot(artifactRoot);
-  const parent = await ensureOwnedPublicationParent(canonicalArtifacts, [identity.manifestIdentifier, identity.appIdentifier]);
   return withDetachedCandidate({ repoPath, candidateCommit, runCommand, operation: async (worktreePath) => {
     await assertPathInsideNoSymlinks(worktreePath, identity.sourceDirectory, "sourceDirectory");
     const buildOutputRoot = await mkdtemp(path.join(os.tmpdir(), "wechat-candidate-build-output-"));
     const commands = [["--filter", "@e365/mp", "exec", "uni", "build", "-p", "mp-weixin"]];
-    const privateCopy = await mkdtemp(path.join(canonicalArtifacts, ".candidate-copy-"));
-    const copiedArtifact = path.join(privateCopy, "artifact");
     try {
-      for (const args of commands) await runSandboxed(trustedSandbox, args, worktreePath, buildOutputRoot, [canonicalArtifacts]);
-      await mkdir(copiedArtifact, { mode: 0o700 });
-      await snapshotTreeNoFollow(buildOutputRoot, copiedArtifact, snapshotHooks);
-      await makeTreeReadOnly(copiedArtifact);
-      const inspected = await inspectArtifact({ artifactRoot: canonicalArtifacts, artifactPath: copiedArtifact, app, candidateCommit, manifestChecksum, productionApiAllowlist });
-      const destination = path.join(parent, inspected.artifactDigest.slice("sha256:".length));
-      await ensureOwnedPublicationParent(canonicalArtifacts, [identity.manifestIdentifier, identity.appIdentifier]);
-      await chmod(copiedArtifact, 0o700);
-      await rename(copiedArtifact, destination);
-      await chmod(destination, 0o500);
-      return { ...inspected, artifactPath: destination };
+      const { session } = await runSandboxed(trustedRuntime, commands[0], worktreePath, buildOutputRoot, app, [canonicalArtifacts]);
+      const exported = await session.exportArtifact(Object.freeze({
+        sourceMountTarget: buildOutputRoot,
+        ownedArtifactRoot: canonicalArtifacts,
+        manifestIdentifier: identity.manifestIdentifier,
+        appIdentifier: identity.appIdentifier,
+      }));
+      if (!exported || typeof exported.artifactPath !== "string" || typeof exported.readFiles !== "function") throw new Error("mini-program trusted sandbox did not return an exported artifact handle");
+      return inspectArtifact({ artifactRoot: canonicalArtifacts, artifactPath: exported.artifactPath, exportedArtifact: exported, app, candidateCommit, manifestChecksum, productionApiAllowlist });
     } finally {
       await rm(buildOutputRoot, { recursive: true, force: true });
-      await makeTreeOwnerWritable(privateCopy);
-      await rm(privateCopy, { recursive: true, force: true });
     }
   } });
 }
@@ -553,10 +470,10 @@ export async function executeMiniProgramStage(config, {
   readPrivateFile,
   stageRunner,
   runCommand = defaultRunCommand,
-  trustedSandbox,
+  trustedRuntime,
 } = {}) {
-  if (config.stage === "test") return validateDetachedCandidate({ ...config, runCommand, trustedSandbox });
-  if (config.stage === "build") return buildDetachedCandidate({ ...config, runCommand, trustedSandbox });
+  if (config.stage === "test") return validateDetachedCandidate({ ...config, runCommand, trustedRuntime });
+  if (config.stage === "build") return buildDetachedCandidate({ ...config, runCommand, trustedRuntime });
   if (config.stage === "inspectArtifact") {
     return inspectArtifact({ ...config, artifactPath: config.evidence.artifactPath });
   }
@@ -574,6 +491,16 @@ export async function executeMiniProgramStage(config, {
 
 export function createMiniProgramStageHandler(dependencies = {}) {
   return (config) => executeMiniProgramStage(config, dependencies);
+}
+
+export async function runCliMain({ environment = process.env, projectRoot = path.resolve("."), runtimeLoader = createTrustedMiniProgramRuntimeLoader, write } = {}) {
+  const stageEnvironment = Object.fromEntries(Object.entries(environment).filter(([key]) => ALLOWED_ENV.has(key)));
+  const runtime = await runtimeLoader({
+    projectRoot,
+    sandboxProviderModule: stageEnvironment.MINI_PROGRAM_SANDBOX_PROVIDER_MODULE,
+    stageRunnerModule: stageEnvironment.MINI_PROGRAM_STAGE_RUNNER_MODULE,
+  });
+  return runCli({ environment: stageEnvironment, write, executeStage: createMiniProgramStageHandler({ trustedRuntime: runtime, stageRunner: runtime.stageRunner }) });
 }
 
 export async function runCli({
@@ -601,5 +528,5 @@ export async function runCli({
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  runCli().catch(() => process.stdout.write('{"ok":false,"error":{"classification":"validation","deterministic":true,"message":"mini-program command failed"}}'));
+  runCliMain().catch(() => process.stdout.write('{"ok":false,"error":{"classification":"validation","deterministic":true,"message":"mini-program command failed"}}'));
 }

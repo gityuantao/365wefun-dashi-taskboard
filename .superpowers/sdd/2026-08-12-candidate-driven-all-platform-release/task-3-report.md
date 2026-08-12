@@ -141,3 +141,45 @@ This round supersedes round 1's weaker `networkDisabled: true` result proof. Can
 
 - A deployment still requires a platform-specific trusted sandbox implementation that can enforce the requested network namespace/profile, filesystem mount policy, and process-group lifecycle. Task 3 deliberately provides only the trusted capability contract and fail-closed loader/injection seam.
 - The Candidate build tooling must honor the trusted sandbox's separate writable output mapping (`MINI_PROGRAM_BUILD_OUTPUT_DIR`) or the platform sandbox implementation must provide the equivalent mount mapping. The detached source worktree is intentionally requested read-only.
+
+## Fix round 3/5 — DONE
+
+This round supersedes round 2's public capability issuer and consumer-side pathname snapshot. Trust now begins at a fixed-root runtime module loader, and Candidate artifact export remains a provider responsibility.
+
+### Reviewer findings addressed
+
+- Removed the public sandbox capability issuer. `createTrustedMiniProgramRuntimeLoader` is now the production authority: it resolves only single-file module names beneath `projectRoot/orchestration/mini-program/sandbox-providers` and `stage-runners`, rejects absolute/traversal/nested names, rejects every symlink component, requires a current-UID regular file, rejects group/world-writable modules, and imports only after those checks. The CLI has no caller-supplied trusted root.
+- Added a separate hard-coded test loader root under `test/fixtures/trusted-mini-program-runtime`; it cannot be redirected to an arbitrary temporary directory. This allows provider fixtures without making temporary paths production-authoritative.
+- Added child bootstrap via `runCliMain`. Adapter environments carry only allowlisted sandbox-provider and stage-runner module names. `runCliMain` discards inherited environment keys, loads the trusted runtime, and binds the real stage handler. Without valid fixed-root modules it fails closed. A real spawned Node child traverses adapter → bootstrap → CLI validation → trusted runtime → all nine real stage handlers.
+- Replaced `execute()`/promise-proof semantics with a synchronous `provider.createSession(request)` contract exposing `start`, `terminate`, `wait`, and `exportArtifact`. Tests cover session creation failure, invalid session, start/completion rejection, nonzero exit, and wait rejection. Every post-session failure attempts termination and group drain; a failed wait triggers terminate plus a second drain attempt. Failures are classified `release_infrastructure` at the child boundary.
+- Removed consumer-side Candidate pathname snapshot and its same-UID TOCTOU claim. Only after session completion and process-group quiescence does the consumer call trusted `exportArtifact`. It accepts an opaque export handle with provider-owned `readFiles()` bytes plus a published evidence path. The local test provider performs `O_NOFOLLOW`, `fstat`, same-FD reads into an owned root; production safety is explicitly the provider's isolation/export contract, not `chmod` or consumer prechecks.
+- Replaced the unused build-output environment variable with an explicit sandbox mount contract. The unmodified production command remains `pnpm --filter @e365/mp exec uni build -p mp-weixin`; its actual default output path `<detached worktree>/apps/mp/dist/build/mp-weixin` is mounted to the private writable output root while the detached worktree remains read-only. Tests assert exact command, source path, target path, RO/RW sets, and absence of the obsolete output env.
+- Existing App ID `wx1fdac5e27c6b5366`, mutation lineage/readback, partial worktree registration cleanup, private descriptor same-FD loading, bounded JSON/redaction, and adapter stage-specific environments remain covered.
+
+### RED evidence
+
+1. Loader authority RED: the script test module failed to import because `trusted-runtime-loader.mjs` did not exist.
+2. Provider session migration RED: the old public-capability fixtures no longer matched the desired loader-authorized runtime and export contract; the script suite failed until all local stages used the new runtime/session boundary.
+3. Wait-drain RED: the lifecycle test observed only `wait-attempt`; it expected `wait-attempt`, `terminate`, and a second `wait-attempt`.
+4. Adapter bootstrap RED: the adapter did not propagate allowlisted provider/runner module names.
+5. Spawned CLI RED: the fixed test bootstrap did not exist, then the child rejected inherited macOS environment input before `runCliMain` filtered it to the stage allowlist.
+
+### GREEN evidence
+
+- `node --test test/orchestration/wechat-command-adapter.test.mjs test/orchestration/mini-program-release-script.test.mjs`
+  - Exit 0; 41 passed, 0 failed. This includes the actual spawned-child nine-stage E2E.
+- Syntax checks for the adapter, trusted loader, release script, and test bootstrap: all exit 0.
+- Related frozen descriptor/runtime suite: 40 tests, 39 passed, 1 unchanged pre-existing failure in `published cleanup resumes from the frozen manifest despite invalid runtime and registry drift`; Task 3 modules are not in that failing path.
+- `git diff --check`: exit 0.
+
+### Side-effect proof
+
+- The spawned E2E uses only the hard-coded repository test provider/stage-runner fixtures, temporary fake `0600` descriptor files, a temporary local Git repository, and local Node child processes. The provider does not spawn `pnpm` or make network requests.
+- Production provider and stage-runner modules are deliberately absent; the default production CLI therefore fails closed until Task 4 supplies reviewed fixed-root implementations.
+- No real WeChat upload/review/release, network request, production SSH/DB, Apple, or ClickUp operation ran.
+- `.data` remained untracked and was not read, modified, staged, removed, or included in verification.
+
+### Concerns
+
+- Task 4 must provide a reviewed platform-specific provider whose mount/network/process-group/export guarantees are implemented below the ordinary same-UID Node pathname boundary. Task 3 defines and tests the consumer contract but does not claim that Node alone supplies those guarantees.
+- The platform provider must map the default uni output path to the private writable target exactly as requested. If its sandbox cannot supply that mount, local build remains fail closed.

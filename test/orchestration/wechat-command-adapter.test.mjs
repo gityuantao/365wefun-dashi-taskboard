@@ -70,6 +70,8 @@ test("every stage receives the exact frozen Candidate, App, version, artifact, a
     repoPath: "/repo",
     artifactRoot: "/owned-artifacts",
     productionApiAllowlist: ["https://api.365life.example/v1"],
+    sandboxProviderModule: "darwin-sandbox.mjs",
+    stageRunnerModule: "wechat-stage.mjs",
     runCommand: async (file, args, options) => {
       calls.push({ file, args, options });
       return final(outputs[options.env.MINI_PROGRAM_STAGE]);
@@ -99,12 +101,15 @@ test("every stage receives the exact frozen Candidate, App, version, artifact, a
     assert.equal(call.options.env.MINI_PROGRAM_APP_DESCRIPTOR, undefined);
     assert.equal(call.options.env.MINI_PROGRAM_REPO_PATH, local ? "/repo" : undefined);
     assert.equal(call.options.env.MINI_PROGRAM_ARTIFACT_ROOT, local ? "/owned-artifacts" : undefined);
+    assert.equal(call.options.env.MINI_PROGRAM_SANDBOX_PROVIDER_MODULE, "darwin-sandbox.mjs");
+    assert.equal(call.options.env.MINI_PROGRAM_STAGE_RUNNER_MODULE, "wechat-stage.mjs");
     assert.equal(call.options.env.MINI_PROGRAM_PRODUCTION_API_ALLOWLIST, local ? '["https://api.365life.example/v1"]' : undefined);
     assert.equal(call.options.env.NODE_OPTIONS, undefined);
     assert.equal(call.options.env.HOME, undefined);
     assert.equal(call.options.env.AWS_SECRET_ACCESS_KEY, undefined);
     const common = ["LANG", "MINI_PROGRAM_APP_ID", "MINI_PROGRAM_ARTIFACT_DIGEST",
       "MINI_PROGRAM_ARTIFACT_IDENTITY", "MINI_PROGRAM_ARTIFACT_SIZE", "MINI_PROGRAM_EVIDENCE",
+      "MINI_PROGRAM_SANDBOX_PROVIDER_MODULE", "MINI_PROGRAM_STAGE_RUNNER_MODULE",
       "MINI_PROGRAM_STAGE", "MINI_PROGRAM_VERSION", "PATH", "PRODUCTION_CANDIDATE_COMMIT",
       "PRODUCTION_CANDIDATE_REF", "PRODUCTION_MANIFEST_CHECKSUM", "PRODUCTION_VERSION_ID"];
     const stageSpecific = local
