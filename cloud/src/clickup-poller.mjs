@@ -361,28 +361,33 @@ async function loadCurrentReworkFindings(db, taskId) {
     } catch {
       return { error: `exact staging job ${jobId} is malformed for task ${taskId}` };
     }
+    const mergeConflict = parsed?.classification === "merge_conflict"
+      && Array.isArray(parsed.conflictedPaths)
+      && parsed.conflictedPaths.length > 0
+      && parsed.conflictedPaths.every((value) => nonEmptyString(value));
+    const staleAcceptance = parsed?.classification === "stale_acceptance"
+      && nonEmptyString(parsed?.error);
     if (
       payload?.taskId !== taskId
       || parsed?.status !== "failed"
-      || parsed?.classification !== "merge_conflict"
       || parsed?.stage !== "merge"
       || !nonEmptyString(payload?.pr?.url)
       || !nonEmptyString(payload?.versionBranch)
-      || !Array.isArray(parsed.conflictedPaths)
-      || parsed.conflictedPaths.length === 0
-      || parsed.conflictedPaths.some((value) => !nonEmptyString(value))
+      || (!mergeConflict && !staleAcceptance)
     ) {
-      return { error: `exact staging job ${jobId} does not contain valid merge-conflict evidence for task ${taskId}` };
+      return { error: `exact staging job ${jobId} does not contain valid product-rework evidence for task ${taskId}` };
     }
     return {
       findings: [{
-        classification: "merge_conflict",
+        classification: parsed.classification,
         stage: "merge",
         prUrl: payload.pr.url,
         versionBranch: payload.versionBranch,
-        conflictedPaths: [...parsed.conflictedPaths],
-        description: String(parsed.error ?? "PR merge conflict"),
-        requiredAction: "merge the latest version branch, resolve these conflicts, and update the original PR",
+        ...(mergeConflict ? { conflictedPaths: [...parsed.conflictedPaths] } : {}),
+        description: String(parsed.error ?? "staging product rework is required"),
+        requiredAction: mergeConflict
+          ? "merge the latest version branch, resolve these conflicts, and update the original PR"
+          : "verify the current original PR head and produce fresh acceptance evidence for that exact commit",
       }],
     };
   }
@@ -537,7 +542,8 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
       )
       .bind(`auto-develop-${snapshot.id}`)
       .first();
-    if (ordinaryFailure) return;
+    const productRework = await loadCurrentReworkFindings(env.DB, snapshot.id);
+    if (ordinaryFailure && productRework.findings?.length === 0) return;
   }
 
   if (existing?.status === "failed" && existing.result?.includes("waiting_version")) {

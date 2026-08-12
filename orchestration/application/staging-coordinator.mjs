@@ -267,9 +267,12 @@ export async function executeStagingGate({
     candidateCommit = integrated.candidateCommit;
     const taskCommit = integrated.taskHead;
     if (taskCommit !== commitSha) {
-      throw new Error(
+      const staleAcceptance = new Error(
         `accepted commit ${commitSha} does not match PR head ${taskCommit ?? "missing"}`,
       );
+      staleAcceptance.classification = "stale_acceptance";
+      staleAcceptance.failureOwner = "product_rework";
+      throw staleAcceptance;
     }
     await db.prepare(
       "UPDATE staging_deployments SET stage = ?, task_commit = ?, candidate_commit = ? WHERE id = ?",

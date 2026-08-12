@@ -246,6 +246,41 @@ test("a PR merge conflict records product rework evidence and automatically retu
   assert.match(comments[0], /原 PR/);
 });
 
+test("a changed PR head is product rework that requires fresh acceptance", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const taskId = "task-stale-acceptance";
+  await seedAcceptingTask(harness.db, taskId);
+  const comments = [];
+  const result = await executeStagingGate({
+    job: stagingJob(taskId, ["ios"]),
+    db: harness.db,
+    client: { postComment: async (_taskId, body) => comments.push(body) },
+    gitOps: {
+      integrateTaskPr: async () => ({
+        merged: true,
+        taskHead: "3333333333333333333333333333333333333333",
+        candidateCommit: CANDIDATE_COMMIT,
+      }),
+      persistCandidate: async () => assert.fail("candidate must not be persisted"),
+    },
+    adapter: {
+      deploy: async () => assert.fail("deployment must not start"),
+      readback: async () => assert.fail("readback must not start"),
+    },
+    now: NOW,
+  });
+
+  assert.equal(result.classification, "stale_acceptance");
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "ready_for_development");
+  const attempt = await harness.db.prepare(
+    "SELECT failure_owner, failure_classification FROM staging_deployments WHERE task_id = ?",
+  ).bind(taskId).first();
+  assert.equal(attempt.failure_owner, "product_rework");
+  assert.equal(attempt.failure_classification, "stale_acceptance");
+  assert.match(comments[0], /原 PR|待开发/);
+});
+
 test("staging rejects missing or non-array platforms before an attempt or external work", async (t) => {
   const cases = [
     { name: "missing", value: undefined, remove: true },
@@ -552,8 +587,8 @@ test("staging rejects a PR head that differs from the accepted commit before per
   assert.equal(attempt.status, "failed");
   assert.equal(attempt.stage, "merge");
   assert.equal(attempt.task_commit, TASK_COMMIT);
-  assert.equal(attempt.failure_owner, "staging_infrastructure");
-  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
+  assert.equal(attempt.failure_owner, "product_rework");
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "ready_for_development");
 });
 
 test("staging persists and deploys when the PR head equals the accepted commit", async (t) => {

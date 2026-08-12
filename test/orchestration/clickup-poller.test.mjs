@@ -1705,6 +1705,53 @@ test("a staging merge conflict queues development with the exact original-PR con
   }]);
 });
 
+test("a stale acceptance staging rejection queues fresh acceptance work on the original PR", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const transitions = ["start_analysis", "analysis_completed", "start_development", "development_completed"];
+  for (let index = 0; index < transitions.length; index += 1) {
+    await dispatchTask(harness, `stale-accept-${index}`, transitions[index], index + 1);
+  }
+  const jobId = "task-1-stage_task-4";
+  const evidenceId = `staging-${jobId}`;
+  await dispatchTask(harness, `staging-failed-${jobId}-5`, "acceptance_rejected", 5, { evidenceId }, "runner-staging");
+  await dispatchTask(harness, "staging-rework-stale-6", "acceptance_rejected_to_develop", 6, {}, "runner-staging");
+  await seedCompletedAnalysis(harness);
+  await seedCompletedRunnerJob(harness, {
+    jobId,
+    commandId: "auto-stage_task-task-1",
+    jobType: "stage_task",
+    payload: {
+      taskId: "task-1",
+      pr: { url: "https://github.com/example/repo/pull/42" },
+      versionBranch: "version/1.0.1",
+    },
+    result: {
+      status: "failed",
+      classification: "stale_acceptance",
+      stage: "merge",
+      error: "accepted commit 1111111111111111111111111111111111111111 does not match PR head 2222222222222222222222222222222222222222",
+    },
+    createdAt: "2026-08-11T00:02:00.000Z",
+    completedAt: "2026-08-11T00:02:01.000Z",
+  });
+  await harness.db.prepare(
+    "UPDATE runner_jobs SET status = 'failed' WHERE id = ?",
+  ).bind(jobId).run();
+
+  await pollClickUpOnce(await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]), { now: NOW });
+
+  const queued = await harness.db.prepare(
+    "SELECT payload FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'",
+  ).first();
+  const finding = JSON.parse(queued.payload).rejectionFindings[0];
+  assert.equal(finding.classification, "stale_acceptance");
+  assert.match(finding.requiredAction, /fresh acceptance evidence/i);
+  assert.equal(finding.prUrl, "https://github.com/example/repo/pull/42");
+});
+
 test("stage payload preserves iOS inferred by analysis when ClickUp and development omit platforms", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
