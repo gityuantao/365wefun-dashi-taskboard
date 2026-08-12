@@ -2586,6 +2586,32 @@ test("moving directly to 待发布 is treated as test passed", async (t) => {
   assert.equal(aggregate.state, "ready_for_release");
 });
 
+test("a non-current version still records an explicit ready-for-test to 待发布 transition", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  for (let index = 0; index < 5; index += 1) {
+    const type = ["start_analysis", "analysis_completed", "start_development",
+      "development_completed", "acceptance_passed"][index];
+    await dispatchTask(harness, `non-current-direct-pass-${index}`, type, index + 1);
+  }
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1", listId: "901616314492", status: "ready_for_test",
+      targetVersion: "1.0.2", assignee: null, updatedAt: NOW, fieldsHash: "before-pass",
+    },
+    readAt: NOW,
+  });
+  const env = await makeEnv(harness, [sandboxTask({ status: "待发布", version: "1.0.2" })], [
+    { id: "v1", name: "1.0.1", status: { status: "进行中" } },
+    { id: "v2", name: "1.0.2", status: { status: "规划中" } },
+  ]);
+
+  const result = await pollClickUpOnce(env, { now: NOW });
+  assert.ok(result.commands.some(({ type }) => type === "test_passed"));
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "ready_for_release");
+});
+
 test("moving directly to 待开发 is treated as test failed", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

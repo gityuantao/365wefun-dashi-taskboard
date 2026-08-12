@@ -234,7 +234,13 @@ export async function executeDevelopment({
           task,
           acceptanceCriteria,
           mediaBundle.textContext,
-          platforms.length > 0 ? platforms.join("、") : null,
+          platforms.length > 0
+            ? platforms.map((platform) => ({
+              ios: "iOS",
+              android: "安卓",
+              mini_program: "小程序",
+            })[platform] ?? platform).join("、")
+            : null,
           rejectionFindings,
           acceptanceFeedback,
         ),

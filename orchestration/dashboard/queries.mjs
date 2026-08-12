@@ -187,7 +187,8 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
     TASK_STATES.filter((state) => state !== "accepting").map((state) => [state, 0]),
   );
   for (const task of tasks) {
-    if (pipeline[task.status] !== undefined) pipeline[task.status] += 1;
+    const displayStatus = task.canceled ? "canceled" : task.status;
+    if (pipeline[displayStatus] !== undefined) pipeline[displayStatus] += 1;
   }
 
   const versionProgress = versions

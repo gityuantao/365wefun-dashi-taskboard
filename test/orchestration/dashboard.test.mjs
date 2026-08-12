@@ -334,6 +334,8 @@ test("dashboard card and detail exclude canceled tasks before a Manifest is froz
     .bind(DASHBOARD_NOW).run();
 
   const dashboard = await buildDashboard(harness.db);
+  assert.equal(dashboard.pipeline.canceled, 1);
+  assert.equal(dashboard.pipeline.ready_for_development, 0);
   const card = dashboard.versions.find((version) => version.id === "version-1");
   assert.equal(card.taskCount, 1);
   assert.equal(card.readyCount, 1);

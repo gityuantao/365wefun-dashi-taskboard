@@ -462,6 +462,25 @@ async function reconcileManualWaitingInfo(env, snapshot, now, commands, config) 
     .run();
 }
 
+async function reconcileManualTestPassed(env, snapshot, now, commands, config) {
+  if (snapshot.status !== "ready_for_release") return;
+  const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  if (aggregate.state !== "ready_for_test") return;
+  const resultId = "poller-" + snapshot.id + "-" + (aggregate.version + 1);
+  if (await loadCommandResult(env.DB, resultId)) return;
+  commands.push(await runCommand(env, parseCommandEnvelope({
+    id: resultId,
+    type: "test_passed",
+    aggregateType: "task",
+    aggregateId: snapshot.id,
+    expectedVersion: aggregate.version + 1,
+    actorId: "system-poller",
+    issuedAt: now,
+    reason: "user moved task to 待发布",
+    parameters: {},
+  }), now, config));
+}
+
 async function ensureStateJob(env, snapshot, now, currentDevVersion) {
   const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   let jobType = jobTypeForState(aggregate.state ?? snapshot.status);
@@ -726,6 +745,9 @@ export async function pollClickUpOnce(env, {
     // A manual pause is authoritative even when the task is not in the current version.
     // Reconcile it before the version gate can skip all other task processing.
     await reconcileManualWaitingInfo(env, snapshot, now, commands, config);
+    // A completed test is terminal evidence. Record only the safe ready_for_test ->
+    // ready_for_release transition before the version gate, including older versions.
+    await reconcileManualTestPassed(env, snapshot, now, commands, config);
 
     // 版本门禁：非当前开发版本的任务不做任何操作（分析/开发/测试/验收均不允许）
     const gate = checkTaskVersionGate({
@@ -985,23 +1007,7 @@ async function handleStatusDrivenFlow(
     aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   }
 
-  if (aggregate.state === "ready_for_test" && snapshot.status === "ready_for_release") {
-    const resultId = "poller-" + snapshot.id + "-" + (aggregate.version + 1);
-    if (!(await loadCommandResult(env.DB, resultId))) {
-      commands.push(await runCommand(env, parseCommandEnvelope({
-        id: resultId,
-        type: "test_passed",
-        aggregateType: "task",
-        aggregateId: snapshot.id,
-        expectedVersion: aggregate.version + 1,
-        actorId: "system-poller",
-        issuedAt: now,
-        reason: "user moved task to 待发布",
-        parameters: {},
-      }), now, config));
-    }
-    aggregate = await loadAggregate(env.DB, "task", snapshot.id);
-  } else if (aggregate.state === "ready_for_test" && snapshot.status === "ready_for_development") {
+  if (aggregate.state === "ready_for_test" && snapshot.status === "ready_for_development") {
     await clearOrdinaryDevelopmentFailures(env.DB, snapshot.id);
     const resultId = "poller-" + snapshot.id + "-" + (aggregate.version + 1);
     if (!(await loadCommandResult(env.DB, resultId))) {

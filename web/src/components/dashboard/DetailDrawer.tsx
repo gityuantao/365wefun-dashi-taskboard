@@ -15,6 +15,7 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   waiting_info: "待补充信息",
   ready_for_development: "待开发",
   developing: "开发中",
+  acceptance_rejected: "验收不通过",
   ready_for_test: "待测试",
   testing: "测试中",
   ready_for_release: "待发布",
