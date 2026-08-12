@@ -47,6 +47,7 @@ export async function coordinateReleaseSnapshot({
   miniProgramAdapter = null,
   iosAdapter = null,
   apps = null,
+  miniProgramApps = null,
   releaseLease = null,
   client,
   runtime,
@@ -108,7 +109,9 @@ export async function coordinateReleaseSnapshot({
         taskSnapshots: releaseTaskSnapshots,
         taskIds: expectedTaskIds,
         apps: apps ?? runtime?.iosApps ?? [],
+        miniProgramApps: miniProgramApps ?? runtime?.miniProgramApps ?? [],
         marketingVersion: String(snapshot.name ?? versionId).replace(/^v(?=\d)/, ""),
+        candidateScope: existingManifest.productionTargetPlan.candidateScope ?? null,
       });
       assertProductionTargetPlanMatches(existingManifest.productionTargetPlan, currentPlan);
     } catch (error) {
@@ -164,10 +167,12 @@ export async function coordinateReleaseSnapshot({
       const eligibility = gate.releaseEligibility ?? gate;
       try {
         productionTargetPlan = buildProductionTargetPlan({
-          taskSnapshots: eligibility.taskPlatforms.map(({ taskId, platforms }) => ({ id: taskId, platforms })),
+          taskSnapshots: eligibility.taskPlatforms.map(({ taskId, ...evidence }) => ({ id: taskId, ...evidence })),
           taskIds: eligibility.taskIds,
           apps: apps ?? runtime?.iosApps ?? [],
+          miniProgramApps: miniProgramApps ?? runtime?.miniProgramApps ?? [],
           marketingVersion: String(snapshot.name ?? versionId).replace(/^v(?=\d)/, ""),
+          candidateScope,
         });
       } catch (error) {
         return { status: "rejected", reasons: [`production target plan validation failed: ${error.message}`] };

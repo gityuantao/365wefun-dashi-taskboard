@@ -36,6 +36,23 @@
   "iosProductionFenceHeartbeatMs": 60000,
   "productionReleaseLeaseMs": 3000000,
   "productionReleaseMaxReconciliationAttempts": 4,
+  "miniProgramApps": [
+    {
+      "id": "wechat",
+      "name": "365生活口语微信小程序",
+      "enabled": true,
+      "appId": "wx1fdac5e27c6b5366",
+      "sourceDirectory": "apps/mp",
+      "buildCommand": ["npm", "run", "build:mp-weixin"],
+      "artifactDirectory": "dist/build/mp-weixin",
+      "uploadCommand": ["node", "scripts/upload-wechat-mini-program.mjs"],
+      "reviewCommand": ["node", "scripts/submit-wechat-mini-program-review.mjs"],
+      "releaseCommand": ["node", "scripts/release-wechat-mini-program.mjs"],
+      "readbackCommand": ["node", "scripts/readback-wechat-mini-program.mjs"],
+      "credentialsPath": "/absolute/private/path/wechat-mini-program.private.json",
+      "reviewConfigurationRef": "wechat-mini-program-review/primary"
+    }
+  ],
   "iosApps": [
     {
       "id": "au",

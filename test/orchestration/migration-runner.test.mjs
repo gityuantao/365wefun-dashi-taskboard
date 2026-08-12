@@ -8,11 +8,19 @@ import { loadCleanupAttempts } from "../../orchestration/application/release-com
 
 const MIGRATIONS_DIR = path.resolve("cloud/migrations");
 const PRODUCTION_MIGRATION_NAME = "0013_production_release_attempts.sql";
+const ALL_PLATFORM_MIGRATION_NAME = "0015_all_platform_release_targets.sql";
 
 async function loadProductionMigration() {
   return {
     name: PRODUCTION_MIGRATION_NAME,
     sql: await readFile(path.join(MIGRATIONS_DIR, PRODUCTION_MIGRATION_NAME), "utf8"),
+  };
+}
+
+async function loadAllPlatformMigration() {
+  return {
+    name: ALL_PLATFORM_MIGRATION_NAME,
+    sql: await readFile(path.join(MIGRATIONS_DIR, ALL_PLATFORM_MIGRATION_NAME), "utf8"),
   };
 }
 
@@ -207,4 +215,48 @@ test("migration ledger rejects a same-name empty trigger that spoofs the old fra
   assert.ok(row.sql.toLowerCase().replace(/\s+/g, " ").includes(legacyFragment));
 
   await assertProductionSchemaDrift(harness.db, migration);
+});
+
+test("0015 all-platform sentinel rejects partial and same-name malformed schemas", async (t) => {
+  const migration = await loadAllPlatformMigration();
+  for (const mutation of [
+    "DROP INDEX idx_production_release_targets_reusable_success",
+    "DROP TRIGGER production_release_targets_immutable_succeeded_delete; CREATE TRIGGER production_release_targets_immutable_succeeded_delete BEFORE DELETE ON production_release_targets BEGIN SELECT 1; END",
+  ]) {
+    const harness = await createCloudWorkerHarness();
+    t.after(() => harness.dispose());
+    await harness.db.exec(mutation);
+    await assert.rejects(
+      () => applyMigrations({ db: harness.db, migrations: [migration], now: "2026-08-12T00:00:00.000Z" }),
+      (error) => error.code === "PRODUCTION_RELEASE_SCHEMA_DRIFT",
+    );
+  }
+});
+
+test("0015 reusable-success index is the exact terminal all-platform predicate", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const row = await harness.db.prepare(
+    "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'idx_production_release_targets_reusable_success'",
+  ).first();
+  assert.match(row.sql, /platform = 'mini_program'.*stage = 'live_readback'/i);
+  assert.match(row.sql, /mini_program_app_id IS NOT NULL.*artifact_digest IS NOT NULL/i);
+  assert.match(row.sql, /upload_id IS NOT NULL.*review_submission_id IS NOT NULL.*review_id IS NOT NULL.*release_id IS NOT NULL.*live_id IS NOT NULL/i);
+  assert.match(row.sql, /platform = 'android_twa'.*stage = 'live_readback'/i);
+});
+
+test("0015 upgrades only the complete canonical 0014 schema", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await harness.db.exec("DROP TRIGGER production_release_targets_immutable_succeeded; DROP TRIGGER production_release_targets_immutable_succeeded_delete; DROP INDEX idx_production_release_targets_latest; DROP INDEX idx_production_release_targets_reusable_success; DROP TABLE production_release_targets;");
+  await harness.db.exec(await readFile(path.join(MIGRATIONS_DIR, PRODUCTION_MIGRATION_NAME), "utf8"));
+  await harness.db.exec(await readFile(path.join(MIGRATIONS_DIR, "0014_mini_program_production_target.sql"), "utf8"));
+  const migration = await loadAllPlatformMigration();
+
+  assert.deepEqual(
+    await applyMigrations({ db: harness.db, migrations: [migration], now: "2026-08-12T00:00:00.000Z" }),
+    { applied: [ALL_PLATFORM_MIGRATION_NAME], adopted: [] },
+  );
+  const columns = await harness.db.prepare("SELECT name FROM pragma_table_info('production_release_targets')").all();
+  assert.ok(columns.results.some(({ name }) => name === "artifact_digest"));
 });

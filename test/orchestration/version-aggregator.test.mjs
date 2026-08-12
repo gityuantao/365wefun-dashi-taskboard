@@ -13,6 +13,7 @@ import {
   validateFrozenManifest,
 } from "../../orchestration/release/version-aggregator.mjs";
 import { assertProductionTargetPlanMatches } from "../../orchestration/release/production-target-plan.mjs";
+import { buildProductionTargetPlan } from "../../orchestration/release/production-target-plan.mjs";
 
 const NOW = "2026-08-04T00:06:00.000Z";
 const RUNTIME_TARGETS = Object.freeze({
@@ -297,4 +298,109 @@ test("frozen target plan rejects additions, removals, reordering, and tuple drif
       /target plan.*drift/i,
     );
   }
+});
+
+test("production target plan freezes exact Candidate paths, per-task evidence, apps, Android TWA, and DAG", () => {
+  const miniProgramApps = [{
+    id: "wechat", name: "365生活口语微信小程序", enabled: true,
+    appId: "wx1fdac5e27c6b5366", sourceDirectory: "apps/mp",
+    buildCommand: ["npm", "run", "build:mp-weixin"], artifactDirectory: "dist/build/mp-weixin",
+    uploadCommand: ["node", "scripts/upload-wechat-mini-program.mjs"],
+    reviewCommand: ["node", "scripts/submit-wechat-mini-program-review.mjs"],
+    releaseCommand: ["node", "scripts/release-wechat-mini-program.mjs"],
+    readbackCommand: ["node", "scripts/readback-wechat-mini-program.mjs"],
+    credentialsPath: "private/wechat-mini-program.private.json",
+    reviewConfigurationRef: "wechat-mini-program-review/primary",
+  }];
+  const candidateScope = {
+    baseCommit: "a".repeat(40), candidateCommit: CANDIDATE.candidateCommit,
+    mappingVersion: 1,
+    changedPaths: ["apps/android-web-wrapper/manifest.json", "apps/mp/app.ts"],
+    platforms: ["android_twa", "mini_program"], unsupported: [],
+  };
+  const taskEvidence = [{
+    id: "task-a", platforms: ["android_twa", "mini_program"], source: "accepted_pr_changes",
+    evidenceId: "accept-task-a", commitSha: "b".repeat(40), acceptedCommitSha: "b".repeat(40),
+    aggregateVersion: 7, androidDelivery: "web_twa",
+  }];
+
+  const plan = buildProductionTargetPlan({
+    taskSnapshots: taskEvidence, taskIds: ["task-a"], apps: [], miniProgramApps,
+    marketingVersion: "1.2.3", candidateScope,
+  });
+
+  assert.equal(plan.schemaVersion, 2);
+  assert.equal(plan.mappingVersion, 1);
+  assert.deepEqual(plan.candidateScope, candidateScope);
+  assert.deepEqual(plan.taskPlatforms, [{
+    taskId: "task-a", platforms: ["android_twa", "mini_program"], source: "accepted_pr_changes",
+    evidenceId: "accept-task-a", commitSha: "b".repeat(40), acceptedCommitSha: "b".repeat(40),
+    aggregateVersion: 7, androidDelivery: "web_twa",
+  }]);
+  assert.deepEqual(plan.miniProgramApps, miniProgramApps.map(({ enabled, ...entry }) => entry));
+  assert.deepEqual(plan.androidTwa, {
+    enabled: true,
+    sourceDirectory: "apps/android-web-wrapper/",
+    dependsOn: "web",
+  });
+  assert.deepEqual(plan.platforms, {
+    web: true, api: false, ios: false, mini_program: true, android_twa: true,
+  });
+  assert.deepEqual(plan.dag, {
+    nodes: [
+      { id: "web", platform: "web", appId: "" },
+      { id: "mini_program:wechat", platform: "mini_program", appId: "wechat" },
+      { id: "android_twa", platform: "android_twa", appId: "" },
+    ],
+    edges: [{ from: "web", to: "android_twa" }],
+  });
+});
+
+test("Manifest checksum covers Candidate paths, mapping, App descriptors, and DAG", async (t) => {
+  async function freezeWith(mutator) {
+    const harness = await createCloudWorkerHarness();
+    t.after(() => harness.dispose());
+    await seedActiveVersion(harness);
+    await seedTaskSnapshot(harness, "task-a", "ready_for_release", "version-1", ["mini_program"]);
+    const candidateScope = {
+      baseCommit: "a".repeat(40), candidateCommit: CANDIDATE.candidateCommit, mappingVersion: 1,
+      changedPaths: ["apps/mp/app.ts"], platforms: ["mini_program"], unsupported: [],
+    };
+    const miniProgramApps = [{
+      id: "wechat", name: "365生活口语微信小程序", enabled: true,
+      appId: "wx1fdac5e27c6b5366", sourceDirectory: "apps/mp",
+      buildCommand: ["npm", "run", "build:mp-weixin"], artifactDirectory: "dist/build/mp-weixin",
+      uploadCommand: ["node", "upload.mjs"], reviewCommand: ["node", "review.mjs"],
+      releaseCommand: ["node", "release.mjs"], readbackCommand: ["node", "readback.mjs"],
+      credentialsPath: "private/wechat.private.json", reviewConfigurationRef: "review/wechat",
+    }];
+    const taskSnapshots = [{ id: "task-a", platforms: ["mini_program"] }];
+    mutator({ candidateScope, miniProgramApps, taskSnapshots });
+    const plan = buildProductionTargetPlan({
+      taskSnapshots, taskIds: ["task-a"], apps: [], miniProgramApps, candidateScope,
+    });
+    const result = await freezeManifest({
+      db: harness.db, versionId: "version-1", now: NOW,
+      runtimeReadiness: { ready: true, configuredTargets: ["mini_program"] },
+      versionBranch: CANDIDATE.versionBranch, candidateCommit: CANDIDATE.candidateCommit,
+      candidateRef: CANDIDATE.candidateRef, taskPrHeads: [CANDIDATE.taskPrHeads[0]],
+      artifactIdentity: CANDIDATE.artifactIdentity, regressionEvidence: CANDIDATE.regressionEvidence,
+      candidateScope: plan.candidateScope, productionTargetPlan: plan,
+    });
+    assert.equal(result.status, "frozen", result.reasons?.join("; "));
+    return result.manifest.checksum;
+  }
+
+  const baseline = await freezeWith(() => {});
+  const variants = [
+    await freezeWith(({ candidateScope }) => { candidateScope.changedPaths[0] = "apps/mp/other.ts"; }),
+    await freezeWith(({ candidateScope }) => { candidateScope.mappingVersion = 2; }),
+    await freezeWith(({ miniProgramApps }) => { miniProgramApps[0].appId = "wx0000000000000000"; }),
+    await freezeWith(({ candidateScope, taskSnapshots }) => {
+      candidateScope.platforms.unshift("android_twa");
+      candidateScope.changedPaths.unshift("apps/android-web-wrapper/manifest.json");
+      taskSnapshots[0].platforms.unshift("android_twa");
+    }),
+  ];
+  assert.equal(new Set([baseline, ...variants]).size, variants.length + 1);
 });

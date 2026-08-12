@@ -515,7 +515,17 @@ test("Candidate mini-program scope supplements missing task scope before freeze"
     productionReadiness: { ready: true }, snapshot: { id: "version-1", name: "version-1", status: "releasing" }, now: NOW,
     db: {}, adapter: {
       collectRegressionEvidence: async () => ({ passed: true }), identifyArtifact: async () => ({ digest: "sha256:artifact" }),
-    }, runtime: { repoPath: "/repo", worktreesRoot: "/worktrees", iosApps: [] }, repository: "owner/repo",
+    }, runtime: {
+      repoPath: "/repo", worktreesRoot: "/worktrees", iosApps: [],
+      miniProgramApps: [{
+        id: "wechat", name: "365生活口语微信小程序", enabled: true,
+        appId: "wx1fdac5e27c6b5366", sourceDirectory: "apps/mp",
+        buildCommand: ["npm", "run", "build:mp-weixin"], artifactDirectory: "dist/build/mp-weixin",
+        uploadCommand: ["node", "upload.mjs"], reviewCommand: ["node", "review.mjs"],
+        releaseCommand: ["node", "release.mjs"], readbackCommand: ["node", "readback.mjs"],
+        credentialsPath: "private/wechat.private.json", reviewConfigurationRef: "review/wechat",
+      }],
+    }, repository: "owner/repo",
     releaseGitOps: {
       integrateTaskPr: async () => ({
         merged: true, taskHead: "a".repeat(40), candidateCommit: "b".repeat(40), candidateBaseCommit: "c".repeat(40),
@@ -539,7 +549,10 @@ test("Candidate mini-program scope supplements missing task scope before freeze"
     },
   });
   assert.equal(result.status, "succeeded");
-  assert.deepEqual(frozen.productionTargetPlan.taskPlatforms, [{ taskId: "task-mp", platforms: ["mini_program"] }]);
+  assert.deepEqual(frozen.productionTargetPlan.taskPlatforms, [{
+    taskId: "task-mp", platforms: ["mini_program"], source: "candidate_scope", evidenceId: null,
+    commitSha: null, acceptedCommitSha: null, aggregateVersion: null, androidDelivery: null,
+  }]);
   assert.equal(frozen.candidateScope.platforms[0], "mini_program");
 });
 

@@ -3,14 +3,11 @@ import { isDeepStrictEqual } from "node:util";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import {
-  loadAllTaskSnapshots,
   loadManifest,
   validateFrozenManifest,
 } from "../release/version-aggregator.mjs";
 import { assertProductionPlatformsSupported } from "../release/platform-gate.mjs";
 import {
-  assertProductionTargetPlanMatches,
-  buildProductionTargetPlan,
   iosAppsFromProductionTargetPlan,
   taskSnapshotsFromProductionTargetPlan,
 } from "../release/production-target-plan.mjs";
@@ -176,22 +173,6 @@ export async function handleConfirmRelease({
   }
   const frozenTaskSnapshots = taskSnapshotsFromProductionTargetPlan(manifest.productionTargetPlan);
   const frozenApps = iosAppsFromProductionTargetPlan(manifest.productionTargetPlan);
-  if (!targetPlanValidated) {
-    const currentTaskSnapshots = platforms ?? (await loadAllTaskSnapshots(db)).filter(
-      (snapshot) => manifest.taskIds.includes(snapshot.id),
-    );
-    try {
-      const currentPlan = buildProductionTargetPlan({
-        taskSnapshots: currentTaskSnapshots,
-        taskIds: manifest.taskIds,
-        apps: apps ?? [],
-        marketingVersion: frozenApps[0]?.marketingVersion,
-      });
-      assertProductionTargetPlanMatches(manifest.productionTargetPlan, currentPlan);
-    } catch (error) {
-      return { status: "rejected", error: error.message };
-    }
-  }
   let resolvedPlatforms;
   try {
     resolvedPlatforms = assertProductionPlatformsSupported(frozenTaskSnapshots);

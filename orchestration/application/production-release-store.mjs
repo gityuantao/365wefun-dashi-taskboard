@@ -35,6 +35,24 @@ function transitionConflict(kind, versionId) {
   return error;
 }
 
+function assertFrozenTargetTuples(manifest, targets) {
+  const nodes = manifest?.productionTargetPlan?.dag?.nodes;
+  if (!Array.isArray(nodes)) return;
+  const frozen = new Set(nodes.map((node) => `${node.platform}:${node.appId ?? ""}`));
+  for (const { platform, app = null } of targets) {
+    const key = `${platform}:${app?.id ?? ""}`;
+    if (!frozen.has(key)) {
+      throw new Error(`production release target tuple is absent from the frozen target plan: ${key}`);
+    }
+    if (platform === "mini_program") {
+      const frozenApp = manifest.productionTargetPlan.miniProgramApps?.find((entry) => entry.id === app?.id);
+      if (!frozenApp || frozenApp.appId !== app?.appId) {
+        throw new Error(`production release target tuple does not match the frozen target plan: ${key}`);
+      }
+    }
+  }
+}
+
 async function assertLeaseCurrent({ db, lease, now }) {
   const current = await db.prepare(
     `SELECT 1 AS current FROM orchestration_leases
@@ -128,6 +146,8 @@ function mapTarget(row) {
     productionReleaseId: row.production_release_id,
     healthStatus: row.health_status,
     readbackStatus: row.readback_status,
+    miniProgramAppId: row.mini_program_app_id,
+    artifactDigest: row.artifact_digest,
     appStoreAppId: row.app_store_app_id,
     bundleId: row.bundle_id,
     marketingVersion: row.marketing_version,
@@ -163,6 +183,7 @@ const TARGET_COLUMNS = `
   stage, status, external_request_id, reconciliation_status,
   failure_classification, sanitized_error_summary, artifact_identity,
   production_readback_sha, production_release_id, health_status, readback_status,
+  mini_program_app_id, artifact_digest,
   app_store_app_id, bundle_id, marketing_version, build_number,
   processing_status, processing_id, review_status, review_submission_id,
   upload_id, review_id, release_status, release_id, live_status, live_id,
@@ -374,7 +395,8 @@ export async function listReusableProductionTargetSuccesses({ db, manifest }) {
      WHERE version_id = ? AND candidate_commit = ? AND manifest_checksum = ?
        AND status = 'succeeded'
        AND reconciliation_status IN ('not_required', 'readback_confirmed')
-       AND ((platform IN ('web', 'api', 'mini_program') AND stage = 'readback')
+       AND ((platform IN ('web', 'api') AND stage = 'readback')
+         OR (platform IN ('mini_program', 'android_twa') AND stage = 'live_readback')
          OR (platform = 'ios' AND stage = 'live_readback'
            AND json_extract(sanitized_observed_evidence, '$.authoritative') = 1
            AND (live_membership_confirmed = 1
@@ -437,13 +459,15 @@ export async function initializeProductionTargets({
   now,
   leaseNow = now,
 }) {
+  assertFrozenTargetTuples(manifest, targets);
   const statements = targets.map(({ platform, app = null }) => db.prepare(
     `INSERT INTO production_release_targets (
        version_id, candidate_commit, manifest_checksum, platform, app_id,
        attempt, stage, status, reconciliation_status,
+       mini_program_app_id, artifact_digest,
        app_store_app_id, bundle_id, marketing_version,
        started_at, created_at, updated_at
-     ) SELECT ?, ?, ?, ?, ?, 1, ?, 'pending', 'not_required', ?, ?, ?, ?, ?, ?
+     ) SELECT ?, ?, ?, ?, ?, 1, ?, 'pending', 'not_required', ?, ?, ?, ?, ?, ?, ?, ?
      WHERE EXISTS (
        SELECT 1 FROM orchestration_leases
        WHERE id = ? AND aggregate_type = 'version' AND aggregate_id = ?
@@ -455,7 +479,9 @@ export async function initializeProductionTargets({
     manifest.checksum,
     platform,
     app?.id ?? "",
-    platform === "ios" ? "test" : "preflight",
+    ["ios", "mini_program", "android_twa"].includes(platform) ? "test" : "preflight",
+    platform === "mini_program" ? app?.appId ?? null : null,
+    null,
     app?.appStoreAppId ?? null,
     app?.bundleId ?? null,
     app?.marketingVersion ?? null,
@@ -488,6 +514,7 @@ export async function beginProductionTarget({
   now,
   leaseNow = now,
 }) {
+  assertFrozenTargetTuples(manifest, [{ platform, app }]);
   const appId = app?.id ?? "";
   const previous = await db.prepare(
     `SELECT COALESCE(MAX(attempt), 0) AS attempt FROM production_release_targets
@@ -501,14 +528,15 @@ export async function beginProductionTarget({
     appId,
   ).first();
   const attempt = Number(previous?.attempt ?? 0) + 1;
-  const stage = platform === "ios" ? "test" : "preflight";
+  const stage = ["ios", "mini_program", "android_twa"].includes(platform) ? "test" : "preflight";
   const inserted = await db.prepare(
     `INSERT INTO production_release_targets (
        version_id, candidate_commit, manifest_checksum, platform, app_id,
        attempt, stage, status, reconciliation_status,
+       mini_program_app_id, artifact_digest,
        app_store_app_id, bundle_id, marketing_version,
        started_at, created_at, updated_at
-     ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      WHERE EXISTS (
        SELECT 1 FROM orchestration_leases
        WHERE id = ? AND aggregate_type = 'version' AND aggregate_id = ?
@@ -524,6 +552,8 @@ export async function beginProductionTarget({
     stage,
     status,
     reconciliationStatus,
+    platform === "mini_program" ? app?.appId ?? null : null,
+    null,
     app?.appStoreAppId ?? null,
     app?.bundleId ?? null,
     app?.marketingVersion ?? null,
@@ -557,7 +587,8 @@ export async function updateProductionTarget({
        stage = ?, status = ?, external_request_id = ?, reconciliation_status = ?,
        failure_classification = ?, sanitized_error_summary = ?, artifact_identity = ?,
        production_readback_sha = ?, production_release_id = ?, health_status = ?,
-       readback_status = ?, app_store_app_id = ?, bundle_id = ?, marketing_version = ?,
+       readback_status = ?, mini_program_app_id = ?, artifact_digest = ?,
+       app_store_app_id = ?, bundle_id = ?, marketing_version = ?,
        build_number = ?, processing_status = ?, processing_id = ?, review_status = ?,
        review_submission_id = ?, upload_id = ?, review_id = ?, release_status = ?,
        release_id = ?, live_status = ?, live_id = ?, live_marketing_version = ?,
@@ -585,6 +616,8 @@ export async function updateProductionTarget({
     next.productionReleaseId,
     next.healthStatus,
     next.readbackStatus,
+    next.miniProgramAppId,
+    next.artifactDigest,
     next.appStoreAppId,
     next.bundleId,
     next.marketingVersion,

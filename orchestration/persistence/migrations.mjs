@@ -23,6 +23,7 @@ const LEGACY_SENTINELS = new Map([
   }],
   ["0013_production_release_attempts.sql", { check: hasCompleteProductionReleaseSchema }],
   ["0014_mini_program_production_target.sql", { table: "production_release_targets" }],
+  ["0015_all_platform_release_targets.sql", { check: hasCompleteProductionReleaseSchema }],
 ]);
 
 // Generated from each sqlite_schema.sql definition after applying canonical 0013.
@@ -36,7 +37,7 @@ const PRODUCTION_RELEASE_SCHEMA_FINGERPRINTS = new Map([
   ["production_release_targets", {
     type: "table",
     tableName: "production_release_targets",
-    sha256: "fb8591d53f921b870a70aa312d76a58140a2594edd6e47b13c865c7d632b4e01",
+    sha256: "91465bb0d2228b6b978adab949f519d16ce310bd1d021380f4e7c8144572baf4",
   }],
   ["idx_production_release_targets_latest", {
     type: "index",
@@ -46,7 +47,7 @@ const PRODUCTION_RELEASE_SCHEMA_FINGERPRINTS = new Map([
   ["idx_production_release_targets_reusable_success", {
     type: "index",
     tableName: "production_release_targets",
-    sha256: "1ce5def10d8a51478415db9f066f22d487390c15869678d2463440ca05cb4774",
+    sha256: "86184b6ab6e56953efb56268bad5e1e4c2ffe3830742304a4490b5a0061cddb9",
   }],
   ["production_release_attempts_immutable_succeeded", {
     type: "trigger",
@@ -68,6 +69,14 @@ const PRODUCTION_RELEASE_SCHEMA_FINGERPRINTS = new Map([
     tableName: "production_release_targets",
     sha256: "7b74e0a1fe20d46623195d9883d2b5a2f3beef6d9b556dab94500eafbae6a19d",
   }],
+]);
+
+const LEGACY_0014_SCHEMA_FINGERPRINTS = new Map([
+  ["production_release_targets", { type: "table", tableName: "production_release_targets", sha256: "7223034f96a666ff4752188040e2d8b191b6a65aed93b3d6fca5236f2f09f1f6" }],
+  ["idx_production_release_targets_latest", { type: "index", tableName: "production_release_targets", sha256: "ac593037b6fe55cd0b56624e15e79ce3e1098798ae9b21ba4f64c53e6d3ab863" }],
+  ["idx_production_release_targets_reusable_success", { type: "index", tableName: "production_release_targets", sha256: "71e71602d5575f76ba08392abfb420f0b9e6a7a4fa6b37c82407427acd03b3de" }],
+  ["production_release_targets_immutable_succeeded", { type: "trigger", tableName: "production_release_targets", sha256: "339b477678dd13cc5184124ff95a54188060a0e5ff4ad0824de1b36268dec54c" }],
+  ["production_release_targets_immutable_succeeded_delete", { type: "trigger", tableName: "production_release_targets", sha256: "7b74e0a1fe20d46623195d9883d2b5a2f3beef6d9b556dab94500eafbae6a19d" }],
 ]);
 
 function normalizeSqliteSchemaDefinition(sql) {
@@ -105,6 +114,8 @@ async function hasCompleteProductionReleaseSchema(db) {
       "production_release_id",
       "health_status",
       "readback_status",
+      "mini_program_app_id",
+      "artifact_digest",
       "app_store_app_id",
       "bundle_id",
       "marketing_version",
@@ -151,6 +162,20 @@ async function hasCompleteProductionReleaseSchema(db) {
   return { name: "production_release_attempts" };
 }
 
+async function hasExactSchemaObjects(db, fingerprints) {
+  for (const [name, expected] of fingerprints) {
+    const actual = await db.prepare(
+      "SELECT type, tbl_name, sql FROM sqlite_schema WHERE name = ? AND type = ? AND tbl_name = ?",
+    ).bind(name, expected.type, expected.tableName).first();
+    if (!actual || schemaDefinitionFingerprint(actual.sql) !== expected.sha256) return false;
+  }
+  return true;
+}
+
+async function canUpgradeAllPlatformSchema(db) {
+  return hasExactSchemaObjects(db, LEGACY_0014_SCHEMA_FINGERPRINTS);
+}
+
 function productionSchemaDrift() {
   throw new DomainError(
     "PRODUCTION_RELEASE_SCHEMA_DRIFT",
@@ -192,18 +217,22 @@ export async function applyMigrations({ db, migrations, now = new Date().toISOSt
       .first();
     const sentinel = LEGACY_SENTINELS.get(migration.name);
     const existing = await findLegacySentinel(db, sentinel);
+    const structural = migration.name === "0013_production_release_attempts.sql"
+      || migration.name === "0015_all_platform_release_targets.sql";
     if (recorded) {
-      if (migration.name === "0013_production_release_attempts.sql" && !existing) {
+      if (structural && !existing) {
         productionSchemaDrift();
       }
       continue;
     }
     if (!existing) {
-      if (migration.name === "0013_production_release_attempts.sql" && await hasProductionReleaseTables(db)) {
+      const upgrade = migration.name === "0015_all_platform_release_targets.sql"
+        && await canUpgradeAllPlatformSchema(db);
+      if (structural && await hasProductionReleaseTables(db) && !upgrade) {
         productionSchemaDrift();
       }
       await db.exec(migration.sql);
-      if (migration.name === "0013_production_release_attempts.sql" && !await findLegacySentinel(db, sentinel)) {
+      if (structural && !await findLegacySentinel(db, sentinel)) {
         productionSchemaDrift();
       }
       applied.push(migration.name);
