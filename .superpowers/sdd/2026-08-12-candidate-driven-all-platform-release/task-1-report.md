@@ -145,3 +145,41 @@ Implementation commit: `321160429204b07e0c42d780f2b7a3928009d72f` (`fix: complet
 
 - A deployment must apply migration `0014_mini_program_production_target.sql` before it can persist mini-program release attempts. This work deliberately did not run any migration against a real environment.
 - An operator must explicitly enable the mini-program target in private runtime configuration before it is eligible; the provided example remains held and disabled by default to prevent accidental external operation.
+
+---
+
+## Fix round 3/5 — capability and mixed-PR integration boundaries
+
+Status: DONE
+
+### RED evidence
+
+- `node --test test/orchestration/production-runtime-wiring.test.mjs`
+  - A release target merely marked `mini_program` with `release_adapter` was reported configured, and no dedicated adapter boundary existed. New assertions failed: the generic target list contained `mini_program`, and `runtime.miniProgramAdapter` was absent.
+- `node --test test/orchestration/production-release-coordinator.test.mjs`
+  - A mini-program target was routed to the generic Web/API adapter and returned `waiting_external` rather than completing through the fake dedicated adapter.
+- `node --test test/orchestration/git-merge.test.mjs`
+  - The new real temporary-repository end-to-end case failed for open-then-merged task order: its exact Candidate diff was missing `apps/web/open.mjs`, because merged-PR refresh overwrote the existing local Candidate integration.
+
+### GREEN verification
+
+```sh
+git diff --check && node --test test/orchestration/candidate-scope.test.mjs test/orchestration/release-eligibility.test.mjs test/orchestration/release-scope.test.mjs test/orchestration/version-aggregator.test.mjs test/orchestration/dashboard.test.mjs test/orchestration/dashboard-http.test.mjs test/orchestration/git-merge.test.mjs test/orchestration/release-coordinator.test.mjs test/orchestration/release-commands.test.mjs test/orchestration/production-platform-gate.test.mjs test/orchestration/production-runtime-wiring.test.mjs test/orchestration/production-release-persistence.test.mjs test/orchestration/production-release-coordinator.test.mjs
+```
+
+Summary: `git diff --check` passed; 151 tests passed, 0 failed, exit code 0 (14.9 s). Tests used only temporary Git repositories and the local Worker harness. No production SSH/DB, ClickUp mutation, WeChat operation, Apple upload/submission, or release publication occurred.
+
+### Changes and self-review
+
+- `mini_program` may be configured only with an explicit `mini_program_adapter` descriptor and module path. A generic Web/API adapter is rejected before readiness; an unavailable dedicated factory reports no configured targets. The generic adapter never receives mini-program release/readback calls.
+- Added the typed dedicated adapter route through runtime, coordinator, confirmation command and persistent target executor. The test implementation is a fake only; Task 3's real WeChat protocol is deliberately not implemented.
+- Preserved a local version-branch Candidate when it already descends from the freshly fetched remote base. Merged PR validation still reads remote history, but no longer replaces earlier open-PR integration. Real temporary Git tests cover both `open → merged` and `merged → open` with the identical base and exact two-path Candidate diff.
+- Scope audit: only Task 1 runtime/release/git/coordinator code, focused tests, runtime example and this report are included. `.data` was neither read, modified, staged nor committed.
+
+### Commit
+
+Implementation commit: `ace70d8682f819cd6323dc19afa9b04c7eb06b87` (`fix: isolate mini program release capability`).
+
+### Concerns
+
+- A private runtime must point `miniProgramReleaseAdapterModule` at a Task 3-provided implementation before mini-program can become configured. The safe default remains held/disabled.
