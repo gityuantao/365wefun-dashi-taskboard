@@ -23,6 +23,7 @@ test("production build uses Release, exact identity, automated tests, and no sta
   const testCommand = buildProductionTestCommand(context);
   const archive = buildProductionArchiveCommand(context);
   assert.equal(testCommand.args.includes("-only-testing:E365StoreKitTests"), true);
+  assert.equal(testCommand.args.includes("Debug"), true);
   assert.equal(archive.args.includes("Release"), true);
   for (const exact of ["MARKETING_VERSION=1.2.3", "CURRENT_PROJECT_VERSION=77", "PRODUCT_BUNDLE_IDENTIFIER=online.365english.app", "API_BASE_URL=https://api.example.com"]) assert.equal(archive.args.includes(exact), true);
   const all = JSON.stringify([testCommand, archive]);

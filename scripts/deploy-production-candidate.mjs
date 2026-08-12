@@ -57,6 +57,7 @@ export function loadProductionDeploymentConfig(input) {
     databaseReadyCommand: input.databaseReadyCommand == null ? null : command(input.databaseReadyCommand, "databaseReadyCommand"),
     redisReadyCommand: input.redisReadyCommand == null ? null : command(input.redisReadyCommand, "redisReadyCommand"),
     installCommand: command(input.installCommand, "installCommand"),
+    generateCommand: command(input.generateCommand, "generateCommand"),
     buildCommand: command(input.buildCommand, "buildCommand"),
     restartCommand: command(input.restartCommand, "restartCommand"),
   };
@@ -98,6 +99,7 @@ else if(operation==='read-current'){try{out(fs.realpathSync(p.join(x.releaseRoot
 else if(operation==='prepare-immutable-release'){const marker=p.join(x.releasePath,'.release-identity.json');if(!fs.existsSync(x.releasePath)){const temp=x.releasePath+'.prepare-'+process.pid;fs.mkdirSync(temp,{recursive:false,mode:0o755});fs.writeFileSync(p.join(temp,'.release-identity.json'),JSON.stringify(x.identity)+'\n',{mode:0o600,flag:'wx'});try{fs.renameSync(temp,x.releasePath)}catch(e){fs.rmSync(temp,{recursive:true,force:true});if(!fs.existsSync(x.releasePath))throw e}}const actual=JSON.parse(fs.readFileSync(marker,'utf8'));if(JSON.stringify(actual)!==JSON.stringify(x.identity))throw new Error('immutable release identity mismatch');out({ok:true})}
 else if(operation==='inspect-immutable-release'){const f=p.join(x.releasePath,'release-metadata.json');if(!fs.existsSync(f))out({complete:false});else{const actual=JSON.parse(fs.readFileSync(f,'utf8'));if(JSON.stringify(actual)!==JSON.stringify(x.identity))throw new Error('completed release identity mismatch');out({complete:true})}}
 else if(operation==='link-shared-env'){const f=p.join(x.releasePath,'.env');if(fs.existsSync(f)){if(fs.realpathSync(f)!==fs.realpathSync(x.envPath))throw new Error('shared env link mismatch')}else fs.symlinkSync(x.envPath,f);out({ok:true})}
+else if(operation==='make-release-readable'){fs.chmodSync(x.releasePath,0o755);out({ok:true})}
 else if(operation==='write-release-metadata'){const f=p.join(x.releasePath,'release-metadata.json');if(fs.existsSync(f)){const actual=JSON.parse(fs.readFileSync(f,'utf8'));if(JSON.stringify(actual)!==JSON.stringify(x.metadata))throw new Error('release metadata mismatch')}else{fs.writeFileSync(f+'.tmp',JSON.stringify(x.metadata)+'\n',{mode:0o600,flag:'wx'});fs.renameSync(f+'.tmp',f)}out({ok:true})}
 else if(operation==='read-release-metadata'){out(JSON.parse(fs.readFileSync(p.join(x.releasePath,'release-metadata.json'),'utf8')))}
 else if(operation==='switch-current-atomic'||operation==='restore-current-atomic'){atomicLink(x.releasePath,p.join(x.releaseRoot,x.platform?'current-'+x.platform:'current'));out({ok:true})}
@@ -110,7 +112,10 @@ function defaultOperations() {
   return {
     runLocal: (file, args, options) => execFileAsync(file, args, { encoding: "utf8", maxBuffer: 20 * 1024 * 1024, ...options }),
     runRemote: async (host, operation, payload, remoteNodePath) => {
-      const { stdout } = await execFileAsync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", host, remoteNodePath, "-e", PRODUCTION_REMOTE_SOURCE, operation, Buffer.from(JSON.stringify(payload)).toString("base64url")], { encoding: "utf8", maxBuffer: 20 * 1024 * 1024 });
+      const source = Buffer.from(PRODUCTION_REMOTE_SOURCE).toString("base64url");
+      const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+      const remoteCommand = `${remoteNodePath} -e 'const source=process.argv[1];process.argv.splice(1,1);eval(Buffer.from(source,"base64url").toString())' '${source}' '${operation}' '${encodedPayload}'`;
+      const { stdout } = await execFileAsync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", host, remoteCommand], { encoding: "utf8", maxBuffer: 20 * 1024 * 1024 });
       const value = stdout.trim();
       if (!value) return null;
       try { return JSON.parse(value); } catch { return value; }
@@ -124,6 +129,7 @@ function defaultOperations() {
       return { ok: response.ok, status: response.status, body };
     },
     now: () => new Date().toISOString(),
+    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   };
 }
 
@@ -206,10 +212,15 @@ export function createProductionDeployment({ environment, config, operations = d
           const verified = await operations.runLocal("git", ["-C", worktree, "rev-parse", "HEAD"]);
           if (verified?.stdout && verified.stdout.trim() !== identity.candidateCommit) throw new Error("detached worktree Candidate mismatch");
           await operations.runLocal(target.installCommand[0], target.installCommand.slice(1), { cwd: worktree });
+          await operations.runLocal(target.generateCommand[0], target.generateCommand.slice(1), { cwd: worktree });
           await operations.runLocal(target.buildCommand[0], target.buildCommand.slice(1), { cwd: worktree });
           previousReleasePath = await runRemote("read-current", { releaseRoot: target.releaseRoot, platform: currentPlatform });
-          await operations.runLocal("rsync", ["-az", "--delete", "--exclude", ".git", "--exclude", ".env*", "--exclude", ".release-identity.json", "--exclude", "release-metadata.json", `${worktree}/`, `${target.sshHost}:${releasePath}/`]);
+          await operations.runLocal("rsync", ["-az", "--delete", "--exclude", ".git", "--exclude", ".env*", "--exclude", "node_modules", "--exclude", ".release-identity.json", "--exclude", "release-metadata.json", `${worktree}/`, `${target.sshHost}:${releasePath}/`]);
           await runRemote("link-shared-env", { releasePath, envPath: target.sharedEnvPath });
+          await runRemote("ready-command", { kind: "install", command: target.installCommand, cwd: releasePath, remoteBinPath: target.remoteBinPath });
+          await runRemote("ready-command", { kind: "generate", command: target.generateCommand, cwd: releasePath, remoteBinPath: target.remoteBinPath });
+          await runRemote("ready-command", { kind: "build", command: target.buildCommand, cwd: releasePath, remoteBinPath: target.remoteBinPath });
+          await runRemote("make-release-readable", { releasePath });
           const metadata = releaseIdentity;
           await runRemote("write-release-metadata", { releasePath, metadata });
           await writeState({ status: "uploaded", previousReleasePath, currentReleasePath: releasePath });
@@ -245,7 +256,12 @@ export function createProductionDeployment({ environment, config, operations = d
       if (mode === "health") {
         const existing = await readRemoteState(target.sshHost, statePath);
         previousReleasePath = existing?.previousReleasePath ?? null;
-        const probes = await Promise.all([target.publicUrl, target.adminUrl, target.apiReadyUrl].map((url) => operations.probe(url)));
+        let probes;
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          probes = await Promise.all([target.publicUrl, target.adminUrl, target.apiReadyUrl].map((url) => operations.probe(url)));
+          if (probes.every((probe) => probe?.ok === true)) break;
+          if (attempt < 11) await operations.wait?.(5_000);
+        }
         const apiProbe = probes[2];
         const endpointChecks = apiProbe?.body?.checks;
         const database = target.databaseReadyCommand

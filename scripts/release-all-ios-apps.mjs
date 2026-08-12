@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { redactCredentials, sanitizeObservedEvidenceString } from "../orchestration/domain/redaction.mjs";
+
 import { buildExportCommand, buildUploadCommand, createAppStoreConnectClient, createOperationControl, extractUploadIdentifier, runCommand, verifyAppBundle, withAppBuildReservation, withCandidateWorktree } from "./stage-all-ios-apps.mjs";
 
 const MODES = new Set(["test", "archive", "upload", "processing", "configure_version", "configure_review", "ensure_review", "ensure_review_item", "submit_review", "read_review", "read_live"]);
@@ -98,7 +100,7 @@ function identitySettings(context) {
 export function buildProductionTestCommand(context) {
   return { file: "xcodebuild", cwd: context.iosDirectory, args: [
     "test", "-project", context.projectPath, "-scheme", context.app.testScheme,
-    "-configuration", "Release", "-destination", context.testDestination,
+    "-configuration", "Debug", "-destination", context.testDestination,
     "-derivedDataPath", context.derivedDataPath, `-only-testing:${context.app.testTarget}`,
     ...identitySettings(context),
   ] };
@@ -153,7 +155,7 @@ async function credentials(config) {
   if (!privateKeyStat.isFile() || path.basename(privateKeyPath) !== `AuthKey_${keyId}.p8` || (privateKeyStat.mode & 0o077) !== 0) {
     throw new Error("App Store Connect private key must be the exact private AuthKey file");
   }
-  return { keyId, issuerId: requireString(value.issuerId, "credentials.issuerId"), privateKeyPath, reviewConfiguration: resolveReviewConfiguration(value.reviewConfigurations, config.app.reviewConfigurationRef) };
+  return { keyId, issuerId: requireString(value.issuerId, "credentials.issuerId"), privateKeyPath, reviewConfigurations: value.reviewConfigurations };
 }
 
 const REVIEW_DETAIL_FIELDS = new Set(["contactFirstName", "contactLastName", "contactPhone", "contactEmail", "demoAccountName", "demoAccountRequired", "demoAccountPassword", "notes"]);
@@ -214,6 +216,7 @@ async function execute(config, signal) {
         repoPath: config.repoPath, candidateCommit: config.candidateCommit, signal,
         operation: async (candidatePath) => {
           const iosDirectory = path.join(candidatePath, "apps", "ios");
+          await runCommand({ file: "xcodegen", args: ["generate", "--spec", "project.yml"], cwd: iosDirectory }, "production iOS project generation", { signal });
           await runCommand(buildProductionTestCommand({ ...config, buildNumber, iosDirectory, projectPath: path.join(iosDirectory, "E365.xcodeproj"), derivedDataPath: path.join(root, "DerivedData") }), "production iOS automated tests", { signal });
           return evidence({ ...config, buildNumber });
         },
@@ -225,6 +228,7 @@ async function execute(config, signal) {
       repoPath: config.repoPath, candidateCommit: config.candidateCommit, signal,
       operation: async (candidatePath) => {
         const iosDirectory = path.join(candidatePath, "apps", "ios");
+        await runCommand({ file: "xcodegen", args: ["generate", "--spec", "project.yml"], cwd: iosDirectory }, "production iOS project generation", { signal });
         await mkdir(root, { recursive: true });
         const archivePath = path.join(root, `${config.app.scheme}.xcarchive`);
         const archiveContext = { ...config, apiUrl: config.productionApiUrl, iosDirectory, projectPath: path.join(iosDirectory, "E365.xcodeproj"), derivedDataPath: path.join(root, "DerivedData"), archivePath };
@@ -280,12 +284,13 @@ async function execute(config, signal) {
     }
     if (config.mode === "configure_review") {
       const settings = await credentials(config);
+      const reviewConfiguration = resolveReviewConfiguration(settings.reviewConfigurations, config.app.reviewConfigurationRef);
       const detail = (await client.request(`/v1/appStoreVersions/${encodeURIComponent(version.id)}/appStoreReviewDetail`))?.data;
       const detailId = requireString(detail?.id, "App Store review detail ID");
-      await client.request(`/v1/appStoreReviewDetails/${encodeURIComponent(detailId)}`, { method: "PATCH", body: { data: { type: "appStoreReviewDetails", id: detailId, attributes: settings.reviewConfiguration.reviewDetailAttributes } } });
+      await client.request(`/v1/appStoreReviewDetails/${encodeURIComponent(detailId)}`, { method: "PATCH", body: { data: { type: "appStoreReviewDetails", id: detailId, attributes: reviewConfiguration.reviewDetailAttributes } } });
       const confirmed = (await client.request(`/v1/appStoreReviewDetails/${encodeURIComponent(detailId)}`))?.data;
       if (confirmed?.id !== detailId) throw new Error("App Store review detail update was not confirmed");
-      for (const [field, value] of Object.entries(settings.reviewConfiguration.reviewDetailAttributes)) {
+      for (const [field, value] of Object.entries(reviewConfiguration.reviewDetailAttributes)) {
         if (field !== "demoAccountPassword" && confirmed?.attributes?.[field] !== value) throw new Error("App Store review detail does not match the configured reference");
       }
       return evidence(config, { appStoreVersionId: version.id, reviewConfigurationApplied: true, automaticRelease: true, authoritative: true });
@@ -359,10 +364,11 @@ async function main() {
   } catch (error) {
     const message = String(error?.message ?? "iOS production release command failed");
     const deterministic = /automated tests|artifact|archive|IPA|bundle|debug|StoreKit|private key|configuration|processing failed|invalid/i.test(message);
+    const safeMessage = sanitizeObservedEvidenceString(redactCredentials(message));
     console.log(JSON.stringify({ ok: false, error: {
       deterministic,
       classification: deterministic ? "validation" : "external_unknown",
-      message: deterministic ? "iOS production validation failed" : "iOS production external outcome requires reconciliation",
+      message: deterministic ? `iOS production validation failed: ${safeMessage}` : "iOS production external outcome requires reconciliation",
     } }));
   } finally {
     control.dispose();

