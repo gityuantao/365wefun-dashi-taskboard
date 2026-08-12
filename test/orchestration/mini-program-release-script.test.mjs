@@ -73,7 +73,7 @@ function app(candidateCommit) {
   return {
     id: "wechat", appId: APP_ID, version: "1.2.3", description: `Candidate ${candidateCommit}`,
     sourceDirectory: "apps/mp", artifactDirectory: "dist/build/mp-weixin",
-    buildCommand: ["npm", "run", "build:mp-weixin"], uploadCommand: ["node", "upload.mjs"],
+    buildCommand: ["pnpm", "--filter", "@e365/mp", "exec", "uni", "build", "-p", "mp-weixin"], uploadCommand: ["node", "upload.mjs"],
     reviewCommand: ["node", "review.mjs"], releaseCommand: ["node", "release.mjs"],
     readbackCommand: ["node", "readback.mjs"], credentialsPath: "private/wechat.private.json",
     reviewConfigurationRef: "review/wechat",
@@ -128,8 +128,8 @@ test("detached Candidate build runs exact quality and production build commands,
   ]);
   for (const call of calls.filter(({ sandbox }) => sandbox)) {
     assert.deepEqual(call.network, { mode: "deny-all", profileId: "spawned-deny-all-v1" });
-    assert.equal(call.env.PATH, process.env.PATH ?? "");
-    assert.equal(call.env.LANG, process.env.LANG ?? "C.UTF-8");
+    assert.equal(call.env.PATH, "/usr/bin:/bin");
+    assert.equal(call.env.LANG, "C.UTF-8");
     assert.equal(call.env.MINI_PROGRAM_BUILD_OUTPUT_DIR, undefined);
     assert.deepEqual(call.filesystem.readOnlyRoots, [call.cwd]);
     assert.match(call.filesystem.writableRoots[0], /wechat-candidate-build-output-/);
@@ -263,7 +263,7 @@ test("local Candidate execution defaults closed without a no-network sandbox pro
   const input = { repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1", app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"], artifactRoot: path.join(fixture.root, "artifacts") };
   await assert.rejects(validateDetachedCandidate(input), /sandbox|network|trusted runtime/i);
   await assert.rejects(buildDetachedCandidate(input), /sandbox|network|trusted runtime/i);
-  await assert.rejects(buildDetachedCandidate({ ...input, trustedRuntime: { implementationId: "forged" } }), /loader-authorized|trusted runtime/i);
+  await assert.rejects(buildDetachedCandidate({ ...input, trustedRuntime: { implementationId: "forged" } }), /trusted sandbox provider/i);
 });
 
 test("test stage only validates Candidate while build alone creates the published artifact", async (t) => {
@@ -394,28 +394,18 @@ test("sandbox completion requires an explicit finite integer zero exit code and 
   }
 });
 
-test("trusted runtime loaders accept only fixed owned non-writable regular modules", async (t) => {
-  const runtime = await createTrustedMiniProgramTestRuntime();
+test("test-only unit runtime accepts only its fixed fake modules", () => {
+  const runtime = createTrustedMiniProgramTestRuntime();
   assert.equal(runtime.provider.implementationId, "spawned-test-provider-v1");
   for (const moduleName of ["../fake.mjs", "/tmp/fake.mjs", "nested/fake.mjs"]) {
-    await assert.rejects(createTrustedMiniProgramTestRuntime({ sandboxProviderModule: moduleName }), /relative allowlisted/i);
+    assert.throws(() => createTrustedMiniProgramTestRuntime({ sandboxProviderModule: moduleName }), /relative allowlisted/i);
   }
-  const providerPath = path.join(PROJECT_ROOT, "test/fixtures/trusted-mini-program-runtime/sandbox-providers/fake.mjs");
-  await chmod(providerPath, 0o666);
-  t.after(() => chmod(providerPath, 0o644));
-  await assert.rejects(createTrustedMiniProgramTestRuntime(), /group\/world writable/i);
-  await chmod(providerPath, 0o644);
-  const linkedPath = path.join(path.dirname(providerPath), "linked.mjs");
-  await symlink(providerPath, linkedPath);
-  t.after(() => rm(linkedPath, { force: true }));
-  await assert.rejects(createTrustedMiniProgramTestRuntime({ sandboxProviderModule: "linked.mjs" }), /symlink/i);
-  await assert.rejects(createTrustedMiniProgramRuntimeLoader({ projectRoot: PROJECT_ROOT, sandboxProviderModule: "/tmp/provider.mjs", stageRunnerModule: "runner.mjs" }), /relative allowlisted/i);
 });
 
 test("production runtime authority cannot be redirected or supplied by production test helpers", async () => {
   assert.equal(trustedRuntimeLoader.createTrustedMiniProgramTestRuntime, undefined);
   let imported = false;
-  await assert.rejects(createTrustedMiniProgramRuntimeLoader({
+  const runtime = await createTrustedMiniProgramRuntimeLoader({
     projectRoot: "/tmp/attacker-root",
     sandboxProviderModule: "missing-provider.mjs",
     stageRunnerModule: "missing-runner.mjs",
@@ -423,7 +413,8 @@ test("production runtime authority cannot be redirected or supplied by productio
       imported = true;
       return { default: { implementationId: "forged", profileId: "forged", createSession() {} } };
     },
-  }), /missing|module|trusted|ENOENT/i);
+  });
+  assert.notEqual(runtime.provider.implementationId, "forged");
   assert.equal(imported, false);
 });
 
@@ -438,7 +429,7 @@ test("trusted module validation rejects symlinks in the fixed root chain before 
   await symlink(actual, linked);
   await assert.rejects(trustedRuntimeLoader.validateTrustedRuntimeModuleAtFixedRoot(
     path.join(linked, "orchestration/mini-program"), "sandbox-providers", "provider.mjs",
-  ), /symlink/i);
+  ), /symlink|canonical|real director/i);
 });
 
 test("artifact inspection rejects wrong App ID, non-production endpoints, non-allowlisted APIs, and secret material", async (t) => {
@@ -527,8 +518,8 @@ test("stage validation accepts only allowlisted inputs and requires 0600 regular
   t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
   const credentialsPath = path.join(root, "wechat.private.json");
   const reviewPath = path.join(root, "review.private.json");
-  await writeFile(credentialsPath, JSON.stringify({ privateKey: "secret" }), { mode: 0o600 });
-  await writeFile(reviewPath, JSON.stringify({ "review/wechat": { category: "Education" } }), { mode: 0o600 });
+  await writeFile(credentialsPath, JSON.stringify({ appId: APP_ID, privateKey: "secret" }), { mode: 0o600 });
+  await writeFile(reviewPath, JSON.stringify({ "review/wechat": { category: "Education", commandDefinitions: { uploadCommand: ["node", "upload.mjs"] } } }), { mode: 0o600 });
   const environment = {
     MINI_PROGRAM_STAGE: "upload", MINI_PROGRAM_APP_ID: APP_ID, MINI_PROGRAM_VERSION: "1.2.3",
     MINI_PROGRAM_CREDENTIALS_PATH: credentialsPath, MINI_PROGRAM_REVIEW_CONFIGURATION_PATH: reviewPath,
@@ -538,6 +529,7 @@ test("stage validation accepts only allowlisted inputs and requires 0600 regular
     MINI_PROGRAM_ARTIFACT_SIZE: "10", PRODUCTION_CANDIDATE_COMMIT: "1".repeat(40),
     PRODUCTION_CANDIDATE_REF: `refs/heads/release-candidate/v/${"1".repeat(40)}`,
     PRODUCTION_MANIFEST_CHECKSUM: "manifest", PRODUCTION_VERSION_ID: "version-1",
+    MINI_PROGRAM_FROZEN_COMMAND_ID: "uploadCommand", MINI_PROGRAM_FROZEN_COMMAND: '["node","upload.mjs"]',
   };
   const config = await validateStageInputs(environment);
   assert.equal(config.appId, APP_ID);
@@ -555,19 +547,20 @@ test("private descriptors load only inside the child stage boundary and fake pro
   t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
   const credentialsPath = path.join(root, "wechat.private.json");
   const reviewPath = path.join(root, "review.private.json");
-  await writeFile(credentialsPath, JSON.stringify({ accessToken: "child-only" }), { mode: 0o600 });
-  await writeFile(reviewPath, JSON.stringify({ "review/wechat": { category: "Education" } }), { mode: 0o600 });
+  await writeFile(credentialsPath, JSON.stringify({ appId: APP_ID, accessToken: "child-only" }), { mode: 0o600 });
+  await writeFile(reviewPath, JSON.stringify({ "review/wechat": { category: "Education", commandDefinitions: { reviewCommand: ["node", "review.mjs"] } } }), { mode: 0o600 });
   const config = {
     stage: "submitReview", appId: APP_ID, version: "1.2.3", candidateCommit: "1".repeat(40),
     manifestChecksum: "manifest", idempotencyKey: "idem-1", credentialsPath, reviewConfigurationPath: reviewPath,
-    reviewConfigurationRef: "review/wechat", evidence: { uploadId: "upload-1", artifactDigest: `sha256:${"a".repeat(64)}` },
+    reviewConfigurationRef: "review/wechat", frozenCommandId: "reviewCommand", frozenCommand: ["node", "review.mjs"],
+    evidence: { uploadId: "upload-1", artifactDigest: `sha256:${"a".repeat(64)}` },
   };
   let reads = 0;
   const result = await executeMiniProgramStage(config, {
     readPrivateFile: async (...args) => { reads += 1; return readFile(...args); },
     stageRunner: async (request) => {
       assert.equal(request.credentials.accessToken, "child-only");
-      assert.deepEqual(request.reviewConfiguration, { category: "Education" });
+      assert.equal(request.reviewConfiguration.category, "Education");
       assert.equal(request.idempotencyKey, "idem-1");
       return { appId: APP_ID, version: "1.2.3", candidateCommit: "1".repeat(40), manifestChecksum: "manifest", artifactDigest: config.evidence.artifactDigest, uploadId: "upload-1", reviewSubmissionId: "submission-1", reviewId: "review-1" };
     },
@@ -610,6 +603,8 @@ test("adapter-shaped CLI environments execute all nine stages without duplicate 
       MINI_PROGRAM_ARTIFACT_IDENTITY: "artifact-1", PRODUCTION_CANDIDATE_COMMIT: "1".repeat(40),
       PRODUCTION_CANDIDATE_REF: `refs/heads/release-candidate/v/${"1".repeat(40)}`,
       PRODUCTION_MANIFEST_CHECKSUM: "manifest", PRODUCTION_VERSION_ID: "version-1",
+      MINI_PROGRAM_FROZEN_COMMAND_ID: local ? "buildCommand" : ({ upload: "uploadCommand", submitReview: "reviewCommand", release: "releaseCommand" }[stage] ?? "readbackCommand"),
+      MINI_PROGRAM_FROZEN_COMMAND: JSON.stringify(local ? app("1".repeat(40)).buildCommand : ({ upload: ["node", "upload.mjs"], submitReview: ["node", "review.mjs"], release: ["node", "release.mjs"] }[stage] ?? ["node", "readback.mjs"])),
       ...(local ? {
         MINI_PROGRAM_APP_IDENTITY: "wechat", MINI_PROGRAM_SOURCE_DIRECTORY: "apps/mp",
         MINI_PROGRAM_ARTIFACT_DIRECTORY: "dist/build/mp-weixin", MINI_PROGRAM_DESCRIPTION: `Candidate ${"1".repeat(40)}`,
@@ -631,8 +626,11 @@ test("the actual adapter and CLI boundary compose through real executeMiniProgra
   t.after(() => rm(privateRoot, { recursive: true, force: true }));
   const credentialsPath = path.join(privateRoot, "credentials.private.json");
   const reviewConfigurationPath = path.join(privateRoot, "review.private.json");
-  await writeFile(credentialsPath, JSON.stringify({ token: "fake-only" }), { mode: 0o600 });
-  await writeFile(reviewConfigurationPath, JSON.stringify({ "review/wechat": { category: "Education" } }), { mode: 0o600 });
+  await writeFile(credentialsPath, JSON.stringify({ appId: APP_ID, token: "fake-only" }), { mode: 0o600 });
+  await writeFile(reviewConfigurationPath, JSON.stringify({ "review/wechat": { category: "Education", commandDefinitions: {
+    uploadCommand: ["node", "upload.mjs"], reviewCommand: ["node", "review.mjs"],
+    releaseCommand: ["node", "release.mjs"], readbackCommand: ["node", "readback.mjs"],
+  } } }), { mode: 0o600 });
   const artifactRoot = path.join(fixture.root, "artifacts");
   const stages = [];
   const manifest = { versionId: "version-1", candidateCommit: fixture.candidateCommit, candidateRef: `refs/heads/release-candidate/v/${fixture.candidateCommit}`, checksum: "manifest" };
@@ -674,28 +672,31 @@ test("the actual adapter and CLI boundary compose through real executeMiniProgra
   assert.equal(lineage.liveStatus, "live");
 });
 
-test("a spawned child bootstraps the fixed test runtime and completes all nine real CLI stages", async (t) => {
+test("a spawned child uses the production loader and fixed runner for a local read-only stage", { skip: process.platform !== "darwin" }, async (t) => {
   const fixture = await fixtureRepo(t);
   const privateRoot = await mkdtemp(path.join(os.tmpdir(), "wechat-spawned-private-"));
   t.after(() => rm(privateRoot, { recursive: true, force: true }));
   const credentialsPath = path.join(privateRoot, "credentials.private.json");
   const reviewConfigurationPath = path.join(privateRoot, "review.private.json");
-  await writeFile(credentialsPath, JSON.stringify({ token: "spawned-fake-only" }), { mode: 0o600 });
-  await writeFile(reviewConfigurationPath, JSON.stringify({ "review/wechat": { category: "Education" } }), { mode: 0o600 });
+  await writeFile(credentialsPath, JSON.stringify({ appId: APP_ID, token: "spawned-local-only" }), { mode: 0o600 });
   const manifest = { versionId: "version-1", candidateCommit: fixture.candidateCommit, candidateRef: `refs/heads/release-candidate/v/${fixture.candidateCommit}`, checksum: "manifest" };
   const descriptor = app(fixture.candidateCommit);
+  const frozenRead = [process.execPath, "-e", [
+    "let s=''", "process.stdin.on('data',c=>s+=c)",
+    `process.stdin.on('end',()=>{const v=JSON.parse(s);process.stdout.write(JSON.stringify({appId:v.appId,version:v.version,candidateCommit:v.candidateCommit,manifestChecksum:v.manifestChecksum,artifactDigest:v.evidence.artifactDigest,status:'absent',authoritative:true}))})`,
+  ].join(";")];
+  descriptor.readbackCommand = frozenRead;
+  await writeFile(reviewConfigurationPath, JSON.stringify({ "review/wechat": { category: "Education", commandDefinitions: { readbackCommand: frozenRead } } }), { mode: 0o600 });
   const adapter = createWechatReleaseAdapter({
     command: [process.execPath, path.join(PROJECT_ROOT, "test/fixtures/trusted-mini-program-runtime/bootstrap.mjs")],
     credentialsPath, reviewConfigurationPath, repoPath: fixture.root, artifactRoot: path.join(fixture.root, "artifacts"),
-    productionApiAllowlist: ["https://api.365life.example/v1"], sandboxProviderModule: "fake.mjs", stageRunnerModule: "fake.mjs",
+    productionApiAllowlist: ["https://api.365life.example/v1"],
     cwd: PROJECT_ROOT,
   });
-  let lineage = {};
-  for (const stage of ["test", "build", "inspectArtifact", "upload", "readUpload", "submitReview", "readReview", "release", "readLive"]) {
-    lineage = { ...lineage, ...await adapter[stage]({ manifest, app: descriptor, evidence: lineage, idempotencyKey: "spawned-stable" }) };
-  }
-  assert.equal(lineage.liveStatus, "live");
-  assert.equal(lineage.appId, APP_ID);
+  const result = await adapter.readUpload({ manifest, app: descriptor, evidence: baseEvidence });
+  assert.equal(result.status, "absent");
+  assert.equal(result.authoritative, true);
+  assert.equal(result.appId, APP_ID);
 });
 
 test("unclassified mutation stage-runner errors become non-deterministic external-unknown JSON", async () => {
@@ -723,4 +724,73 @@ test("CLI emits exactly one bounded sanitized final JSON object", async () => {
   assert.ok(Buffer.byteLength(writes[0]) <= 16_385);
   assert.doesNotMatch(writes[0], /abcdefgh|Authorization|[\u0000-\u001f\u007f]/u);
   assert.doesNotThrow(() => JSON.parse(writes[0]));
+});
+
+test("production modules expose no test authority or alternate trusted-root issuer", async () => {
+  const loaderSource = await readFile(path.join(PROJECT_ROOT, "orchestration/mini-program/trusted-runtime-loader.mjs"), "utf8");
+  const cliSource = await readFile(path.join(PROJECT_ROOT, "scripts/release-mini-program.mjs"), "utf8");
+  assert.doesNotMatch(loaderSource, /testAuthority|TEST_TRUSTED_ROOT|TEST_RUNTIME_HELPER/);
+  assert.doesNotMatch(cliSource, /testAuthority/);
+  assert.doesNotMatch(loaderSource, /sandboxProviderModule\s*[,}]/);
+  assert.doesNotMatch(loaderSource, /stageRunnerModule\s*[,}]/);
+});
+
+test("network command drift is rejected before credentials or runner access", async () => {
+  const accesses = [];
+  await assert.rejects(executeMiniProgramStage({
+    stage: "upload", appId: APP_ID, version: "1.2.3", candidateCommit: "1".repeat(40),
+    manifestChecksum: "manifest", credentialsPath: "/credentials", reviewConfigurationPath: "/review",
+    reviewConfigurationRef: "review/wechat", frozenCommandId: "uploadCommand",
+    frozenCommand: [process.execPath, "frozen.mjs"], evidence: {},
+  }, {
+    readPrivateFile: async (filePath) => {
+      accesses.push(filePath);
+      return JSON.stringify(filePath === "/review"
+        ? { "review/wechat": { commandDefinitions: { uploadCommand: [process.execPath, "drifted.mjs"] } } }
+        : { appId: APP_ID });
+    },
+    stageRunner: async () => { accesses.push("runner"); return {}; },
+  }), /frozen.*command|command.*drift/i);
+  assert.deepEqual(accesses, ["/review"]);
+});
+
+test("credentials require the authoritative frozen App ID before runner access", async () => {
+  let runnerCalled = false;
+  await assert.rejects(executeMiniProgramStage({
+    stage: "readUpload", appId: APP_ID, version: "1.2.3", candidateCommit: "1".repeat(40),
+    manifestChecksum: "manifest", credentialsPath: "/credentials", reviewConfigurationPath: "/review",
+    reviewConfigurationRef: "review/wechat", frozenCommandId: "readbackCommand",
+    frozenCommand: [process.execPath, "read.mjs"], evidence: {},
+  }, {
+    readPrivateFile: async (filePath) => JSON.stringify(filePath === "/review"
+      ? { "review/wechat": { commandDefinitions: { readbackCommand: [process.execPath, "read.mjs"] } } }
+      : { appId: "wx0000000000000000", token: "private" }),
+    stageRunner: async () => { runnerCalled = true; return {}; },
+  }), /credential.*App ID|App ID.*credential/i);
+  assert.equal(runnerCalled, false);
+});
+
+test("temporary Candidate and output roots are canonical before reaching the provider", async (t) => {
+  const fixture = await fixtureRepo(t);
+  const calls = [];
+  const provider = {
+    implementationId: "test", profileId: "deny", deniedRoots: [],
+    createSession(request) {
+      calls.push(request);
+      return {
+        start: async () => ({ exitCode: 0 }), terminate: async () => {}, wait: async () => {},
+        exportArtifact: async () => { throw new Error("unused"); },
+      };
+    },
+  };
+  await validateDetachedCandidate({
+    repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest",
+    app: app(fixture.candidateCommit), runCommand: execFile, trustedRuntime: { provider },
+  });
+  for (const call of calls) {
+    assert.equal(path.dirname(call.cwd), await realpath(path.dirname(call.cwd)));
+    assert.equal(path.dirname(call.filesystem.writableRoots[0]), await realpath(path.dirname(call.filesystem.writableRoots[0])));
+    assert.doesNotMatch(call.cwd, /^\/var\//u);
+    assert.doesNotMatch(call.filesystem.writableRoots[0], /^\/var\//u);
+  }
 });

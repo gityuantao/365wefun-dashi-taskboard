@@ -1,5 +1,3 @@
-import { runTrustedMiniProgramTestCliMain } from "./runtime-loader.mjs";
+import { runCliMain } from "../../../scripts/release-mini-program.mjs";
 
-await runTrustedMiniProgramTestCliMain({
-  environment: process.env,
-});
+await runCliMain({ environment: process.env });

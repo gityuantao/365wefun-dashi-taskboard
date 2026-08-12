@@ -1,23 +1,12 @@
-import { createTrustedMiniProgramRuntimeLoader } from "../../../orchestration/mini-program/trusted-runtime-loader.mjs";
-import { runCliMain } from "../../../scripts/release-mini-program.mjs";
-
-const TEST_AUTHORITY = Object.freeze({});
-
-export function isTrustedMiniProgramTestAuthority(value) {
-  return value === TEST_AUTHORITY;
-}
+import provider from "./sandbox-providers/fake.mjs";
+import stageRunner from "./stage-runners/fake.mjs";
 
 export function createTrustedMiniProgramTestRuntime({
   sandboxProviderModule = "fake.mjs",
   stageRunnerModule = "fake.mjs",
 } = {}) {
-  return createTrustedMiniProgramRuntimeLoader({
-    sandboxProviderModule,
-    stageRunnerModule,
-    testAuthority: TEST_AUTHORITY,
-  });
-}
-
-export function runTrustedMiniProgramTestCliMain(options = {}) {
-  return runCliMain({ ...options, testAuthority: TEST_AUTHORITY });
+  if (sandboxProviderModule !== "fake.mjs" || stageRunnerModule !== "fake.mjs") {
+    throw new Error("test runtime accepts only relative allowlisted fixed fake modules");
+  }
+  return Object.freeze({ provider, stageRunner });
 }

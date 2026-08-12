@@ -101,15 +101,15 @@ test("every stage receives the exact frozen Candidate, App, version, artifact, a
     assert.equal(call.options.env.MINI_PROGRAM_APP_DESCRIPTOR, undefined);
     assert.equal(call.options.env.MINI_PROGRAM_REPO_PATH, local ? "/repo" : undefined);
     assert.equal(call.options.env.MINI_PROGRAM_ARTIFACT_ROOT, local ? "/owned-artifacts" : undefined);
-    assert.equal(call.options.env.MINI_PROGRAM_SANDBOX_PROVIDER_MODULE, "darwin-sandbox.mjs");
-    assert.equal(call.options.env.MINI_PROGRAM_STAGE_RUNNER_MODULE, "wechat-stage.mjs");
+    assert.equal(call.options.env.MINI_PROGRAM_SANDBOX_PROVIDER_MODULE, undefined);
+    assert.equal(call.options.env.MINI_PROGRAM_STAGE_RUNNER_MODULE, undefined);
     assert.equal(call.options.env.MINI_PROGRAM_PRODUCTION_API_ALLOWLIST, local ? '["https://api.365life.example/v1"]' : undefined);
     assert.equal(call.options.env.NODE_OPTIONS, undefined);
     assert.equal(call.options.env.HOME, undefined);
     assert.equal(call.options.env.AWS_SECRET_ACCESS_KEY, undefined);
     const common = ["LANG", "MINI_PROGRAM_APP_ID", "MINI_PROGRAM_ARTIFACT_DIGEST",
       "MINI_PROGRAM_ARTIFACT_IDENTITY", "MINI_PROGRAM_ARTIFACT_SIZE", "MINI_PROGRAM_EVIDENCE",
-      "MINI_PROGRAM_SANDBOX_PROVIDER_MODULE", "MINI_PROGRAM_STAGE_RUNNER_MODULE",
+      "MINI_PROGRAM_FROZEN_COMMAND", "MINI_PROGRAM_FROZEN_COMMAND_ID",
       "MINI_PROGRAM_STAGE", "MINI_PROGRAM_VERSION", "PATH", "PRODUCTION_CANDIDATE_COMMIT",
       "PRODUCTION_CANDIDATE_REF", "PRODUCTION_MANIFEST_CHECKSUM", "PRODUCTION_VERSION_ID"];
     const stageSpecific = local
@@ -358,4 +358,54 @@ test("the default command boundary terminates the detached process group on time
   }
   await exercise("timeout");
   await exercise("abort");
+});
+
+test("the adapter ignores the parent PATH and binds every stage to its frozen command", async () => {
+  const calls = [];
+  const adapter = createWechatReleaseAdapter({
+    command: [process.execPath, "safe-wechat-gateway.mjs"],
+    credentialsPath: "/private/wechat.private.json",
+    reviewConfigurationPath: "/private/review.private.json",
+    repoPath: "/repo", artifactRoot: "/owned",
+    productionApiAllowlist: ["https://api.365life.example/v1"],
+    runCommand: async (_file, _args, options) => {
+      calls.push(options.env);
+      return final(baseEvidence);
+    },
+  });
+  await adapter.test({ manifest, app, evidence: baseEvidence });
+  assert.equal(calls[0].PATH, "/usr/bin:/bin");
+  assert.equal(calls[0].MINI_PROGRAM_FROZEN_COMMAND_ID, "buildCommand");
+  assert.deepEqual(JSON.parse(calls[0].MINI_PROGRAM_FROZEN_COMMAND), app.buildCommand);
+  assert.equal(calls[0].MINI_PROGRAM_SANDBOX_PROVIDER_MODULE, undefined);
+  assert.equal(calls[0].MINI_PROGRAM_STAGE_RUNNER_MODULE, undefined);
+});
+
+test("timeout and abort drain a forked descendant after its direct leader exits", async (t) => {
+  const survivors = [];
+  t.after(() => {
+    for (const pid of survivors) try { process.kill(pid, "SIGKILL"); } catch {}
+  });
+  for (const kind of ["timeout", "abort"]) {
+    const pidFile = path.join(os.tmpdir(), `wechat-descendant-${kind}-${process.pid}-${Date.now()}.txt`);
+    const controller = new AbortController();
+    const source = [
+      "const{spawn}=require('node:child_process')",
+      "const fs=require('node:fs')",
+      "const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:false,stdio:'ignore'})",
+      "fs.writeFileSync(process.argv[1],String(child.pid))",
+      "setInterval(()=>{},1000)",
+    ].join(";");
+    const pending = runCommandBoundary(process.execPath, ["-e", source, pidFile], {
+      timeout: kind === "timeout" ? 80 : 5_000,
+      signal: controller.signal,
+      env: { PATH: "/usr/bin:/bin" },
+    });
+    while (true) {
+      try { survivors.push(Number(await readFile(pidFile, "utf8"))); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
+    }
+    if (kind === "abort") controller.abort();
+    await assert.rejects(pending);
+    assert.throws(() => process.kill(survivors.at(-1), 0), /ESRCH/);
+  }
 });

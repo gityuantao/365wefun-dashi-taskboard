@@ -5,6 +5,8 @@ import { redactCredentials } from "../domain/redaction.mjs";
 const APP_ID = "wx1fdac5e27c6b5366";
 const DEFAULT_TIMEOUT_MS = 45 * 60_000;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
+const FIXED_CHILD_PATH = "/usr/bin:/bin";
+const GROUP_DRAIN_TIMEOUT_MS = 2_000;
 const STAGES = Object.freeze([
   "test", "build", "inspectArtifact", "upload", "readUpload",
   "submitReview", "readReview", "release", "readLive",
@@ -14,6 +16,12 @@ const MUTATION_LOOKUP = Object.freeze({
   upload: "readUpload",
   submitReview: "readReview",
   release: "readLive",
+});
+const STAGE_COMMAND_FIELDS = Object.freeze({
+  test: "buildCommand", build: "buildCommand", inspectArtifact: "buildCommand",
+  upload: "uploadCommand", readUpload: "readbackCommand",
+  submitReview: "reviewCommand", readReview: "readbackCommand",
+  release: "releaseCommand", readLive: "readbackCommand",
 });
 const UNKNOWN_OUTCOME_CODES = new Set([
   "COMMAND_TIMEOUT", "COMMAND_OUTPUT_TOO_LARGE", "COMMAND_NONZERO", "FINAL_JSON_INVALID",
@@ -71,11 +79,33 @@ function sanitizeEvidence(value) {
   return result;
 }
 
-function killProcessGroup(child) {
-  if (!child?.pid) return;
-  try { process.kill(-child.pid, "SIGKILL"); } catch {
-    try { child.kill("SIGKILL"); } catch {}
+function groupExists(pgid) {
+  try { process.kill(-pgid, 0); return true; } catch (error) {
+    if (error?.code === "EPERM") return true;
+    if (error?.code === "ESRCH") return false;
+    throw error;
   }
+}
+
+async function waitForGroupExit(pgid, timeout = GROUP_DRAIN_TIMEOUT_MS) {
+  const deadline = Date.now() + timeout;
+  while (groupExists(pgid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return true;
+}
+
+async function terminateProcessGroup(child) {
+  if (!child?.pid) return;
+  try { process.kill(-child.pid, "SIGTERM"); } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  if (await waitForGroupExit(child.pid)) return;
+  try { process.kill(-child.pid, "SIGKILL"); } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  if (!await waitForGroupExit(child.pid)) throw new Error("mini-program command process group did not drain");
 }
 
 export function runCommandBoundary(file, args, {
@@ -86,6 +116,7 @@ export function runCommandBoundary(file, args, {
 } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let terminatingError;
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
     const child = spawn(file, args, {
@@ -104,18 +135,27 @@ export function runCommandBoundary(file, args, {
     const append = (current, chunk) => {
       const next = Buffer.concat([current, chunk]);
       if (next.length > MAX_COMMAND_OUTPUT_BYTES) {
-        killProcessGroup(child);
-        finish(() => reject(typedError("mini-program command output exceeded the bounded limit", "validation", true, "COMMAND_OUTPUT_TOO_LARGE")));
+        terminatingError = typedError("mini-program command output exceeded the bounded limit", "validation", true, "COMMAND_OUTPUT_TOO_LARGE");
+        terminateProcessGroup(child).then(
+          () => finish(() => reject(terminatingError)),
+          (error) => finish(() => reject(typedError(error.message, "release_infrastructure", false, "COMMAND_GROUP_DRAIN_FAILED"))),
+        );
       }
       return next;
     };
     const abort = () => {
-      killProcessGroup(child);
-      finish(() => reject(typedError("mini-program command aborted", "external_unknown", false, "COMMAND_ABORTED")));
+      terminatingError = typedError("mini-program command aborted", "external_unknown", false, "COMMAND_ABORTED");
+      terminateProcessGroup(child).then(
+        () => finish(() => reject(terminatingError)),
+        (error) => finish(() => reject(typedError(error.message, "release_infrastructure", false, "COMMAND_GROUP_DRAIN_FAILED"))),
+      );
     };
     const timer = setTimeout(() => {
-      killProcessGroup(child);
-      finish(() => reject(typedError("mini-program command timed out", "release_infrastructure", false, "COMMAND_TIMEOUT")));
+      terminatingError = typedError("mini-program command timed out", "release_infrastructure", false, "COMMAND_TIMEOUT");
+      terminateProcessGroup(child).then(
+        () => finish(() => reject(terminatingError)),
+        (error) => finish(() => reject(typedError(error.message, "release_infrastructure", false, "COMMAND_GROUP_DRAIN_FAILED"))),
+      );
     }, positiveTimeout(timeout));
     timer.unref?.();
     if (signal?.aborted) abort();
@@ -123,12 +163,15 @@ export function runCommandBoundary(file, args, {
     child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
     child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
     child.on("error", (error) => finish(() => reject(typedError(error.message, "release_infrastructure"))));
-    child.on("close", (code, childSignal) => finish(() => resolve({
-      stdout: stdout.toString("utf8"),
-      stderr: stderr.toString("utf8"),
-      exitCode: code,
-      signal: childSignal,
-    })));
+    child.on("close", (code, childSignal) => {
+      if (terminatingError) return;
+      waitForGroupExit(child.pid).then(
+        (empty) => finish(() => empty
+          ? resolve({ stdout: stdout.toString("utf8"), stderr: stderr.toString("utf8"), exitCode: code, signal: childSignal })
+          : reject(typedError("mini-program command process group did not drain", "release_infrastructure", false, "COMMAND_GROUP_DRAIN_FAILED"))),
+        (error) => finish(() => reject(typedError(error.message, "release_infrastructure", false, "COMMAND_GROUP_DRAIN_FAILED"))),
+      );
+    });
   });
 }
 
@@ -219,9 +262,15 @@ function assertIdentity(value, { manifest, app, evidence }, stage) {
 }
 
 function environmentFor(stage, { manifest, app, evidence = {}, idempotencyKey }, configuration) {
+  const frozenCommandId = STAGE_COMMAND_FIELDS[stage];
+  const frozenCommand = app?.[frozenCommandId];
+  if (!Array.isArray(frozenCommand) || frozenCommand.length === 0
+    || frozenCommand.some((part) => typeof part !== "string" || part.trim() === "")) {
+    throw typedError(`mini-program frozen ${frozenCommandId} is required`, "validation", true);
+  }
   const env = {
-    PATH: process.env.PATH ?? "",
-    LANG: process.env.LANG ?? "C.UTF-8",
+    PATH: FIXED_CHILD_PATH,
+    LANG: "C.UTF-8",
     MINI_PROGRAM_STAGE: stage,
     MINI_PROGRAM_APP_ID: requiredString(app?.appId, "app.appId"),
     MINI_PROGRAM_VERSION: requiredString(app?.version, "app.version"),
@@ -233,8 +282,8 @@ function environmentFor(stage, { manifest, app, evidence = {}, idempotencyKey },
     PRODUCTION_CANDIDATE_REF: requiredString(manifest?.candidateRef, "manifest.candidateRef"),
     PRODUCTION_MANIFEST_CHECKSUM: requiredString(manifest?.checksum, "manifest.checksum"),
     PRODUCTION_VERSION_ID: requiredString(manifest?.versionId, "manifest.versionId"),
-    MINI_PROGRAM_SANDBOX_PROVIDER_MODULE: requiredString(configuration.sandboxProviderModule, "sandboxProviderModule"),
-    MINI_PROGRAM_STAGE_RUNNER_MODULE: requiredString(configuration.stageRunnerModule, "stageRunnerModule"),
+    MINI_PROGRAM_FROZEN_COMMAND_ID: frozenCommandId,
+    MINI_PROGRAM_FROZEN_COMMAND: JSON.stringify(frozenCommand),
   };
   if (LOCAL_STAGES.has(stage)) Object.assign(env, {
     MINI_PROGRAM_APP_IDENTITY: requiredString(app?.id, "app.id"),
@@ -261,8 +310,6 @@ export function createWechatReleaseAdapter({
   repoPath,
   artifactRoot,
   productionApiAllowlist = [],
-  sandboxProviderModule = "darwin-sandbox-exec.mjs",
-  stageRunnerModule = "wechat-command.mjs",
   runCommand = runCommandBoundary,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   cwd,
@@ -291,7 +338,6 @@ export function createWechatReleaseAdapter({
         signal: context?.signal,
         env: environmentFor(stage, context, {
           credentialsPath, reviewConfigurationPath, repoPath, artifactRoot, productionApiAllowlist,
-          sandboxProviderModule, stageRunnerModule,
         }),
       });
     } catch (error) {

@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { redactCredentials } from "../orchestration/domain/redaction.mjs";
-import { createTrustedMiniProgramRuntimeLoader, requireTrustedMiniProgramRuntime } from "../orchestration/mini-program/trusted-runtime-loader.mjs";
+import { createTrustedMiniProgramRuntimeLoader } from "../orchestration/mini-program/trusted-runtime-loader.mjs";
 
 const execFile = promisify(execFileCallback);
 const APP_ID = "wx1fdac5e27c6b5366";
@@ -29,7 +29,7 @@ const ALLOWED_ENV = new Set([
   "MINI_PROGRAM_IDEMPOTENCY_KEY", "MINI_PROGRAM_EVIDENCE", "MINI_PROGRAM_ARTIFACT_DIGEST",
   "MINI_PROGRAM_ARTIFACT_SIZE", "MINI_PROGRAM_ARTIFACT_IDENTITY", "MINI_PROGRAM_REPO_PATH",
   "MINI_PROGRAM_ARTIFACT_ROOT", "MINI_PROGRAM_PRODUCTION_API_ALLOWLIST",
-  "MINI_PROGRAM_SANDBOX_PROVIDER_MODULE", "MINI_PROGRAM_STAGE_RUNNER_MODULE",
+  "MINI_PROGRAM_FROZEN_COMMAND_ID", "MINI_PROGRAM_FROZEN_COMMAND",
   "PRODUCTION_CANDIDATE_COMMIT", "PRODUCTION_CANDIDATE_REF",
   "PRODUCTION_MANIFEST_CHECKSUM", "PRODUCTION_VERSION_ID",
 ]);
@@ -79,6 +79,16 @@ function parseJson(value, field) {
   } catch {
     throw new Error(`mini-program configuration ${field} must be a JSON object`);
   }
+}
+
+function parseCommand(value, field) {
+  let parsed;
+  try { parsed = JSON.parse(required(value, field)); } catch { throw new Error(`mini-program configuration ${field} must be a JSON command array`); }
+  if (!Array.isArray(parsed) || parsed.length === 0
+    || parsed.some((part) => typeof part !== "string" || part.trim() === "")) {
+    throw new Error(`mini-program configuration ${field} must be a non-empty JSON command array`);
+  }
+  return Object.freeze([...parsed]);
 }
 
 async function openPrivateNoFollow(filePath, field, openFile = open) {
@@ -134,6 +144,8 @@ export async function validateStageInputs(environment, { checkFilesystem = true 
     candidateRef: required(environment.PRODUCTION_CANDIDATE_REF, "PRODUCTION_CANDIDATE_REF"),
     manifestChecksum: required(environment.PRODUCTION_MANIFEST_CHECKSUM, "PRODUCTION_MANIFEST_CHECKSUM"),
     versionId: required(environment.PRODUCTION_VERSION_ID, "PRODUCTION_VERSION_ID"),
+    frozenCommandId: required(environment.MINI_PROGRAM_FROZEN_COMMAND_ID, "MINI_PROGRAM_FROZEN_COMMAND_ID"),
+    frozenCommand: parseCommand(environment.MINI_PROGRAM_FROZEN_COMMAND, "MINI_PROGRAM_FROZEN_COMMAND"),
   };
   if (LOCAL_STAGES.has(stage)) {
     const app = {
@@ -143,6 +155,7 @@ export async function validateStageInputs(environment, { checkFilesystem = true 
       sourceDirectory: required(environment.MINI_PROGRAM_SOURCE_DIRECTORY, "MINI_PROGRAM_SOURCE_DIRECTORY"),
       artifactDirectory: required(environment.MINI_PROGRAM_ARTIFACT_DIRECTORY, "MINI_PROGRAM_ARTIFACT_DIRECTORY"),
       description: required(environment.MINI_PROGRAM_DESCRIPTION, "MINI_PROGRAM_DESCRIPTION"),
+      buildCommand: common.frozenCommand,
     };
     const productionApiAllowlist = JSON.parse(required(environment.MINI_PROGRAM_PRODUCTION_API_ALLOWLIST, "MINI_PROGRAM_PRODUCTION_API_ALLOWLIST"));
     if (!Array.isArray(productionApiAllowlist) || productionApiAllowlist.length === 0) throw new Error("mini-program production API allowlist is required");
@@ -364,24 +377,29 @@ async function drainSession(session, failure) {
 }
 
 async function runSandboxed(trustedRuntime, command, worktreePath, writableOutputRoot, app, deniedRoots = []) {
-  const { provider } = requireTrustedMiniProgramRuntime(trustedRuntime);
-  const defaultArtifactPath = path.join(worktreePath, app.sourceDirectory, app.artifactDirectory);
+  const { provider } = trustedRuntime ?? {};
+  if (!provider || typeof provider.createSession !== "function") throw new Error("mini-program execution requires a trusted sandbox provider");
+  const canonicalWorktree = await realpath(worktreePath);
+  const canonicalOutput = await realpath(writableOutputRoot);
+  const defaultArtifactPath = path.join(canonicalWorktree, app.sourceDirectory, app.artifactDirectory);
+  const [file] = app.buildCommand;
   const request = Object.freeze({
-    file: "pnpm",
+    file,
     args: Object.freeze([...command]),
-    cwd: worktreePath,
+    cwd: canonicalWorktree,
     env: Object.freeze({
-      PATH: process.env.PATH ?? "",
-      LANG: process.env.LANG ?? "C.UTF-8",
+      PATH: "/usr/bin:/bin",
+      LANG: "C.UTF-8",
     }),
     network: Object.freeze({ mode: "deny-all", profileId: provider.profileId }),
     filesystem: Object.freeze({
-      readOnlyRoots: Object.freeze([worktreePath]),
-      writableRoots: Object.freeze([writableOutputRoot]),
+      readOnlyRoots: Object.freeze([canonicalWorktree]),
+      writableRoots: Object.freeze([canonicalOutput]),
       deniedRoots: Object.freeze([...new Set([...(provider.deniedRoots ?? []), ...deniedRoots].map((item) => path.resolve(item)))]),
-      mounts: Object.freeze([Object.freeze({ sourcePath: defaultArtifactPath, targetPath: writableOutputRoot, mode: "candidate-output" })]),
+      mounts: Object.freeze([Object.freeze({ sourcePath: defaultArtifactPath, targetPath: canonicalOutput, mode: "candidate-output" })]),
     }),
     processGroup: Object.freeze({ detached: true, terminateOnFailure: true, awaitExit: true }),
+    signal: trustedRuntime.signal,
     implementationId: provider.implementationId,
   });
   let session;
@@ -402,7 +420,7 @@ async function runSandboxed(trustedRuntime, command, worktreePath, writableOutpu
   } catch (error) { failure = error; }
   failure = await drainSession(session, failure);
   if (failure) throw Object.assign(failure, { failureClassification: failure.failureClassification ?? "release_infrastructure" });
-  return { result, session, outputRoot: writableOutputRoot };
+  return { result, session, outputRoot: canonicalOutput };
 }
 
 async function withDetachedCandidate({ repoPath, candidateCommit, runCommand, operation }) {
@@ -445,6 +463,8 @@ async function withDetachedCandidate({ repoPath, candidateCommit, runCommand, op
 function validateCandidateIdentity({ candidateCommit, manifestChecksum, app }) {
   if (!/^[0-9a-f]{40}$/.test(candidateCommit)) throw new Error("mini-program Candidate must be a full Git SHA");
   if (app.appId !== APP_ID || app.description !== `Candidate ${candidateCommit}`) throw new Error("mini-program frozen descriptor Candidate/App identity mismatch");
+  const expectedBuild = ["pnpm", "--filter", "@e365/mp", "exec", "uni", "build", "-p", "mp-weixin"];
+  if (JSON.stringify(app.buildCommand) !== JSON.stringify(expectedBuild)) throw new Error("mini-program frozen build command is not the reviewed production command");
   return {
     sourceDirectory: safeRelative(app.sourceDirectory, "sourceDirectory"),
     artifactDirectory: safeRelative(app.artifactDirectory, "artifactDirectory"),
@@ -455,7 +475,6 @@ function validateCandidateIdentity({ candidateCommit, manifestChecksum, app }) {
 
 export async function validateDetachedCandidate({ repoPath, candidateCommit, manifestChecksum, app, runCommand = defaultRunCommand, trustedRuntime }) {
   validateCandidateIdentity({ candidateCommit, manifestChecksum, app });
-  requireTrustedMiniProgramRuntime(trustedRuntime);
   return withDetachedCandidate({ repoPath, candidateCommit, runCommand, operation: async (worktreePath) => {
     const outputRoot = await mkdtemp(path.join(os.tmpdir(), "wechat-candidate-validation-output-"));
     try {
@@ -478,12 +497,11 @@ export async function buildDetachedCandidate({
   trustedRuntime,
 }) {
   const identity = validateCandidateIdentity({ candidateCommit, manifestChecksum, app });
-  requireTrustedMiniProgramRuntime(trustedRuntime);
   const canonicalArtifacts = await canonicalOwnedArtifactRoot(artifactRoot);
   return withDetachedCandidate({ repoPath, candidateCommit, runCommand, operation: async (worktreePath) => {
     await assertPathInsideNoSymlinks(worktreePath, identity.sourceDirectory, "sourceDirectory");
     const buildOutputRoot = await mkdtemp(path.join(os.tmpdir(), "wechat-candidate-build-output-"));
-    const commands = [["--filter", "@e365/mp", "exec", "uni", "build", "-p", "mp-weixin"]];
+    const commands = [app.buildCommand.slice(1)];
     try {
       const { session } = await runSandboxed(trustedRuntime, commands[0], worktreePath, buildOutputRoot, app, [canonicalArtifacts]);
       const exported = await session.exportArtifact(Object.freeze({
@@ -516,25 +534,43 @@ export async function executeMiniProgramStage(config, {
   const loader = readPrivateFile
     ? (filePath) => readPrivateFile(filePath, "utf8").then((value) => JSON.parse(value))
     : (filePath) => readPrivateJsonNoFollow(filePath);
-  const credentials = await loader(config.credentialsPath);
   const reviewConfigurations = await loader(config.reviewConfigurationPath);
   const reviewConfiguration = reviewConfigurations[config.reviewConfigurationRef];
   if (!reviewConfiguration || typeof reviewConfiguration !== "object" || Array.isArray(reviewConfiguration)) throw new Error("mini-program review configuration reference is missing");
-  return stageRunner({ ...config, credentials, reviewConfiguration });
+  const reviewedCommand = reviewConfiguration.commandDefinitions?.[config.frozenCommandId];
+  if (JSON.stringify(reviewedCommand) !== JSON.stringify(config.frozenCommand)) {
+    throw Object.assign(new Error("mini-program reviewed command drifted from the frozen production command"), { deterministic: true, failureClassification: "validation" });
+  }
+  const credentials = await loader(config.credentialsPath);
+  if (credentials?.appId !== config.appId) {
+    throw Object.assign(new Error("mini-program credential App ID does not match the frozen production App ID"), { deterministic: true, failureClassification: "validation" });
+  }
+  return stageRunner({ ...config, credentials, reviewConfiguration, reviewedCommand });
 }
 
 export function createMiniProgramStageHandler(dependencies = {}) {
-  return (config) => executeMiniProgramStage(config, dependencies);
+  return (config) => executeMiniProgramStage({ ...config, signal: dependencies.signal }, dependencies);
 }
 
-export async function runCliMain({ environment = process.env, write, testAuthority } = {}) {
+export async function runCliMain({ environment = process.env, write } = {}) {
   const stageEnvironment = Object.fromEntries(Object.entries(environment).filter(([key]) => ALLOWED_ENV.has(key)));
-  const runtime = await createTrustedMiniProgramRuntimeLoader({
-    sandboxProviderModule: stageEnvironment.MINI_PROGRAM_SANDBOX_PROVIDER_MODULE,
-    stageRunnerModule: stageEnvironment.MINI_PROGRAM_STAGE_RUNNER_MODULE,
-    testAuthority,
-  });
-  return runCli({ environment: stageEnvironment, write, executeStage: createMiniProgramStageHandler({ trustedRuntime: runtime, stageRunner: runtime.stageRunner }) });
+  const runtime = await createTrustedMiniProgramRuntimeLoader();
+  const controller = new AbortController();
+  const abort = () => controller.abort(new Error("mini-program parent process fence closed"));
+  process.once("SIGTERM", abort);
+  process.once("SIGINT", abort);
+  try {
+    return await runCli({
+      environment: stageEnvironment, write,
+      executeStage: createMiniProgramStageHandler({
+        trustedRuntime: Object.freeze({ ...runtime, signal: controller.signal }),
+        stageRunner: runtime.stageRunner, signal: controller.signal,
+      }),
+    });
+  } finally {
+    process.removeListener("SIGTERM", abort);
+    process.removeListener("SIGINT", abort);
+  }
 }
 
 export async function runCli({

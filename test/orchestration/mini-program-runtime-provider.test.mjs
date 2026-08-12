@@ -27,8 +27,8 @@ test("production fixed-root loader imports the reviewed provider and stage runne
     sandboxProviderModule: "darwin-sandbox-exec.mjs",
     stageRunnerModule: "wechat-command.mjs",
   });
-  assert.equal(runtime.provider, provider);
-  assert.equal(runtime.stageRunner, stageRunner);
+  assert.equal(runtime.provider.implementationId, provider.implementationId);
+  assert.equal(typeof runtime.stageRunner, typeof stageRunner);
 });
 
 test("Darwin provider runs a detached process group with network denied and only its output root writable", { skip: process.platform !== "darwin" }, async (t) => {
@@ -53,7 +53,7 @@ test("Darwin provider runs a detached process group with network denied and only
   ].join("\n"), { mode: 0o500 });
   const session = provider.createSession({
     file: "/bin/sh", args: [script], cwd: source,
-    env: { PATH: "/usr/bin:/bin", LANG: "C", OUTPUT: output, SOURCE: source, DENIED: denied, PRIVATE: privateFile },
+    env: { PATH: root, LANG: "attacker-controlled", OUTPUT: output, SOURCE: source, DENIED: denied, PRIVATE: privateFile },
     network: { mode: "deny-all", profileId: provider.profileId },
     filesystem: { readOnlyRoots: [source], writableRoots: [output], deniedRoots: [denied], mounts: [] },
     processGroup: { detached: true, terminateOnFailure: true, awaitExit: true },
@@ -70,6 +70,23 @@ test("Darwin provider runs a detached process group with network denied and only
   assert.notEqual((await stat(source)).mode & 0o200, 0);
 });
 
+test("Darwin provider fixed pnpm wrapper can read only its reviewed sibling runtime", { skip: process.platform !== "darwin" }, async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wechat-darwin-pnpm-runtime-")));
+  const source = path.join(root, "source");
+  const output = path.join(root, "output");
+  await Promise.all([mkdir(source), mkdir(output, { mode: 0o700 })]);
+  t.after(async () => { await chmod(source, 0o700).catch(() => {}); await rm(root, { recursive: true, force: true }); });
+  const session = provider.createSession({
+    file: "pnpm", args: ["--version"], cwd: source,
+    env: { PATH: root, LANG: "attacker-controlled" },
+    network: { mode: "deny-all", profileId: provider.profileId },
+    filesystem: { readOnlyRoots: [source], writableRoots: [output], deniedRoots: [], mounts: [] },
+    processGroup: { detached: true, terminateOnFailure: true, awaitExit: true }, implementationId: provider.implementationId,
+  });
+  assert.deepEqual(await session.start(), { exitCode: 0 });
+  await session.wait();
+});
+
 test("Darwin provider maps Candidate output to a private target and exports matching owned evidence", { skip: process.platform !== "darwin" }, async (t) => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wechat-darwin-mount-")));
   const source = path.join(root, "source");
@@ -77,9 +94,15 @@ test("Darwin provider maps Candidate output to a private target and exports matc
   const owned = path.join(root, "owned");
   const mounted = path.join(source, "apps/mp/dist/build/mp-weixin");
   t.after(async () => {
-    for (const directory of [source, path.join(source, "apps"), path.join(source, "apps/mp"), path.join(source, "apps/mp/dist"), path.join(source, "apps/mp/dist/build")]) {
-      await chmod(directory, 0o700).catch(() => {});
+    async function writable(target) {
+      const info = await stat(target).catch(() => null);
+      if (!info) return;
+      if (info.isDirectory()) {
+        await chmod(target, 0o700);
+        for (const entry of await import("node:fs/promises").then(({ readdir }) => readdir(target))) await writable(path.join(target, entry));
+      } else await chmod(target, 0o600);
     }
+    await writable(root);
     await rm(root, { recursive: true, force: true });
   });
   await Promise.all([mkdir(path.dirname(mounted), { recursive: true }), mkdir(output, { mode: 0o700 }), mkdir(owned, { mode: 0o700 })]);
@@ -114,7 +137,7 @@ test("Darwin provider restores its read-only tree and mount when startup validat
   const mounted = path.join(source, "build/output");
   await Promise.all([mkdir(path.dirname(mounted), { recursive: true }), mkdir(output, { mode: 0o700 })]);
   const session = provider.createSession({
-    file: "/bin/true", args: [], cwd: source, env: { PATH: "/usr/bin:/bin" },
+    file: "/usr/bin/true", args: [], cwd: source, env: { PATH: "/usr/bin:/bin" },
     network: { mode: "allow", profileId: provider.profileId },
     filesystem: { readOnlyRoots: [source], writableRoots: [output], deniedRoots: [], mounts: [{ sourcePath: mounted, targetPath: output, mode: "candidate-output" }] },
     processGroup: { detached: true, terminateOnFailure: true, awaitExit: true }, implementationId: provider.implementationId,
@@ -125,15 +148,136 @@ test("Darwin provider restores its read-only tree and mount when startup validat
 });
 
 test("production WeChat stage runner is unavailable until an explicit fixed command is configured", async () => {
-  await assert.rejects(stageRunner({ stage: "upload" }), /not configured|unavailable/i);
+  await assert.rejects(stageRunner({ stage: "upload" }), /not configured|unavailable|frozen command/i);
 });
 
 test("production WeChat stage runner accepts only explicit zero-exit bounded JSON evidence", async () => {
   const command = [process.execPath, "-e", "let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{const v=JSON.parse(input);process.stdout.write(JSON.stringify({authoritative:v.credentials.token==='private'&&v.stage==='readUpload'}))})"];
   const request = {
     stage: "readUpload", credentials: { token: "private" }, evidence: { uploadId: "upload-1" },
-    reviewConfiguration: { category: "Education", commands: { readUpload: command } },
+    frozenCommand: command, reviewedCommand: command, reviewConfiguration: { category: "Education" },
   };
   assert.deepEqual(await stageRunner(request), { authoritative: true });
   await assert.rejects(stageRunner(request, { runCommand: async () => ({ stdout: "{}" }) }), /exit code|completion/i);
+});
+
+test("production WeChat runner classifies read failures as retryable infrastructure and mutations as unknown", async () => {
+  const command = [process.execPath, "command.mjs"];
+  for (const [stage, classification] of [["readUpload", "release_infrastructure"], ["upload", "external_unknown"]]) {
+    const request = {
+      stage, frozenCommandId: stage === "upload" ? "uploadCommand" : "readbackCommand",
+      frozenCommand: command, reviewedCommand: command,
+      credentials: { appId: "wx1fdac5e27c6b5366" }, reviewConfiguration: {},
+    };
+    for (const runCommand of [
+      async () => { const error = new Error("spawn EACCES Authorization: secret"); error.code = "EACCES"; throw error; },
+      async () => ({ stdout: "{}", stderr: "", exitCode: 2 }),
+      async () => ({ stdout: "not-json", stderr: "", exitCode: 0 }),
+    ]) {
+      await assert.rejects(stageRunner(request, { runCommand }), (error) => {
+        assert.equal(error.failureClassification, classification);
+        assert.equal(error.deterministic, false);
+        assert.doesNotMatch(error.message, /Authorization|secret/);
+        return true;
+      });
+    }
+  }
+});
+
+test("production WeChat runner rejects and drains a residual descendant after its leader exits", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wechat-runner-descendant-"));
+  const pidFile = path.join(root, "pid");
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const command = [process.execPath, "-e", [
+    "const {spawn}=require('node:child_process')",
+    "const {writeFileSync}=require('node:fs')",
+    `const child=spawn('/bin/sleep',['60'],{stdio:'ignore'})`,
+    `writeFileSync(${JSON.stringify(pidFile)},String(child.pid))`,
+    "child.unref()",
+    "process.stdout.write('{}')",
+  ].join(";")];
+  await assert.rejects(stageRunner({
+    stage: "readUpload", frozenCommand: command, reviewedCommand: command,
+    credentials: { appId: "wx1fdac5e27c6b5366" }, reviewConfiguration: {},
+  }), /process group|drain|quiescent/i);
+  const descendant = Number(await readFile(pidFile, "utf8"));
+  assert.throws(() => process.kill(descendant, 0), /ESRCH/);
+});
+
+test("Darwin provider wait rejects and terminate drains a residual forked child", { skip: process.platform !== "darwin" }, async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wechat-provider-descendant-")));
+  const source = path.join(root, "source");
+  const output = path.join(root, "output");
+  const pidFile = path.join(output, "pid");
+  await Promise.all([mkdir(source), mkdir(output, { mode: 0o700 })]);
+  t.after(async () => { await chmod(source, 0o700).catch(() => {}); await rm(root, { recursive: true, force: true }); });
+  const session = provider.createSession({
+    file: "/bin/sh", args: ["-c", `(/bin/sleep 60) & printf '%s' $! > '${pidFile}'`], cwd: source,
+    env: { PATH: "/usr/bin:/bin", LANG: "C" },
+    network: { mode: "deny-all", profileId: provider.profileId },
+    filesystem: { readOnlyRoots: [source], writableRoots: [output], deniedRoots: [], mounts: [] },
+    processGroup: { detached: true, terminateOnFailure: true, awaitExit: true }, implementationId: provider.implementationId,
+  });
+  await session.start();
+  const descendant = Number(await readFile(pidFile, "utf8"));
+  await assert.rejects(session.wait(), /process group|drain|quiescent/i);
+  assert.equal((await stat(source)).mode & 0o200, 0, "source stays protected until the whole group drains");
+  await session.terminate();
+  assert.throws(() => process.kill(descendant, 0), /ESRCH/);
+  assert.notEqual((await stat(source)).mode & 0o200, 0, "source is restored only after drain succeeds");
+});
+
+test("Darwin provider export is bounded, readonly, and readFiles returns captured bytes", { skip: process.platform !== "darwin" }, async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wechat-provider-snapshot-")));
+  const source = path.join(root, "source");
+  const output = path.join(root, "output");
+  const owned = path.join(root, "owned");
+  await Promise.all([mkdir(source), mkdir(output, { mode: 0o700 }), mkdir(owned, { mode: 0o700 })]);
+  await writeFile(path.join(output, "app.js"), "before", { mode: 0o600 });
+  t.after(async () => {
+    async function writable(target) {
+      const info = await stat(target).catch(() => null);
+      if (!info) return;
+      if (info.isDirectory()) {
+        await chmod(target, 0o700);
+        for (const entry of await import("node:fs/promises").then(({ readdir }) => readdir(target))) await writable(path.join(target, entry));
+      } else await chmod(target, 0o600);
+    }
+    await writable(root); await rm(root, { recursive: true, force: true });
+  });
+  const session = provider.createSession({
+    file: "/usr/bin/true", args: [], cwd: source, env: { PATH: "/usr/bin:/bin", LANG: "C" },
+    network: { mode: "deny-all", profileId: provider.profileId },
+    filesystem: { readOnlyRoots: [source], writableRoots: [output], deniedRoots: [], mounts: [{ sourcePath: path.join(source, "artifact"), targetPath: output, mode: "candidate-output" }] },
+    processGroup: { detached: true, terminateOnFailure: true, awaitExit: true }, implementationId: provider.implementationId,
+  });
+  await session.start(); await session.wait();
+  const exported = await session.exportArtifact({ ownedArtifactRoot: owned });
+  const publishedFile = path.join(exported.artifactPath, "app.js");
+  assert.equal((await stat(exported.artifactPath)).mode & 0o222, 0);
+  assert.equal((await stat(publishedFile)).mode & 0o222, 0);
+  await chmod(publishedFile, 0o600);
+  await writeFile(publishedFile, "after");
+  assert.equal((await exported.readFiles())[0].content.toString(), "before");
+});
+
+test("Darwin provider surfaces cleanup restoration failure", { skip: process.platform !== "darwin" }, async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wechat-provider-cleanup-")));
+  const source = path.join(root, "source");
+  const output = path.join(root, "output");
+  await Promise.all([mkdir(source), mkdir(output, { mode: 0o700 })]);
+  await writeFile(path.join(source, "file"), "x");
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const session = provider.createSession({
+    file: "/bin/sleep", args: ["0.1"], cwd: source, env: { PATH: "/usr/bin:/bin", LANG: "C" },
+    network: { mode: "deny-all", profileId: provider.profileId },
+    filesystem: { readOnlyRoots: [source], writableRoots: [output], deniedRoots: [], mounts: [] },
+    processGroup: { detached: true, terminateOnFailure: true, awaitExit: true }, implementationId: provider.implementationId,
+  });
+  const started = session.start();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await chmod(source, 0o700);
+  await rm(path.join(source, "file"));
+  await started;
+  await assert.rejects(session.wait(), /restor|cleanup|ENOENT/i);
 });

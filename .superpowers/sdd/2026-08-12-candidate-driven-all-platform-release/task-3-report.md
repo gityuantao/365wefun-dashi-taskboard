@@ -224,3 +224,44 @@ This round supersedes round 3's caller-controlled loader authority and its missi
 
 - `sandbox-exec` is Darwin-specific and deprecated by Apple. The provider therefore exposes a runtime readiness result and fails closed elsewhere; another reviewed provider is required if the deployment platform or future macOS release removes it.
 - The fixed production WeChat runner is an abstract command protocol, as allowed by the Task 3 brief. Production stays fail-closed until every needed stage has an explicit command in the private review configuration and the broader production hold is deliberately cleared.
+
+## Fix round 5/5 — DONE
+
+This final round supersedes all remaining test-authority, nested-process, mutable-command, runtime-path, import-race, cleanup, export, and failure-classification weaknesses described by the breaker.
+
+### Reviewer findings addressed
+
+- **C1 — no production test issuer:** removed every production `testAuthority`, selectable provider/runner parameter, import, and export. The production loader imports only the built-in Darwin provider and WeChat runner. The test runtime is an independent fixture copy with no production brand or issuer. The spawned production E2E now exercises the real fixed loader and real fixed runner on a local read-only echo command; local unit dependencies remain unbranded.
+- **C2 — nested PGID lifecycle:** adapter timeout/abort sends TERM then KILL and boundedly verifies `kill(-pgid, 0)` becomes empty. CLI TERM/INT becomes an AbortSignal carried into provider/runner. Provider and runner kill and drain their exact detached groups; leader-exit tests fork a lingering descendant and prove no survivor. Provider keeps the Candidate protected until the complete group is quiescent and reports bounded drain failures.
+- **C3 — authoritative credential identity:** the credentials descriptor must contain the exact frozen App ID before any runner call. Mismatch messages are sanitized and disclose neither credential fields nor alternate identity values.
+- **C4 — frozen command binding:** adapter maps every stage to its frozen Task 2 command field and sends that exact ID/value to the child. Private review data contains only `commandDefinitions` keyed by the frozen ID; the child rejects any value drift before credential loading or runner access, and the runner repeats exact comparison before spawn.
+- **I1 — fixed runtime boundary:** adapter, CLI request, provider, and runner use `/usr/bin:/bin` rather than the parent/request PATH. Darwin permits only fixed reviewed executables, fixed OS runtime roots, and for packaged pnpm only its exact sibling Node/dependency roots. A real sandbox test passes attacker PATH, proves a private sibling unreadable, and proves the reviewed packaged pnpm wrapper can reach its sibling runtime.
+- **I2 — canonical temporary roots:** every Candidate worktree/output root is resolved before the provider request; macOS `/var` aliases are observed as `/private/var` in tests.
+- **I3 — trusted import:** every trusted directory component must be root/current-user owned and neither group- nor world-writable. Files are opened `O_NOFOLLOW`, read and re-statted on the same FD, matched to the current pathname inode, hashed, and imported from the verified content-addressed bytes. Production module names are fixed constants and cannot be caller-selected.
+- **I4 — restoration is authoritative:** permission and mount cleanup attempts are aggregated; any restoration failure becomes session failure, and `restored` is set only after all steps succeed. Restoration occurs only after full process-group quiescence. Tests cover startup cleanup, partial restoration failure, residual group ordering, and mount removal.
+- **I5 — bounded immutable export:** provider enforces file-count, per-file, and aggregate limits before and while same-FD chunked copy/read. It detects inode/size changes, rejects symlinks/non-regular entries, publishes mode `0550`/`0440`, and returns captured buffers rather than reopening mutable paths. Tests cover bounded metadata, read-only publication, post-publication mutation, and captured-byte stability.
+- **I6 — typed WeChat failures:** spawn/timeout/nonzero/malformed read failures are non-deterministic `release_infrastructure`; mutation uncertainty is non-deterministic `external_unknown`; only command/input validation is deterministic. Final output remains bounded and credential-redacted.
+
+### TDD evidence
+
+- Initial focused RED cases failed for production authority removal, command drift ordering, authoritative credential App ID, fixed PATH/command binding, canonical temp roots, typed runner failures, and nested descendant survival.
+- Provider RED cases then failed for residual child drain, restore-before-quiescence, mutable/reopened export, cleanup restoration swallowing, and runner leader-exit descendants.
+- Each case was made GREEN before the next batch. The final target run is:
+  - `node --test test/orchestration/wechat-command-adapter.test.mjs test/orchestration/mini-program-release-script.test.mjs test/orchestration/mini-program-runtime-provider.test.mjs`
+  - Exit 0; **66 passed, 0 failed**.
+- Fresh provider/runner run after the final chunked-streaming change: **13 passed, 0 failed**.
+- Syntax checks for all ten changed `.mjs` files: exit 0. `git diff --check -- ':!.data'`: exit 0. Production source scan found no Task 3 `testAuthority`, selectable provider/runner module input, or parent PATH dependency.
+
+### Wide related-suite causality
+
+- `node --test` over mini-program registry, version aggregator, production runtime wiring, release security, release persistence, and release coordinator: **92 tests; 81 passed, 11 failed**.
+- Exact existing failures:
+  - `mini-program target uses its dedicated adapter and never the Web/API adapter`: D1 platform-stage CHECK fixture drift.
+  - `release and readback failures stay safe in coordinator logs and ClickUp comments`, payloads 1–8: fixture rejected before freeze because production target/runtime readiness was not configured.
+  - `published cleanup resumes from the frozen manifest despite invalid runtime and registry drift`: existing runtime-wiring published-cleanup status mismatch.
+- These 11 are the same broad-suite baseline categories/count recorded before this round and do not import/invoke the Task 3 loader/provider/runner path; target Task 3 tests are independently 66/66 GREEN.
+
+### Side-effect proof and concerns
+
+- No `.data` path was read, modified, staged, removed, or included in commands. No production WeChat mutation, SSH/DB, Apple, ClickUp, dependency install, or other external write ran. Darwin network probing used only a deny-all sandbox assertion; the spawned production E2E used a local explicit read-only echo command.
+- `sandbox-exec` remains Darwin-specific and Apple-deprecated. Readiness is therefore fail-closed; deployment on another platform or after removal requires a separately reviewed fixed provider, not a caller-selectable fallback.
