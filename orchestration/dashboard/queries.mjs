@@ -1,4 +1,5 @@
 import { TASK_STATES } from "../domain/task-state.mjs";
+import { activeVersionTasks, loadReleasePlatformEvidence } from "../release/release-scope.mjs";
 import { compareVersions } from "../release/version-utils.mjs";
 
 const ACTIVITY_LABELS = {
@@ -37,7 +38,8 @@ function parseSnapshot(row) {
 
 async function loadTasks(db) {
   const rows = (await db.prepare(`
-    SELECT s.snapshot, s.status AS snapshot_status, a.state AS aggregate_state
+    SELECT s.snapshot, s.status AS snapshot_status, a.state AS aggregate_state,
+      a.aggregate_version AS aggregate_version
     FROM clickup_snapshots s
     LEFT JOIN orchestration_aggregates a
       ON a.aggregate_type = 'task' AND a.aggregate_id = s.object_id
@@ -50,6 +52,7 @@ async function loadTasks(db) {
       return {
         ...parseSnapshot(row),
         status: state === "accepting" ? "developing" : state,
+        aggregateVersion: row.aggregate_version ?? null,
       };
     })
     .filter((task) => task?.id);
@@ -170,11 +173,13 @@ async function loadActivity(db, limit, tasks, versions) {
 }
 
 export async function buildDashboard(db, { versionListUrl } = {}) {
-  const [tasks, versions, openTaskBlockers] = await Promise.all([
+  const [tasks, versions, openTaskBlockers, manifestRows] = await Promise.all([
     loadTasks(db),
     loadVersions(db),
     loadOpenTaskBlockers(db),
+    db.prepare("SELECT version_id, manifest FROM release_manifests").all(),
   ]);
+  const manifests = new Map(manifestRows.results.map((row) => [row.version_id, JSON.parse(row.manifest)]));
   const pipeline = Object.fromEntries(
     TASK_STATES.filter((state) => state !== "accepting").map((state) => [state, 0]),
   );
@@ -185,9 +190,9 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
   const versionProgress = versions
     .filter((version) => version.status !== "published" && version.status !== "canceled")
     .map((version) => {
-      const tasksInVersion = tasks.filter(
-        (task) => task.targetVersion === (version.name ?? version.id),
-      );
+      const tasksInVersion = activeVersionTasks({
+        tasks, versionName: version.name ?? version.id, manifest: manifests.get(version.id) ?? null,
+      });
       const readyCount = tasksInVersion.filter(
         (task) => task.status === "ready_for_release",
       ).length;
@@ -333,11 +338,11 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
   if (!snapshotRow) return null;
   const snapshot = JSON.parse(snapshotRow.snapshot);
   const status = aggregateRow?.state ?? snapshotRow.status;
-  const matchingTasks = tasks.filter(
-    (task) => task.targetVersion === (snapshot.name ?? versionId),
-  );
-  const byTaskId = new Map(tasks.map((task) => [task.id, task]));
   const storedManifest = manifestRow ? JSON.parse(manifestRow.manifest) : null;
+  const matchingTasks = activeVersionTasks({
+    tasks, versionName: snapshot.name ?? versionId, manifest: storedManifest,
+  });
+  const byTaskId = new Map(tasks.map((task) => [task.id, task]));
   const safePlan = storedManifest?.productionTargetPlan ? {
     schemaVersion: storedManifest.productionTargetPlan.schemaVersion,
     taskPlatforms: storedManifest.productionTargetPlan.taskPlatforms,
@@ -386,8 +391,10 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
   const blockedTasks = versionTasks.filter((task) => openTaskBlockers.has(task.id));
   if (blockedTasks.length > 0) gaps.push(`任务存在开放阻塞项：${blockedTasks.map((task) => task.id).join("、")}`);
   if (["published", "canceled", "releasing"].includes(status)) gaps.push("当前版本状态不可发起发布");
-  const platformScope = storedManifest?.productionTargetPlan?.taskPlatforms
-    ?? matchingTasks.map((task) => ({ taskId: task.id, platforms: task.platforms }));
+  const resolvedTaskPlatforms = storedManifest?.productionTargetPlan?.taskPlatforms
+    ? storedManifest.productionTargetPlan.taskPlatforms.map((item) => ({ ...item, source: "frozen_manifest" }))
+    : await loadReleasePlatformEvidence(db, matchingTasks);
+  const platformScope = resolvedTaskPlatforms;
   const taskPlatforms = platformScope.flatMap((task) => Array.isArray(task.platforms) ? task.platforms : []);
   const missingPlatformTasks = platformScope.filter((task) => !Array.isArray(task.platforms) || task.platforms.length === 0);
   if (missingPlatformTasks.length > 0) gaps.push(`任务缺少影响平台：${missingPlatformTasks.map((task) => task.taskId).join("、")}`);
@@ -453,6 +460,7 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
     tasks: versionTasks,
     manifest,
     releaseReadiness: { ready: releasable && gaps.length === 0, gaps },
+    taskPlatforms: resolvedTaskPlatforms.map(({ taskId, platforms, source }) => ({ taskId, platforms, source })),
     releaseTargets,
   };
 }

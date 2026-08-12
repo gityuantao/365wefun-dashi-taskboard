@@ -123,3 +123,47 @@ export function resolveReleasePlatformEvidence({
     taskId: task.id, platforms: [], source: "missing", aggregateVersion: aggregate.version,
   });
 }
+
+function parsed(value) {
+  if (value === null || value === undefined) return null;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+export async function loadReleasePlatformEvidence(db, tasks) {
+  if (!Array.isArray(tasks) || tasks.length === 0) return [];
+  const ids = new Set(tasks.map((task) => task.id));
+  const rows = (await db.prepare(`
+    SELECT id, job_type, payload, status, result, created_at, completed_at
+    FROM runner_jobs
+    WHERE job_type IN ('develop', 'analyze', 'stage_task', 'accept')
+      AND status = 'completed'
+    ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC
+  `).all()).results;
+  const byTask = new Map(tasks.map((task) => [task.id, {
+    developJobs: [], analyzeJobs: [], stageJobs: [], acceptJobs: [],
+  }]));
+  for (const row of rows) {
+    const payload = parsed(row.payload) ?? {};
+    const resultValue = parsed(row.result) ?? {};
+    const taskId = payload.taskId ?? resultValue.taskId ?? row.id.split("-")[0];
+    if (!ids.has(taskId)) continue;
+    const job = { ...row, payload, result: resultValue };
+    const bucket = byTask.get(taskId);
+    if (row.job_type === "develop") bucket.developJobs.push(job);
+    else if (row.job_type === "analyze") bucket.analyzeJobs.push(job);
+    else if (row.job_type === "stage_task") bucket.stageJobs.push(job);
+    else if (row.job_type === "accept") bucket.acceptJobs.push(job);
+  }
+  return tasks.map((task) => {
+    const jobs = byTask.get(task.id);
+    const acceptedCommitSha = jobs.acceptJobs.find((job) => (
+      job.result?.result === "accepted" && typeof job.result?.commitSha === "string"
+    ))?.result.commitSha ?? null;
+    return resolveReleasePlatformEvidence({
+      task,
+      aggregate: { version: task.aggregateVersion ?? null },
+      acceptedCommitSha,
+      ...jobs,
+    });
+  });
+}

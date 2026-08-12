@@ -318,3 +318,39 @@ test("buildVersionDetail keeps manifest tasks even when the target version diver
   assert.equal(detail.tasks.length, 1);
   assert.equal(detail.tasks[0].id, "task-1");
 });
+
+test("dashboard card and detail exclude canceled tasks before a Manifest is frozen", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare("DELETE FROM release_manifests WHERE version_id = 'version-1'").run();
+  await harness.db.prepare(`INSERT INTO clickup_snapshots
+    (object_type,object_id,list_id,status,snapshot,fields_hash,read_at)
+    VALUES ('task','task-canceled','list-task','canceled',?,'cancel-hash',?)`)
+    .bind(JSON.stringify({ id: "task-canceled", name: "取消任务", status: "canceled", targetVersion: "1.0.1", platforms: ["web"] }), DASHBOARD_NOW).run();
+
+  const dashboard = await buildDashboard(harness.db);
+  const card = dashboard.versions.find((version) => version.id === "version-1");
+  assert.equal(card.taskCount, 1);
+  assert.equal(card.readyCount, 1);
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.deepEqual(detail.tasks.map(({ id }) => id), ["task-1"]);
+});
+
+test("version detail recovers canonical platforms from structured jobs and reports mini-program", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare("DELETE FROM release_manifests WHERE version_id = 'version-1'").run();
+  const row = await harness.db.prepare("SELECT snapshot FROM clickup_snapshots WHERE object_id = 'task-1'").first();
+  const snapshot = JSON.parse(row.snapshot);
+  snapshot.platforms = [];
+  await harness.db.prepare("UPDATE clickup_snapshots SET snapshot = ? WHERE object_id = 'task-1'").bind(JSON.stringify(snapshot)).run();
+  await harness.db.prepare("UPDATE runner_jobs SET result = ? WHERE id = 'task-1-develop-1'")
+    .bind(JSON.stringify({ status: "completed", platforms: ["服务端", "小程序"], changeSummary: "完成登录页" })).run();
+
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.deepEqual(detail.taskPlatforms, [{ taskId: "task-1", platforms: ["api", "mini_program"], source: "develop_job" }]);
+  assert.ok(detail.releaseReadiness.gaps.some((gap) => gap.includes("mini_program")));
+  assert.equal(detail.releaseReadiness.gaps.some((gap) => gap.includes("任务缺少影响平台")), false);
+});

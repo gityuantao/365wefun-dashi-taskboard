@@ -1,6 +1,10 @@
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { loadLastConfirmed } from "../clickup/snapshot.mjs";
 import { validateProductionTargetPlan } from "./production-target-plan.mjs";
+import {
+  activeVersionTasks,
+  loadReleasePlatformEvidence,
+} from "./release-scope.mjs";
 
 export async function loadAllTaskSnapshots(db) {
   const rows = await db
@@ -12,9 +16,17 @@ export async function loadAllTaskSnapshots(db) {
 export async function checkVersionGate({ db, versionId }) {
   const versionSnapshot = await loadLastConfirmed(db, "version", versionId);
   const matchKey = versionSnapshot?.name ?? versionId;
-  const tasks = (await loadAllTaskSnapshots(db)).filter(
-    (task) => task.targetVersion === matchKey,
-  );
+  const manifestRow = await db.prepare("SELECT manifest FROM release_manifests WHERE version_id = ?").bind(versionId).first();
+  const manifest = manifestRow?.manifest ? JSON.parse(manifestRow.manifest) : null;
+  const allTasks = await loadAllTaskSnapshots(db);
+  const aggregates = await db.prepare("SELECT aggregate_id, aggregate_version, state FROM orchestration_aggregates WHERE aggregate_type = 'task'").all();
+  const aggregateById = new Map(aggregates.results.map((row) => [row.aggregate_id, row]));
+  for (const task of allTasks) {
+    const aggregate = aggregateById.get(task.id);
+    task.aggregateVersion = aggregate?.aggregate_version ?? null;
+    task.status = task.status ?? aggregate?.state ?? null;
+  }
+  const tasks = activeVersionTasks({ tasks: allTasks, versionName: matchKey, manifest });
   const reasons = [];
   if (tasks.length === 0) {
     reasons.push("version has no tasks");
@@ -38,10 +50,17 @@ export async function checkVersionGate({ db, versionId }) {
   if (blockedTasks.length > 0) {
     reasons.push(`blocked tasks: ${blockedTasks.map((task) => task.id).join(", ")}`);
   }
+  const taskPlatforms = await loadReleasePlatformEvidence(db, tasks);
+  const missing = taskPlatforms.filter((item) => item.platforms.length === 0);
+  if (missing.length > 0) reasons.push(`tasks missing release platforms: ${missing.map((item) => item.taskId).join(", ")}`);
+  const supported = new Set(["web", "api", "ios"]);
+  const unsupported = [...new Set(taskPlatforms.flatMap((item) => item.platforms).filter((platform) => !supported.has(platform)))];
+  if (unsupported.length > 0) reasons.push(`unsupported production platforms: ${unsupported.join(", ")}`);
   return {
     pass: reasons.length === 0,
     reasons,
     taskIds: tasks.map((task) => task.id).sort(),
+    taskPlatforms: taskPlatforms.map(({ taskId, platforms, source }) => ({ taskId, platforms, source })),
   };
 }
 

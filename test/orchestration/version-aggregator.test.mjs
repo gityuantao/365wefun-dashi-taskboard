@@ -86,7 +86,7 @@ async function seedActiveVersion(harness, versionId = "version-1") {
   });
 }
 
-async function seedTaskSnapshot(harness, taskId, status, targetVersion) {
+async function seedTaskSnapshot(harness, taskId, status, targetVersion, platforms = ["web"]) {
   await saveSnapshot(harness.db, {
     type: "task",
     snapshot: {
@@ -97,6 +97,7 @@ async function seedTaskSnapshot(harness, taskId, status, targetVersion) {
       operationRequest: null,
       operationRequestId: null,
       targetVersion,
+      platforms,
       assignee: null,
       updatedAt: NOW,
       fieldsHash: "hash",
@@ -123,6 +124,39 @@ test("version gate fails when a task is not ready for release", async (t) => {
   const gate = await checkVersionGate({ db: harness.db, versionId: "version-1" });
   assert.equal(gate.pass, false);
   assert.ok(gate.reasons.some((reason) => reason.includes("task-a")));
+});
+
+test("version gate excludes canceled tasks before the Manifest is frozen", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedActiveVersion(harness);
+  await seedTaskSnapshot(harness, "task-ready", "ready_for_release", "version-1");
+  await seedTaskSnapshot(harness, "task-canceled", "canceled", "version-1");
+
+  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1" });
+  assert.equal(gate.pass, true);
+  assert.deepEqual(gate.taskIds, ["task-ready"]);
+});
+
+test("version gate resolves structured platform evidence and reports unsupported mini-program", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedActiveVersion(harness);
+  await seedTaskSnapshot(harness, "task-a", "ready_for_release", "version-1");
+  const row = await harness.db.prepare("SELECT snapshot FROM clickup_snapshots WHERE object_id = 'task-a'").first();
+  const snapshot = JSON.parse(row.snapshot);
+  snapshot.platforms = [];
+  await harness.db.prepare("UPDATE clickup_snapshots SET snapshot = ? WHERE object_id = 'task-a'").bind(JSON.stringify(snapshot)).run();
+  await harness.db.prepare(`INSERT INTO runner_jobs
+    (id,command_id,job_type,payload,payload_hash,status,result,created_at,completed_at)
+    VALUES ('task-a-develop-1','development-task-a-develop-1','develop',?,'hash','completed',?,?,?)`)
+    .bind(JSON.stringify({ taskId: "task-a" }), JSON.stringify({ status: "completed", platforms: ["服务端", "小程序"] }), NOW, NOW).run();
+
+  const gate = await checkVersionGate({ db: harness.db, versionId: "version-1" });
+  assert.equal(gate.pass, false);
+  assert.deepEqual(gate.taskIds, ["task-a"]);
+  assert.deepEqual(gate.taskPlatforms, [{ taskId: "task-a", platforms: ["api", "mini_program"], source: "develop_job" }]);
+  assert.ok(gate.reasons.some((reason) => reason.includes("mini_program")));
 });
 
 test("version gate fails when a task is blocked", async (t) => {
