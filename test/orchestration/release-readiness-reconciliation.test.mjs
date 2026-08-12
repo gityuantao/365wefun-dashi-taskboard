@@ -58,3 +58,28 @@ test("exact-version blocker apply is idempotent and changes no unrelated release
   assert.equal((await harness.db.prepare("SELECT COUNT(*) count FROM production_release_attempts").first()).count, 0);
   assert.equal((await harness.db.prepare("SELECT COUNT(*) count FROM runner_jobs").first()).count, 0);
 });
+
+test("an explicit authoritative refresh replaces stale task snapshots before readiness calculation", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seed(harness.db);
+  const authoritativeTasks = [{
+    id: "ready", listId: "task-list", name: "ready", status: "ready_for_release",
+    targetVersion: "v1.0.3", platforms: ["web", "ios"], updatedAt: NOW, fieldsHash: "fresh",
+  }];
+
+  const result = await reconcileReleaseReadiness({
+    db: harness.db,
+    versionId: "v1",
+    runtimeBoundary,
+    authoritativeTasks,
+    now: NOW,
+  });
+
+  assert.deepEqual(result.taskPlatforms.find(({ taskId }) => taskId === "ready").platforms, ["web", "ios"]);
+  const stored = await harness.db.prepare(
+    "SELECT snapshot,fields_hash FROM clickup_snapshots WHERE object_type='task' AND object_id='ready'",
+  ).first();
+  assert.deepEqual(JSON.parse(stored.snapshot).platforms, ["web", "ios"]);
+  assert.equal(stored.fields_hash, "fresh");
+});

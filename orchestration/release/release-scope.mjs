@@ -79,6 +79,23 @@ export function resolveReleasePlatformEvidence({
     });
   }
 
+  const staged = newestCurrent(stageJobs, { ...context, requireCommit: true }, (job) => {
+    const commitSha = job.payload?.commitSha ?? job.payload?.acceptedCommitSha;
+    if (!acceptedCommitSha || commitSha !== acceptedCommitSha) return [];
+    return job.payload?.platforms;
+  });
+  if (staged) {
+    return result({
+      taskId: task.id,
+      platforms: staged.platforms,
+      source: "staging_job",
+      evidenceId: staged.job.id,
+      commitSha: staged.job.payload?.commitSha ?? staged.job.payload?.acceptedCommitSha ?? null,
+      aggregateVersion: aggregate.version,
+      androidDelivery: staged.job.payload?.androidDelivery ?? null,
+    });
+  }
+
   const developed = newestCurrent(developJobs, { ...context, requireCommit: Boolean(acceptedCommitSha) }, (job) => job.result?.platforms);
   if (developed) {
     return result({
@@ -101,23 +118,6 @@ export function resolveReleasePlatformEvidence({
       evidenceId: analyzed.job.id,
       aggregateVersion: aggregate.version,
       androidDelivery: analyzed.job.result?.summary?.androidDelivery ?? null,
-    });
-  }
-
-  const staged = newestCurrent(stageJobs, { ...context, requireCommit: true }, (job) => {
-    const commitSha = job.payload?.commitSha ?? job.payload?.acceptedCommitSha;
-    if (!acceptedCommitSha || commitSha !== acceptedCommitSha) return [];
-    return job.payload?.platforms;
-  });
-  if (staged) {
-    return result({
-      taskId: task.id,
-      platforms: staged.platforms,
-      source: "staging_job",
-      evidenceId: staged.job.id,
-      commitSha: staged.job.payload?.commitSha ?? staged.job.payload?.acceptedCommitSha ?? null,
-      aggregateVersion: aggregate.version,
-      androidDelivery: staged.job.payload?.androidDelivery ?? null,
     });
   }
 

@@ -354,3 +354,17 @@ test("version detail recovers canonical platforms from structured jobs and repor
   assert.ok(detail.releaseReadiness.gaps.some((gap) => gap.includes("mini_program")));
   assert.equal(detail.releaseReadiness.gaps.some((gap) => gap.includes("任务缺少影响平台")), false);
 });
+
+test("version detail reports internal workflow state drift behind a ready ClickUp snapshot", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare(
+    "UPDATE orchestration_aggregates SET state='acceptance_rejected' WHERE aggregate_type='task' AND aggregate_id='task-1'",
+  ).run();
+
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.ok(detail.releaseReadiness.gaps.some((gap) => (
+    gap.includes("内部流程尚未就绪") && gap.includes("task-1(acceptance_rejected)")
+  )));
+});

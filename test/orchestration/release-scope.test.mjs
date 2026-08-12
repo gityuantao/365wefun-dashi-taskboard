@@ -93,3 +93,22 @@ test("accepted commit lineage selects an earlier development generation after la
   assert.equal(result.source, "develop_job");
   assert.equal(result.evidenceId, "dev-current");
 });
+
+test("successful staging evidence for the accepted commit overrides broader development inference", () => {
+  const accepted = "92e071495bde1971c17f4a98fa6a0caec70756b3";
+  const resolved = resolveReleasePlatformEvidence({
+    task: task("86d40f2by"), aggregate: { version: 17 }, acceptedCommitSha: accepted,
+    developJobs: [{
+      id: "develop-15", status: "completed", payload: { taskId: "86d40f2by" },
+      result: { commitSha: accepted, platforms: ["ios", "android", "web", "mini-program"] },
+    }],
+    stageJobs: [{
+      id: "stage-17", status: "completed",
+      payload: { taskId: "86d40f2by", commitSha: accepted, platforms: ["ios"] },
+    }],
+  });
+
+  assert.equal(resolved.source, "staging_job");
+  assert.equal(resolved.evidenceId, "stage-17");
+  assert.deepEqual(resolved.platforms, ["ios"]);
+});

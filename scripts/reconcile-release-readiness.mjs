@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
 
 import { resolveSatisfiedReworkBlockers } from "../orchestration/application/blocker-reconciliation.mjs";
+import { createClickUpClient } from "../orchestration/clickup/client.mjs";
+import { loadClickUpConfig } from "../orchestration/clickup/config-registry.mjs";
+import { normalizeTask } from "../orchestration/clickup/snapshot.mjs";
+import { saveSnapshot } from "../orchestration/clickup/snapshot.mjs";
 import { buildVersionDetail } from "../orchestration/dashboard/queries.mjs";
 import { createProductionRuntime } from "../orchestration/release/production-runtime.mjs";
 
@@ -21,6 +25,7 @@ export async function reconcileReleaseReadiness({
   db,
   versionId,
   runtimeBoundary,
+  authoritativeTasks = null,
   applyBlockers = false,
   now = new Date().toISOString(),
 }) {
@@ -28,6 +33,10 @@ export async function reconcileReleaseReadiness({
     WHERE object_type='version' AND object_id=?`).bind(versionId).first();
   if (!version) throw new Error(`version not found: ${versionId}`);
   const versionSnapshot = JSON.parse(version.snapshot);
+  for (const snapshot of authoritativeTasks ?? []) {
+    if (snapshot.targetVersion !== (versionSnapshot.name ?? versionId)) continue;
+    await saveSnapshot(db, { type: "task", snapshot, readAt: now });
+  }
   const taskRows = (await db.prepare("SELECT snapshot,status FROM clickup_snapshots WHERE object_type='task'").all()).results;
   const matching = taskRows.map((row) => ({ ...JSON.parse(row.snapshot), status: row.status }))
     .filter((task) => task.targetVersion === (versionSnapshot.name ?? versionId));
@@ -63,6 +72,7 @@ export async function reconcileReleaseReadiness({
 async function main() {
   const args = process.argv.slice(2);
   const applyBlockers = args.includes("--apply-blockers");
+  const refreshClickUp = args.includes("--refresh-clickup");
   const versionIndex = args.indexOf("--version-id");
   const versionId = versionIndex >= 0 ? args[versionIndex + 1] : null;
   if (!versionId) throw new Error("--version-id is required");
@@ -88,7 +98,31 @@ async function main() {
   try {
     await miniflare.ready;
     const db = await miniflare.getD1Database("DB");
-    const result = await reconcileReleaseReadiness({ db, versionId, runtimeBoundary, applyBlockers });
+    let authoritativeTasks = null;
+    if (refreshClickUp) {
+      const tokenPath = path.isAbsolute(runtime.tokenPath)
+        ? runtime.tokenPath : path.join(PROJECT_ROOT, runtime.tokenPath);
+      const configPath = path.isAbsolute(runtime.clickupConfigPath)
+        ? runtime.clickupConfigPath : path.join(PROJECT_ROOT, runtime.clickupConfigPath);
+      const config = loadClickUpConfig(JSON.parse(readFileSync(configPath, "utf8")));
+      const listKey = runtime.listSet === "production" ? "task" : "taskSandbox";
+      const client = createClickUpClient({ token: readFileSync(tokenPath, "utf8").trim() });
+      const versionRow = await db.prepare(
+        "SELECT snapshot FROM clickup_snapshots WHERE object_type='version' AND object_id=?",
+      ).bind(versionId).first();
+      if (!versionRow) throw new Error(`version not found: ${versionId}`);
+      const versionName = JSON.parse(versionRow.snapshot).name ?? versionId;
+      const storedTasks = (await db.prepare(
+        "SELECT object_id,snapshot FROM clickup_snapshots WHERE object_type='task'",
+      ).all()).results.filter((row) => JSON.parse(row.snapshot).targetVersion === versionName);
+      authoritativeTasks = [];
+      for (const row of storedTasks) {
+        authoritativeTasks.push(normalizeTask(await client.getTask(row.object_id), config, listKey));
+      }
+    }
+    const result = await reconcileReleaseReadiness({
+      db, versionId, runtimeBoundary, authoritativeTasks, applyBlockers,
+    });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } finally {
     await miniflare.dispose();

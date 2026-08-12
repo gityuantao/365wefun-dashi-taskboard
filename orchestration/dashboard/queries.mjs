@@ -52,6 +52,7 @@ async function loadTasks(db) {
       return {
         ...parseSnapshot(row),
         status: state === "accepting" ? "developing" : state,
+        aggregateState: row.aggregate_state ?? null,
         aggregateVersion: row.aggregate_version ?? null,
       };
     })
@@ -387,6 +388,14 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
   if (versionTasks.length === 0) gaps.push("版本内至少需要一个任务");
   if (missingManifestTaskIds.length > 0) gaps.push(`Manifest 任务快照缺失：${missingManifestTaskIds.join("、")}`);
   if (versionTasks.some((task) => !task.ready)) gaps.push("版本任务必须全部处于待发布");
+  const workflowDrift = matchingTasks.filter((task) => (
+    task.status === "ready_for_release"
+    && task.aggregateState !== null
+    && task.aggregateState !== "ready_for_release"
+  ));
+  if (workflowDrift.length > 0) {
+    gaps.push(`任务内部流程尚未就绪：${workflowDrift.map((task) => `${task.id}(${task.aggregateState})`).join("、")}`);
+  }
   if (snapshot.blocked === true) gaps.push("版本存在开放阻塞项");
   const blockedTasks = versionTasks.filter((task) => openTaskBlockers.has(task.id));
   if (blockedTasks.length > 0) gaps.push(`任务存在开放阻塞项：${blockedTasks.map((task) => task.id).join("、")}`);
