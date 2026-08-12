@@ -253,7 +253,7 @@ const dashboardServer = await startDashboardServer({
     secretPath: DEFAULT_ORCHESTRATION_MUTATION_SECRET_PATH,
   }),
   productionReadiness: () => productionRuntime.probeReadiness(),
-  productionTargetApps: productionRuntime.apps,
+  productionTargetApps: productionRuntime.configuredApps,
 });
 log(`dashboard listening on http://127.0.0.1:${dashboardServer.port}`);
 

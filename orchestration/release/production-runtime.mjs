@@ -105,6 +105,24 @@ export function createProductionRuntime({
   pathExists = existsSync,
 } = {}) {
   const readiness = validateProductionRuntime(runtime, { projectRoot, pathExists });
+  let configuredApps = Object.freeze([]);
+  try {
+    configuredApps = Object.freeze(loadIosApps(runtime?.iosApps).map((app) => Object.freeze({
+      id: app.id,
+      name: app.name,
+      enabled: app.enabled,
+      appStoreAppId: app.appStoreAppId,
+      scheme: app.scheme,
+      testScheme: app.testScheme,
+      testTarget: app.testTarget,
+      bundleId: app.bundleId,
+      testFlightGroup: app.testFlightGroup,
+      buildNumberSource: app.buildNumberSource,
+      releaseMode: app.releaseMode,
+    })));
+  } catch {
+    configuredApps = Object.freeze([]);
+  }
   const apps = readiness.ready ? loadIosApps(runtime.iosApps) : Object.freeze([]);
   let loaded = null;
 
@@ -116,6 +134,7 @@ export function createProductionRuntime({
   const boundary = {
     readiness,
     apps,
+    configuredApps,
     async loadAdapters() {
       if (!readiness.ready) throw unavailable(new Error(readiness.error));
       if (loaded) return loaded;

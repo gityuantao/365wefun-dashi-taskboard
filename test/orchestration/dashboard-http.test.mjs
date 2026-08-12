@@ -273,6 +273,28 @@ test("dashboard exposes production readiness and rejects publish before enqueue 
   assert.equal(row.count, 0);
 });
 
+test("version detail previews configured iOS Apps while runtime remains held and not executable", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare("DELETE FROM release_manifests WHERE version_id='version-1'").run();
+  const row = await harness.db.prepare("SELECT snapshot FROM clickup_snapshots WHERE object_id='task-1'").first();
+  const task = JSON.parse(row.snapshot);
+  task.platforms = ["ios"];
+  await harness.db.prepare("UPDATE clickup_snapshots SET snapshot=? WHERE object_id='task-1'").bind(JSON.stringify(task)).run();
+  const server = await startDashboardServer({
+    db: harness.db, port: 0,
+    productionReadiness: { ready: false, held: true, error: "productionConfigPath does not exist" },
+    productionTargetApps: [{ id: "au", name: "AU", enabled: true, appStoreAppId: "1", scheme: "AU", bundleId: "example.au" }],
+  });
+  t.after(() => server.close());
+  const response = await fetch(`http://127.0.0.1:${server.port}/api/orchestration/dashboard/versions/version-1`);
+  const detail = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(detail.releaseTargets[0].appId, "au");
+  assert.equal(detail.releaseReadiness.gaps.some((gap) => gap.includes("iOS 生产目标注册表为空")), false);
+});
+
 test("publish re-probes lazy adapter factories before enqueueing ClickUp releasing", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

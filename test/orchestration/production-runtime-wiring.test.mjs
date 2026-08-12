@@ -86,6 +86,35 @@ test("held runtime reports both the exact configuration gap and the active hold"
   assert.equal(imported, 0);
 });
 
+test("held or descriptor-missing runtime exposes safe configured App previews but no execution Apps", async () => {
+  let imported = 0;
+  const runtime = createProductionRuntime({
+    runtime: { ...BASE_RUNTIME, productionReleaseHold: true },
+    projectRoot: "/repo",
+    pathExists: (candidate) => candidate !== "/private/production.json",
+    importModule: async () => { imported += 1; },
+  });
+
+  assert.equal(runtime.readiness.ready, false);
+  assert.equal(runtime.readiness.held, true);
+  assert.deepEqual(runtime.apps, []);
+  assert.deepEqual(runtime.configuredApps.map(({ id, name, appStoreAppId, scheme, bundleId }) => ({ id, name, appStoreAppId, scheme, bundleId })), [{
+    id: "au", name: "AU", appStoreAppId: "1", scheme: "AU", bundleId: "example.au",
+  }]);
+  assert.equal(JSON.stringify(runtime.configuredApps).includes("review/au"), false);
+  assert.equal(imported, 0);
+});
+
+test("invalid iOS registry exposes no preview and preserves the exact registry readiness error", () => {
+  const runtime = createProductionRuntime({
+    runtime: { ...BASE_RUNTIME, productionReleaseHold: true, iosApps: [{ ...BASE_RUNTIME.iosApps[0], bundleId: "" }] },
+    projectRoot: "/repo", pathExists: () => true,
+  });
+  assert.deepEqual(runtime.configuredApps, []);
+  assert.equal(runtime.readiness.ready, false);
+  assert.match(runtime.readiness.error, /bundleId/);
+});
+
 test("runtime validation requires explicit non-secret production commands, paths, URLs, timeouts, and lease bounds", () => {
   assert.deepEqual(validateProductionRuntime(BASE_RUNTIME), { ready: true, error: null });
   for (const [field, value] of [
