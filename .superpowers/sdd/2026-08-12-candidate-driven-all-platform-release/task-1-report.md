@@ -52,7 +52,7 @@ Summary: 75 tests passed, 0 failed, exit code 0. This test suite uses temporary 
 
 ## Commit
 
-`e53f3dc788e69c04692ea8f13af61c2c720dbccc` (this report update is amended into the same commit).
+Implementation commit: `f511869d39e96de6967f7a93b6086128769a41d5` (`feat: derive release eligibility from candidate`).
 
 ## Concerns
 
