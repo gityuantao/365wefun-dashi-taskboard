@@ -101,3 +101,47 @@ Pending commit SHA at report append time; supplied in the follow-up commit.
 
 - Accepted PR change-scope data is accepted through `resolveReleasePlatformEvidence` as explicit audited input. The current runner-job schema does not yet persist exact changed paths, so a later schema/runner task should populate that input from accepted PR diffs rather than only platform summaries.
 - `.data` remains untracked and untouched.
+
+---
+
+## Fix round 2/5 — remaining release-boundary findings
+
+Status: DONE
+
+### RED evidence
+
+- `node --test test/orchestration/production-runtime-wiring.test.mjs`
+  - Observed before implementation: `configuredReleaseTargets` was not exported; the runtime had no structured target readiness boundary.
+- `node --test test/orchestration/release-scope.test.mjs test/orchestration/candidate-scope.test.mjs`
+  - Observed while adding persisted accepted-PR evidence: a Worker import rejected `node:child_process` from the Candidate classifier. The path classifier was separated into a pure module; tests then established accepted-commit mismatch failure and exact changed-path classification.
+- `node --test test/orchestration/production-release-persistence.test.mjs`
+  - Observed: `CHECK constraint failed: platform IN ('web', 'api', 'ios')` for a terminal mini-program success row. A forward-only `0014` migration makes the existing persisted-target table accept the immutable mini-program target.
+- `node --test test/orchestration/dashboard.test.mjs test/orchestration/dashboard-http.test.mjs`
+  - Observed after tightening the default runtime input: four legacy direct-query cases failed because they relied on an implicit hard-coded ready platform set. Tests now inject explicit structured runtime readiness; the query default is fail-closed.
+
+### GREEN verification
+
+```sh
+git diff --check && node --test test/orchestration/candidate-scope.test.mjs test/orchestration/release-eligibility.test.mjs test/orchestration/release-scope.test.mjs test/orchestration/version-aggregator.test.mjs test/orchestration/dashboard.test.mjs test/orchestration/dashboard-http.test.mjs test/orchestration/git-merge.test.mjs test/orchestration/release-coordinator.test.mjs test/orchestration/release-commands.test.mjs test/orchestration/production-platform-gate.test.mjs test/orchestration/production-runtime-wiring.test.mjs test/orchestration/production-release-persistence.test.mjs test/orchestration/production-release-coordinator.test.mjs
+```
+
+Summary: `git diff --check` passed; 146 tests passed, 0 failed, exit code 0 (14.9 s). The only visible `Invalid URL` stack is the existing negative HTTP parsing test, which passes. Tests use temporary Git remotes and the local Worker harness only; no production SSH/DB, real ClickUp mutation, WeChat action, Apple upload/submission, or release publication occurred.
+
+### Changes and self-review
+
+- Added explicit, structured runtime `releaseTargets`; all gate, dashboard and coordinator production paths derive configured targets from this boundary, and missing descriptors fail closed. The example leaves `mini_program` disabled until an operator intentionally configures its adapter boundary.
+- Made Candidate-base resolution order-independent by resolving a common Git ancestry from all merged/open integration anchors; covered ordering plus mixed integration paths.
+- Preserved the full canonical `releaseEligibility` object (including Candidate scope, evidence IDs/commits, aggregate version and Android-delivery provenance) through freeze, cards, details and HTTP. Runtime, workflow and iOS gaps are supplied to the canonical builder before construction, never appended afterward.
+- Added a persisted accepted-PR changed-path pipeline: developer result, accept result, Worker poller, runner-job readback, pure path classification and exact accepted-commit matching. ClickUp/analyze/develop evidence tied to another commit is rejected.
+- Added mini-program persistence migration and terminal-success reuse support; no live external mini-program adapter is introduced.
+- `scripts/orchestrator.mjs` passes the runtime-derived configured target list through both dashboard and release-coordinator boundaries.
+- Scope audit: only Task 1 source, migration, tests, runtime example and this report are included. `.data` was neither read, modified, staged nor committed.
+
+### Commit
+
+Implementation commit: `321160429204b07e0c42d780f2b7a3928009d72f` (`fix: complete candidate release eligibility`).
+
+### Concerns
+
+- A deployment must apply migration `0014_mini_program_production_target.sql` before it can persist mini-program release attempts. This work deliberately did not run any migration against a real environment.
+- An operator must explicitly enable the mini-program target in private runtime configuration before it is eligible; the provided example remains held and disabled by default to prevent accidental external operation.
