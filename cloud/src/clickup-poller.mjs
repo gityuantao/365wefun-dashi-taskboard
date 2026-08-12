@@ -551,7 +551,7 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
   if (jobType === "develop") {
     const ordinaryFailure = await env.DB
       .prepare(
-        `SELECT id FROM runner_jobs
+        `SELECT id, result FROM runner_jobs
          WHERE command_id = ? AND status = 'failed'
            AND COALESCE(result, '') NOT LIKE '%waiting_version%'
            AND COALESCE(result, '') NOT LIKE '%waiting:%'
@@ -563,7 +563,20 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
       .bind(`auto-develop-${snapshot.id}`)
       .first();
     const productRework = await loadCurrentReworkFindings(env.DB, snapshot.id);
-    if (ordinaryFailure && productRework.findings?.length === 0) return;
+    if (ordinaryFailure && productRework.findings?.length === 0) {
+      let retryable = false;
+      try {
+        retryable = JSON.parse(ordinaryFailure.result ?? "{}").retryable === true;
+      } catch {}
+      if (!retryable) return;
+      const attempts = await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM runner_jobs
+         WHERE command_id = ? AND status = 'failed'
+           AND json_extract(result, '$.retryable') = 1`,
+      ).bind(`auto-develop-${snapshot.id}`).first();
+      const retryLimit = Number(env.CLICKUP_DEVELOPMENT_RETRY_LIMIT ?? 3);
+      if (Number(attempts?.count ?? 0) >= retryLimit) return;
+    }
   }
 
   if (existing?.status === "failed" && existing.result?.includes("waiting_version")) {

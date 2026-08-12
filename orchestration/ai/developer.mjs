@@ -30,43 +30,6 @@ function safeDiagnostic(reason) {
   return concise(redactCredentials(reason), 200);
 }
 
-async function rollbackDevelopment({ db, client, taskId, jobId, now, reason }) {
-  try {
-    const current = await loadAggregate(db, "task", taskId);
-    if (current.state !== "developing") return;
-    await dispatchCommand({
-      db,
-      command: parseCommandEnvelope({
-        id: `development-failed-${jobId}`,
-        type: "development_failed",
-        aggregateType: "task",
-        aggregateId: taskId,
-        expectedVersion: current.version + 1,
-        actorId: "runner-developer",
-        issuedAt: new Date().toISOString(),
-        reason: "development failed",
-        parameters: { evidenceId: `development-${jobId}` },
-      }),
-      now: new Date().toISOString(),
-    });
-    const comment = stateChangeText(
-      "task",
-      "developing",
-      "ready_for_development",
-      safeDiagnostic(reason),
-    );
-    if (comment) {
-      try {
-        await client.postComment(taskId, comment);
-      } catch {
-        // 评论失败不影响回退
-      }
-    }
-  } catch {
-    // 回退失败不掩盖原始错误
-  }
-}
-
 async function markDevelopmentNeedsInfo({ db, client, taskId, jobId, now, reason }) {
   const aggregate = await loadAggregate(db, "task", taskId);
   if (aggregate.state !== "developing") return false;
@@ -91,13 +54,32 @@ async function markDevelopmentNeedsInfo({ db, client, taskId, jobId, now, reason
       taskId,
       [
         `⚠️ 开发无法完成：${safeDiagnostic(reason)}`,
-        "请补充必要信息（如具体静音文件名/复现方式/预期结果），然后把任务状态改回「开发中」继续。",
+        "请回答上面的具体问题，然后把任务状态改回「开发中」继续。",
       ].join("\n"),
     );
   } catch {
     // 评论失败不影响状态
   }
   return true;
+}
+
+function infrastructureFailure(reason, classification = "orchestrator_infrastructure") {
+  return {
+    status: "failed",
+    classification,
+    retryable: true,
+    error: safeDiagnostic(reason),
+  };
+}
+
+function concreteNeedsInfo(parsed) {
+  if (parsed?.outcome !== "needs_info") return null;
+  const reason = typeof parsed.reason === "string" ? parsed.reason.trim() : "";
+  const questions = Array.isArray(parsed.questions)
+    ? parsed.questions.filter((question) => typeof question === "string" && question.trim() !== "")
+    : [];
+  if (reason === "" || questions.length === 0) return null;
+  return [reason, ...questions.map((question) => `请确认：${question.trim()}`)].join("\n");
 }
 
 function staleDevelopmentResult(aggregate) {
@@ -187,18 +169,7 @@ export async function executeDevelopment({
       mediaBundle = await collectCommentMedia({ comments, client, taskId });
     } catch (error) {
       const reason = formatCommentMediaError(error);
-      const transitioned = await markDevelopmentNeedsInfo({
-        db,
-        client,
-        taskId,
-        jobId: job.id,
-        now,
-        reason,
-      });
-      if (!transitioned) {
-        return staleDevelopmentResult(await loadAggregate(db, "task", taskId));
-      }
-      return { status: "failed", classification: "needs_info", error: `needs_info: ${reason}` };
+      return infrastructureFailure(reason, "evidence_infrastructure");
     }
     let activity;
     let worktree;
@@ -257,22 +228,7 @@ export async function executeDevelopment({
       ? commentImageDecodeFailure(runError ?? run, mediaBundle.images)
       : null;
     if (decodeReason) {
-      const transitioned = await markDevelopmentNeedsInfo({
-        db,
-        client,
-        taskId,
-        jobId: job.id,
-        now,
-        reason: decodeReason,
-      });
-      if (!transitioned) {
-        return staleDevelopmentResult(await loadAggregate(db, "task", taskId));
-      }
-      return {
-        status: "failed",
-        classification: "needs_info",
-        error: `needs_info: ${decodeReason}`,
-      };
+      return infrastructureFailure(decodeReason, "evidence_infrastructure");
     }
     if (runError) {
       const safeFailure = codexStarted
@@ -286,50 +242,51 @@ export async function executeDevelopment({
     if (run.exitCode !== 0) {
       const reason = formatCodexMediaRunFailure(run, mediaBundle.images)
         ?? `codex exited ${run.exitCode}: ${run.stderr}`;
-      await rollbackDevelopment({ db, client, taskId, jobId: job.id, now, reason });
-      return { status: "failed", error: reason };
+      return infrastructureFailure(reason);
     }
     let parsed;
     try {
       parsed = JSON.parse(extractJson(run.stdout));
     } catch {
-      await rollbackDevelopment({
-        db,
-        client,
-        taskId,
-        jobId: job.id,
-        now,
-        reason: "invalid JSON output",
-      });
-      return { status: "failed", error: "invalid JSON output" };
+      return infrastructureFailure("invalid JSON output", "invalid_development_result");
     }
-    if (parsed.needs_info === true) {
-      const reason = typeof parsed.reason === "string" && parsed.reason.trim() !== ""
-        ? parsed.reason.trim()
-        : "开发过程中无法复现问题或信息不足";
+    const needsInfo = concreteNeedsInfo(parsed);
+    if (needsInfo) {
       const transitioned = await markDevelopmentNeedsInfo({
         db,
         client,
         taskId,
         jobId: job.id,
         now,
-        reason,
+        reason: needsInfo,
       });
       if (!transitioned) {
         return staleDevelopmentResult(await loadAggregate(db, "task", taskId));
       }
-      return { status: "failed", classification: "needs_info", error: `needs_info: ${reason}` };
+      return { status: "failed", classification: "needs_info", error: `needs_info: ${needsInfo}` };
+    }
+    if (parsed.needs_info === true || parsed.outcome === "needs_info") {
+      return infrastructureFailure(
+        "needs_info requires a concrete business reason and at least one answerable question",
+        "invalid_development_result",
+      );
+    }
+    const alreadySatisfied = parsed.outcome === "already_satisfied";
+    if (alreadySatisfied) {
+      const evidence = Array.isArray(parsed.evidence) ? parsed.evidence : [];
+      const usableEvidence = evidence.some((item) => (
+        typeof item?.location === "string" && item.location.trim() !== ""
+        && typeof item?.verification === "string" && item.verification.trim() !== ""
+      ));
+      if (!usableEvidence) {
+        return infrastructureFailure(
+          "already_satisfied requires code location and verification evidence",
+          "invalid_development_result",
+        );
+      }
     }
     if (typeof parsed.change_summary !== "string" || parsed.change_summary === "") {
-      await rollbackDevelopment({
-        db,
-        client,
-        taskId,
-        jobId: job.id,
-        now,
-        reason: "missing change_summary",
-      });
-      return { status: "failed", error: "missing change_summary" };
+      return infrastructureFailure("missing change_summary", "invalid_development_result");
     }
     activity = await currentDevelopment(db, taskId, executionVersion);
     if (!activity.active) return staleDevelopmentResult(activity.aggregate);
@@ -375,6 +332,7 @@ export async function executeDevelopment({
     const result = await dispatchCommand({ db, command, now: new Date().toISOString() });
     return {
       status: "completed",
+      classification: alreadySatisfied ? "already_satisfied" : "changed",
       commandId: result.commandId,
       pr,
       commitSha,
@@ -384,7 +342,6 @@ export async function executeDevelopment({
       findingResponses: Array.isArray(parsed.finding_responses) ? parsed.finding_responses : [],
     };
   } catch (error) {
-    await rollbackDevelopment({ db, client, taskId, jobId: job.id, now, reason: error.message });
-    return { status: "failed", error: error.message };
+    return infrastructureFailure(error.message);
   }
 }

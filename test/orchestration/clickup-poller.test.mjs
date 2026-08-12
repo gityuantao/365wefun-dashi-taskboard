@@ -1261,6 +1261,75 @@ test("poller does not automatically requeue an ordinary failed development", asy
   assert.equal(queued, null, "ordinary failure must remain blocked until an explicit manual retry");
 });
 
+test("poller retries a retryable development infrastructure failure after backoff", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await dispatchTask(harness, "retryable-analysis-start", "start_analysis", 1);
+  await dispatchTask(harness, "retryable-analysis-done", "analysis_completed", 2);
+  await dispatchTask(harness, "retryable-development-start", "start_development", 3);
+  await harness.db.prepare(
+    `INSERT INTO runner_jobs (
+      id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+    ) VALUES (?, ?, 'develop', ?, 'h', 'failed', ?, ?, ?)`,
+  ).bind(
+    "task-1-develop-3",
+    "auto-develop-task-1",
+    JSON.stringify({ taskId: "task-1", aggregateVersion: 3 }),
+    JSON.stringify({
+      status: "failed",
+      classification: "orchestrator_infrastructure",
+      retryable: true,
+      error: "codex exited 2",
+    }),
+    "2026-08-03T23:40:00.000Z",
+    "2026-08-03T23:41:00.000Z",
+  ).run();
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "开发中", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]);
+
+  await pollClickUpOnce(env, { now: NOW });
+
+  const queued = await harness.db.prepare(
+    "SELECT status FROM runner_jobs WHERE id = 'task-1-develop-3'",
+  ).first();
+  assert.equal(queued.status, "queued");
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "developing");
+});
+
+test("poller stops retrying development infrastructure after three failed attempts", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await dispatchTask(harness, "bounded-analysis-start", "start_analysis", 1);
+  await dispatchTask(harness, "bounded-analysis-done", "analysis_completed", 2);
+  await dispatchTask(harness, "bounded-development-start", "start_development", 3);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await harness.db.prepare(
+      `INSERT INTO runner_jobs (
+        id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+      ) VALUES (?, ?, 'develop', ?, 'h', 'failed', ?, ?, ?)`,
+    ).bind(
+      `bounded-develop-${attempt}`,
+      "auto-develop-task-1",
+      JSON.stringify({ taskId: "task-1", aggregateVersion: 3 }),
+      JSON.stringify({ classification: "orchestrator_infrastructure", retryable: true, error: "temporary" }),
+      `2026-08-03T23:3${attempt}:00.000Z`,
+      `2026-08-03T23:3${attempt}:30.000Z`,
+    ).run();
+  }
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "开发中", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]);
+
+  await pollClickUpOnce(env, { now: NOW });
+
+  const queued = await harness.db.prepare(
+    "SELECT id FROM runner_jobs WHERE command_id = 'auto-develop-task-1' AND status = 'queued'",
+  ).first();
+  assert.equal(queued, null);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "developing");
+});
+
 test("poller retries a development-order waiting job after the retry window", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

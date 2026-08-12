@@ -369,6 +369,33 @@ test("an explicit empty platforms array remains valid Web-only staging evidence"
   assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "ready_for_test");
 });
 
+test("a busy staging lease keeps accepted code queued instead of rejecting it", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const taskId = "task-staging-resource-busy";
+  await seedAcceptingTask(harness.db, taskId);
+  await harness.db.prepare(
+    `INSERT INTO orchestration_leases (
+       id, aggregate_type, aggregate_id, holder, fencing_token, expires_at, created_at
+     ) VALUES ('staging-environment', 'version', 'staging-environment', 'other-task', 1, ?, ?)`,
+  ).bind("2099-08-10T09:00:00.000Z", NOW).run();
+  const comments = [];
+  const result = await executeStagingGate({
+    job: stagingJob(taskId, ["web"]),
+    db: harness.db,
+    client: { postComment: async (_id, body) => comments.push(body) },
+    ...webGate(),
+    now: NOW,
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.classification, "resource_busy");
+  assert.equal(result.retryable, true);
+  assert.equal(result.stage, "staging_lease");
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "accepting");
+  assert.equal(await acceptancePassedCount(harness.db, taskId), 0);
+  assert.equal(comments.some((body) => /验收不通过|测试环境部署失败/.test(body)), false);
+});
+
 test("production adapter module and factory failures stay inside the failed staging attempt boundary", async (t) => {
   const adapterModule = await import("../../orchestration/release/staging-command-adapter.mjs");
   assert.equal(typeof adapterModule.createProductionStagingAdapterFactory, "function");

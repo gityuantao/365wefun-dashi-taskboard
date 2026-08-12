@@ -262,7 +262,7 @@ test("manual pause during Codex run prevents commit PR evidence and completion",
   assert.equal(completion, null);
 });
 
-test("development that cannot reproduce parks the task in waiting_info", async (t) => {
+test("development does not treat inability to reproduce as missing business information", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await setupTask(harness);
@@ -285,13 +285,67 @@ test("development that cannot reproduce parks the task in waiting_info", async (
     now: NOW,
   });
   assert.equal(result.status, "failed");
-  assert.match(result.error, /needs_info/);
+  assert.equal(result.classification, "invalid_development_result");
+  assert.equal(result.retryable, true);
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.state, "waiting_info");
-  assert.ok(
-    calls.some(([, , body]) => String(body).includes("开发无法完成")),
-    "should post a comment asking for more info",
-  );
+  assert.equal(aggregate.state, "developing");
+  assert.equal(calls.some(([, , body]) => String(body).includes("开发无法完成")), false);
+});
+
+test("development accepts only a concrete business question as needs_info", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const comments = [];
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient({ postComment: async (_id, body) => comments.push(body) }),
+    codex: { run: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        outcome: "needs_info",
+        reason: "需求同时要求官方营销徽章和蓝底白色 A 图标，两种素材互斥",
+        questions: ["官网入口应使用黑色 Download on the App Store 徽章，还是蓝底白色 A 图标？"],
+      }),
+      stderr: "",
+    }) },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+  assert.equal(result.classification, "needs_info");
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "waiting_info");
+  assert.match(comments.at(-1), /黑色 Download on the App Store/);
+  assert.doesNotMatch(comments.at(-1), /静音文件名|复现方式\/预期结果/);
+});
+
+test("already satisfied development reuses the current worktree head without requiring new changes", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const calls = [];
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient(),
+    codex: { run: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        outcome: "already_satisfied",
+        change_summary: "现有实现已完整保留连字符词并传给 TTS",
+        evidence: [{ location: "apps/web/src/audio.ts:42", verification: "聚焦测试 6/6 通过" }],
+        tests: [{ name: "hyphenated pronunciation", passed: true }],
+      }),
+      stderr: "",
+    }) },
+    gitOps: mockGitOps({ commitAll: async () => { calls.push("commit-head"); return "existing-head"; } }),
+    now: NOW,
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.classification, "already_satisfied");
+  assert.equal(result.commitSha, "existing-head");
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "accepting");
+  assert.deepEqual(calls, ["commit-head"]);
 });
 
 test("development reloads stale state when its needs_info transition is not persisted", async (t) => {
@@ -425,7 +479,7 @@ test("development passes the 影响平台 field into the prompt", async (t) => {
   assert.match(prompt, /影响平台（ClickUp 字段）：小程序、安卓/);
 });
 
-test("development failure leaves the task in ready for development", async (t) => {
+test("Codex process failure preserves active development for bounded runner retry", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await setupTask(harness);
@@ -438,12 +492,14 @@ test("development failure leaves the task in ready for development", async (t) =
     now: NOW,
   });
   assert.equal(result.status, "failed");
+  assert.equal(result.classification, "orchestrator_infrastructure");
+  assert.equal(result.retryable, true);
   assert.match(result.error, /build failed/);
   const aggregate = await loadAggregate(harness.db, "task", "task-1");
-  assert.equal(aggregate.state, "ready_for_development");
+  assert.equal(aggregate.state, "developing");
 });
 
-test("unexpected development failure posts a short redacted diagnostic after rollback", async (t) => {
+test("unexpected development infrastructure failure stays active without a product failure comment", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await setupTask(harness);
@@ -464,10 +520,10 @@ test("unexpected development failure posts a short redacted diagnostic after rol
   });
 
   assert.equal(result.status, "failed");
-  const failureComment = comments.find((body) => String(body).includes("开发失败"));
-  assert.ok(failureComment, "rollback should leave a visible failure comment in ClickUp");
-  assert.match(failureComment, /git commit failed/);
-  assert.doesNotMatch(failureComment, /super-secret-value/);
+  assert.equal(result.classification, "orchestrator_infrastructure");
+  assert.equal(result.retryable, true);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "developing");
+  assert.equal(comments.some((body) => String(body).includes("开发失败")), false);
 });
 
 test("rollback diagnostics redact common credential formats", async (t) => {
@@ -748,7 +804,7 @@ test("development cleans comment media when feedback processing throws after col
   assert.deepEqual(created, []);
 });
 
-test("development waits for info when a selected comment image is corrupt", async (t) => {
+test("development treats a corrupt comment image as retryable evidence infrastructure", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await setupTask(harness);
@@ -779,14 +835,13 @@ test("development waits for info when a selected comment image is corrupt", asyn
 
   assert.equal(result.status, "failed");
   assert.equal(codexCalled, false);
-  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "waiting_info");
-  const diagnostic = comments.find((body) => String(body).includes("development-evidence.png"));
-  assert.ok(diagnostic);
-  assert.match(diagnostic, /comment image unavailable: development-evidence\.png \(INVALID_IMAGE\)/);
-  assert.doesNotMatch(diagnostic, /attachment-secret|taskboard-clickup-images-|\/tmp\//);
+  assert.equal(result.classification, "evidence_infrastructure");
+  assert.equal(result.retryable, true);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "developing");
+  assert.equal(comments.some((body) => String(body).includes("开发无法完成")), false);
 });
 
-test("development waits for info when ClickUp comments cannot be fetched", async (t) => {
+test("development treats unavailable ClickUp comments as retryable evidence infrastructure", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await setupTask(harness);
@@ -806,14 +861,14 @@ test("development waits for info when ClickUp comments cannot be fetched", async
     now: NOW,
   });
 
-  assert.equal(result.classification, "needs_info");
+  assert.equal(result.classification, "evidence_infrastructure");
+  assert.equal(result.retryable, true);
   assert.equal(codexCalled, false);
-  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "waiting_info");
-  assert.match(comments.at(-1), /comment history unavailable \(COMMENTS_UNAVAILABLE\)/);
-  assert.doesNotMatch(comments.at(-1), /secret|api\.clickup\.com|\/tmp\//);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "developing");
+  assert.equal(comments.some((body) => String(body).includes("开发无法完成")), false);
 });
 
-test("development routes a Codex image decoder failure to waiting info", async (t) => {
+test("development routes a Codex image decoder failure to retryable evidence infrastructure", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await setupTask(harness);
@@ -840,10 +895,27 @@ test("development routes a Codex image decoder failure to waiting info", async (
     now: NOW,
   });
 
-  assert.equal(result.classification, "needs_info");
-  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "waiting_info");
-  assert.match(comments.at(-1), /comment image unavailable: decoder-development\.png \(IMAGE_DECODE_FAILED\)/);
-  assert.doesNotMatch(comments.at(-1), /decoder-secret|taskboard-clickup-images-|\/tmp\//);
+  assert.equal(result.classification, "evidence_infrastructure");
+  assert.equal(result.retryable, true);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "developing");
+  assert.equal(comments.some((body) => String(body).includes("开发无法完成")), false);
+});
+
+test("missing change_summary is retryable invalid output and does not roll back development", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const result = await executeDevelopment({
+    job: JOB,
+    db: harness.db,
+    client: makeClient(),
+    codex: { run: async () => ({ exitCode: 0, stdout: JSON.stringify({ outcome: "changed" }), stderr: "" }) },
+    gitOps: mockGitOps(),
+    now: NOW,
+  });
+  assert.equal(result.classification, "invalid_development_result");
+  assert.equal(result.retryable, true);
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "developing");
 });
 
 test("development posts one safe ClickUp diagnostic when older comment images are truncated", async (t) => {

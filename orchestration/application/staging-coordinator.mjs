@@ -47,7 +47,12 @@ async function acquireStagingLease(db, holder, now, leaseMs = DEFAULT_STAGING_LE
   const lease = await db.prepare(
     "SELECT holder, fencing_token FROM orchestration_leases WHERE id = 'staging-environment'",
   ).first();
-  if (lease?.holder !== holder) throw new Error("staging environment is being deployed by another task");
+  if (lease?.holder !== holder) {
+    const error = new Error("staging environment is being deployed by another task");
+    error.classification = "resource_busy";
+    error.retryable = true;
+    throw error;
+  }
   return Number(lease.fencing_token);
 }
 
@@ -406,6 +411,15 @@ export async function executeStagingGate({
         `UPDATE staging_deployments SET stage = ?, status = 'failed', error = ?, completed_at = ?
          WHERE id = ?`,
       ).bind(stage, concise(error.message), new Date().toISOString(), attemptId).run();
+    }
+    if (error.classification === "resource_busy") {
+      return {
+        status: "failed",
+        classification: "resource_busy",
+        retryable: true,
+        stage,
+        error: concise(error.message),
+      };
     }
     return transitionFailure({
       db,
