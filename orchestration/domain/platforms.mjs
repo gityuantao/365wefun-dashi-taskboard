@@ -8,7 +8,12 @@ function platformTokens(value) {
 export function normalizePlatforms(value) {
   return [...new Set(
     platformTokens(value)
-      .map((platform) => platform.trim().toLowerCase())
+      .map((platform) => {
+        const normalized = platform.trim().toLowerCase();
+        if (["服务端", "server", "backend"].includes(normalized)) return "api";
+        if (["小程序", "mini-program", "mini_program", "mp-weixin"].includes(normalized)) return "mini_program";
+        return normalized;
+      })
       .filter(Boolean),
   )];
 }
@@ -24,7 +29,7 @@ export function inferPlatformsFromText(value) {
   if (mentionedInScope(/\b(?:ios|iphone|ipad)\b|苹果端|苹果 app/)) platforms.push("ios");
   if (mentionedInScope(/\bandroid\b|安卓/)) platforms.push("android");
   if (mentionedInScope(/\bweb\b|网页|前台页面/)) platforms.push("web");
-  if (mentionedInScope(/小程序|mini[- ]?program/)) platforms.push("mini-program");
+  if (mentionedInScope(/小程序|mini[-_ ]?program|mp-weixin/)) platforms.push("mini_program");
   return platforms;
 }
 

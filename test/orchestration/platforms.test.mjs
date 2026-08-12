@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveTaskPlatforms } from "../../orchestration/domain/platforms.mjs";
+import { normalizePlatforms, resolveTaskPlatforms } from "../../orchestration/domain/platforms.mjs";
 
 test("production-shaped ClickUp option ids resolve through option labels", () => {
   const task = {
@@ -34,4 +34,10 @@ test("scalar ClickUp option ids resolve through option names", () => {
   };
 
   assert.deepEqual(resolveTaskPlatforms(task), ["ios"]);
+});
+
+test("canonical platform aliases distinguish API and mini-program release targets", () => {
+  assert.deepEqual(normalizePlatforms(["服务端", "server", "backend", "小程序", "mini-program", "mp-weixin"]), [
+    "api", "mini_program",
+  ]);
 });
