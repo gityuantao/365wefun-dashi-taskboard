@@ -33,6 +33,7 @@
     "cloud:deploy:dry-run": "pnpm build:web && wrangler deploy --dry-run",
     "cloud:deploy": "pnpm build:web && wrangler deploy",
     "cloud:data": "node scripts/migrate-to-cloud.mjs",
+    "release:readiness": "node scripts/reconcile-release-readiness.mjs",
     "check": "pnpm typecheck && pnpm build && pnpm test"
   },
   "dependencies": {
