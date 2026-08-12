@@ -1629,7 +1629,14 @@ test("a staging merge conflict queues development with the exact original-PR con
   }
   const jobId = "task-1-stage_task-4";
   const evidenceId = `staging-${jobId}`;
-  await dispatchTask(harness, evidenceId, "acceptance_rejected", 5, { evidenceId }, "runner-staging");
+  await dispatchTask(
+    harness,
+    `staging-failed-${jobId}-5`,
+    "acceptance_rejected",
+    5,
+    { evidenceId },
+    "runner-staging",
+  );
   await dispatchTask(
     harness,
     "staging-rework-task-1-stage_task-4-6",

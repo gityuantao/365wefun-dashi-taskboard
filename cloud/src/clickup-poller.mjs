@@ -313,11 +313,12 @@ async function loadCurrentReworkFindings(db, taskId) {
     return { error: `current acceptance rejection evidence is malformed for exact task ${taskId}` };
   }
   const evidenceId = eventData?.evidenceId;
-  if (!nonEmptyString(evidenceId) || rejection.command_id !== evidenceId) {
+  if (!nonEmptyString(evidenceId)) {
     return { error: `current acceptance rejection evidence is invalid for exact task ${taskId}` };
   }
   const acceptanceEvidence = rejection.actor_id === "runner-acceptor"
-    && evidenceId.startsWith("acceptance-");
+    && evidenceId.startsWith("acceptance-")
+    && rejection.command_id === evidenceId;
   const stagingEvidence = rejection.actor_id === "runner-staging"
     && evidenceId.startsWith("staging-");
   if (!acceptanceEvidence && !stagingEvidence) {
