@@ -19,6 +19,10 @@ import {
   resolveCurrentDevVersionName,
 } from "../../orchestration/application/version-gate.mjs";
 import { stateChangeText } from "../../orchestration/clickup/state-comments.mjs";
+import {
+  inferPlatformsFromText,
+  normalizePlatforms,
+} from "../../orchestration/domain/platforms.mjs";
 
 function jobTypeForState(status) {
   if (status === "inbox") return "analyze";
@@ -253,7 +257,14 @@ async function loadAnalysisCriteria(db, taskId) {
   ) {
     return { error: `latest completed analysis has no usable acceptance criteria for exact task ${taskId}` };
   }
-  return { criteria };
+  const storedPlatforms = normalizePlatforms(parsed?.platforms);
+  const platforms = storedPlatforms.length > 0
+    ? storedPlatforms
+    : inferPlatformsFromText([
+        parsed?.summary?.scope,
+        ...criteria.map((criterion) => criterion.criterion),
+      ].filter(Boolean).join("\n"));
+  return { criteria, platforms };
 }
 
 async function loadCurrentReworkFindings(db, taskId) {
@@ -302,15 +313,19 @@ async function loadCurrentReworkFindings(db, taskId) {
     return { error: `current acceptance rejection evidence is malformed for exact task ${taskId}` };
   }
   const evidenceId = eventData?.evidenceId;
-  if (
-    rejection.actor_id !== "runner-acceptor"
-    || !nonEmptyString(evidenceId)
-    || rejection.command_id !== evidenceId
-    || !evidenceId.startsWith("acceptance-")
-  ) {
+  if (!nonEmptyString(evidenceId) || rejection.command_id !== evidenceId) {
     return { error: `current acceptance rejection evidence is invalid for exact task ${taskId}` };
   }
-  const jobId = evidenceId.slice("acceptance-".length);
+  const acceptanceEvidence = rejection.actor_id === "runner-acceptor"
+    && evidenceId.startsWith("acceptance-");
+  const stagingEvidence = rejection.actor_id === "runner-staging"
+    && evidenceId.startsWith("staging-");
+  if (!acceptanceEvidence && !stagingEvidence) {
+    return { error: `current acceptance rejection evidence is invalid for exact task ${taskId}` };
+  }
+  const jobId = evidenceId.slice(
+    acceptanceEvidence ? "acceptance-".length : "staging-".length,
+  );
   const row = await db
     .prepare(
       `SELECT job_type, status, payload, result FROM runner_jobs
@@ -319,7 +334,48 @@ async function loadCurrentReworkFindings(db, taskId) {
     .bind(jobId)
     .first();
   if (!row) {
-    return { error: `exact acceptance job ${jobId} is missing for task ${taskId}` };
+    return {
+      error: acceptanceEvidence
+        ? `exact acceptance job ${jobId} is missing for task ${taskId}`
+        : `exact staging job ${jobId} is missing for task ${taskId}`,
+    };
+  }
+  if (stagingEvidence) {
+    if (row.job_type !== "stage_task" || row.status !== "failed") {
+      return { error: `exact staging job ${jobId} is not a failed stage job for task ${taskId}` };
+    }
+    let payload;
+    let parsed;
+    try {
+      payload = JSON.parse(row.payload);
+      parsed = JSON.parse(row.result);
+    } catch {
+      return { error: `exact staging job ${jobId} is malformed for task ${taskId}` };
+    }
+    if (
+      payload?.taskId !== taskId
+      || parsed?.status !== "failed"
+      || parsed?.classification !== "merge_conflict"
+      || parsed?.stage !== "merge"
+      || !nonEmptyString(payload?.pr?.url)
+      || !nonEmptyString(payload?.versionBranch)
+      || !Array.isArray(parsed.conflictedPaths)
+      || parsed.conflictedPaths.length === 0
+      || parsed.conflictedPaths.some((value) => !nonEmptyString(value))
+    ) {
+      return { error: `exact staging job ${jobId} does not contain valid merge-conflict evidence for task ${taskId}` };
+    }
+    return {
+      findings: [{
+        classification: "merge_conflict",
+        stage: "merge",
+        prUrl: payload.pr.url,
+        versionBranch: payload.versionBranch,
+        conflictedPaths: [...parsed.conflictedPaths],
+        description: String(parsed.error ?? "PR merge conflict"),
+        requiredAction: "merge the latest version branch, resolve these conflicts, and update the original PR",
+      }],
+    };
   }
   if (row.job_type !== "accept" || row.status !== "completed") {
     return { error: `exact acceptance job ${jobId} is not a completed accept job for task ${taskId}` };
@@ -428,7 +484,7 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
     const paused = await env.DB.prepare("SELECT id FROM runner_jobs WHERE id = ?").bind("acceptance-paused-" + snapshot.id).first();
     if (paused) return;
   }
-  if (jobType === "develop" || jobType === "accept") {
+  if (jobType === "develop" || jobType === "accept" || jobType === "stage_task") {
     const invalidContext = await env.DB
       .prepare(
         `SELECT id FROM runner_jobs
@@ -506,11 +562,13 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
   }
 
   let acceptanceCriteria;
+  let analysisPlatforms = [];
   let rejectionFindings;
   const contextErrors = [];
-  if (jobType === "develop" || jobType === "accept") {
+  if (jobType === "develop" || jobType === "accept" || jobType === "stage_task") {
     const analysis = await loadAnalysisCriteria(env.DB, snapshot.id);
     acceptanceCriteria = analysis.criteria;
+    analysisPlatforms = analysis.platforms ?? [];
     if (analysis.error) contextErrors.push(analysis.error);
   }
   if (jobType === "develop") {
@@ -554,9 +612,13 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
         ...(contextErrors.length > 0 ? { contextError: contextErrors.join("; ") } : {}),
         commitSha: acceptedResult?.commitSha ?? developmentResult?.commitSha ?? null,
         pr: developmentResult?.pr ?? null,
-        platforms: developmentResult && Object.hasOwn(developmentResult, "platforms")
-          ? developmentResult.platforms
-          : undefined,
+        platforms: (() => {
+          const snapshotPlatforms = normalizePlatforms(snapshot.platforms);
+          if (snapshotPlatforms.length > 0) return snapshotPlatforms;
+          const developedPlatforms = normalizePlatforms(developmentResult?.platforms);
+          if (developedPlatforms.length > 0) return developedPlatforms;
+          return analysisPlatforms;
+        })(),
         targetVersion: snapshot.targetVersion ?? acceptedResult?.targetVersion ?? null,
         aggregateVersion: aggregate.version,
       };

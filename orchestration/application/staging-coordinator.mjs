@@ -78,6 +78,11 @@ async function transitionFailure({
   candidateCommit,
   stage,
   error,
+  classification = "staging_infrastructure",
+  failureOwner = "staging_infrastructure",
+  conflictedPaths = [],
+  pullRequest = null,
+  versionBranch = null,
   now,
 }) {
   const normalizedError = normalizeRedactedError(error?.message ?? error);
@@ -87,7 +92,7 @@ async function transitionFailure({
     taskId,
     candidateIdentity,
     stage,
-    "staging_infrastructure",
+    classification,
     normalizedError,
   ].join("|"));
   const previous = await db.prepare(
@@ -100,11 +105,11 @@ async function transitionFailure({
   if (attemptId) {
     await db.prepare(
       `UPDATE staging_deployments SET
-         failure_owner = 'staging_infrastructure',
-         failure_classification = 'staging_infrastructure',
+         failure_owner = ?,
+         failure_classification = ?,
          failure_fingerprint = ?
        WHERE id = ?`,
-    ).bind(fingerprint, attemptId).run();
+    ).bind(failureOwner, classification, fingerprint, attemptId).run();
   }
   const aggregate = await loadAggregate(db, "task", taskId);
   if (aggregate.state === "accepting") {
@@ -124,23 +129,55 @@ async function transitionFailure({
       now,
     });
   }
+  if (failureOwner === "product_rework") {
+    const rejected = await loadAggregate(db, "task", taskId);
+    if (rejected.state === "acceptance_rejected") {
+      await dispatchCommand({
+        db,
+        command: parseCommandEnvelope({
+          id: `staging-rework-${jobId}-${rejected.version + 1}`,
+          type: "acceptance_rejected_to_develop",
+          aggregateType: "task",
+          aggregateId: taskId,
+          expectedVersion: rejected.version + 1,
+          actorId: "runner-staging",
+          issuedAt: now,
+          reason: "PR merge conflict requires code rework",
+          parameters: {},
+        }),
+        now,
+      });
+    }
+  }
   try {
-    await client.postComment(taskId, [
-      "❌ 测试环境部署失败",
-      "产品开发已完成，当前为提测基础设施故障",
-      "故障归属：staging_infrastructure",
-      `阶段：${stage}`,
-      `原因：${reason}`,
-      `故障指纹：${fingerprint}`,
-      `重复故障：${repeated ? "是" : "否"}`,
-      "任务已转为「验收不通过」，不计入产品返工次数",
-    ].join("\n"));
+    const comment = failureOwner === "product_rework"
+      ? [
+          "⚠️ PR 与版本分支存在合并冲突，已自动返回待开发",
+          `原 PR：${pullRequest ?? "未记录"}`,
+          `目标版本分支：${versionBranch ?? "未记录"}`,
+          `冲突文件：${conflictedPaths.length > 0 ? conflictedPaths.join("、") : "未解析"}`,
+          `Git 证据：${reason}`,
+          "下一轮 AI 开发必须合并最新版本分支、解决上述冲突、更新原 PR，不得新建 PR。",
+          `故障指纹：${fingerprint}`,
+        ].join("\n")
+      : [
+          "❌ 测试环境部署失败",
+          "产品开发已完成，当前为提测基础设施故障",
+          "故障归属：staging_infrastructure",
+          `阶段：${stage}`,
+          `原因：${reason}`,
+          `故障指纹：${fingerprint}`,
+          `重复故障：${repeated ? "是" : "否"}`,
+          "任务已转为「验收不通过」，不计入产品返工次数",
+        ].join("\n");
+    await client.postComment(taskId, comment);
   } catch {}
   return {
     status: "failed",
-    classification: "staging_infrastructure",
+    classification,
     stage,
     error: reason,
+    ...(conflictedPaths.length > 0 ? { conflictedPaths } : {}),
     fingerprint,
     repeated,
   };
@@ -218,7 +255,15 @@ export async function executeStagingGate({
 
     stage = "merge";
     const integrated = await gitOps.integrateTaskPr({ taskId, pullRequest: pr.url, versionBranch });
-    if (!integrated.merged) throw new Error(integrated.error ?? "task PR merge failed");
+    if (!integrated.merged) {
+      const mergeError = new Error(integrated.error ?? "task PR merge failed");
+      if (integrated.classification === "merge_conflict") {
+        mergeError.classification = "merge_conflict";
+        mergeError.failureOwner = "product_rework";
+        mergeError.conflictedPaths = integrated.conflictedPaths ?? [];
+      }
+      throw mergeError;
+    }
     candidateCommit = integrated.candidateCommit;
     const taskCommit = integrated.taskHead;
     if (taskCommit !== commitSha) {
@@ -368,6 +413,11 @@ export async function executeStagingGate({
       candidateCommit,
       stage,
       error,
+      classification: error.classification ?? "staging_infrastructure",
+      failureOwner: error.failureOwner ?? "staging_infrastructure",
+      conflictedPaths: error.conflictedPaths ?? [],
+      pullRequest: pr?.url ?? null,
+      versionBranch,
       now: new Date().toISOString(),
     });
   } finally {

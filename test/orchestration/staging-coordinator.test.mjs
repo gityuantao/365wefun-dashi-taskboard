@@ -189,6 +189,63 @@ test("a missing staging adapter persists infrastructure ownership before rejecti
   assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "acceptance_rejected");
 });
 
+test("a PR merge conflict records product rework evidence and automatically returns to development", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const taskId = "task-pr-merge-conflict";
+  await seedAcceptingTask(harness.db, taskId);
+  const comments = [];
+  const calls = [];
+
+  const result = await executeStagingGate({
+    job: stagingJob(taskId, ["ios"]),
+    db: harness.db,
+    client: { postComment: async (_taskId, body) => comments.push(body) },
+    gitOps: {
+      integrateTaskPr: async () => ({
+        merged: false,
+        conflict: true,
+        classification: "merge_conflict",
+        taskHead: TASK_COMMIT,
+        prNumber: 42,
+        headRefName: `task/${taskId}`,
+        versionBranch: "version/v1.0.3",
+        conflictedPaths: ["apps/ios/project.yml", "apps/ios/Video.swift"],
+        error: "CONFLICT (content): Merge conflict in apps/ios/Video.swift",
+      }),
+      persistCandidate: async () => {
+        calls.push("persist");
+        return { persisted: true };
+      },
+    },
+    adapter: {
+      deploy: async () => {
+        calls.push("deploy");
+        return {};
+      },
+      readback: async () => ({ confirmed: true, gitSha: CANDIDATE_COMMIT }),
+    },
+    now: NOW,
+  });
+  const attempt = await harness.db.prepare(
+    `SELECT status, stage, failure_owner, failure_classification, error
+     FROM staging_deployments WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`,
+  ).bind(taskId).first();
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.classification, "merge_conflict");
+  assert.deepEqual(result.conflictedPaths, ["apps/ios/project.yml", "apps/ios/Video.swift"]);
+  assert.deepEqual(calls, []);
+  assert.equal(attempt.status, "failed");
+  assert.equal(attempt.stage, "merge");
+  assert.equal(attempt.failure_owner, "product_rework");
+  assert.equal(attempt.failure_classification, "merge_conflict");
+  assert.match(attempt.error, /Video\.swift/);
+  assert.equal((await loadAggregate(harness.db, "task", taskId)).state, "ready_for_development");
+  assert.match(comments[0], /apps\/ios\/project\.yml/);
+  assert.match(comments[0], /原 PR/);
+});
+
 test("staging rejects missing or non-array platforms before an attempt or external work", async (t) => {
   const cases = [
     { name: "missing", value: undefined, remove: true },

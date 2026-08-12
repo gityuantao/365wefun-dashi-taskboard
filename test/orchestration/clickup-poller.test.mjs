@@ -1620,6 +1620,147 @@ test("missing exact acceptance evidence fails closed without historical findings
   assert.match(payload.contextError, /exact acceptance job.*missing/i);
 });
 
+test("a staging merge conflict queues development with the exact original-PR conflict evidence", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const transitions = ["start_analysis", "analysis_completed", "start_development", "development_completed"];
+  for (let index = 0; index < transitions.length; index += 1) {
+    await dispatchTask(harness, `merge-conflict-${index}`, transitions[index], index + 1);
+  }
+  const jobId = "task-1-stage_task-4";
+  const evidenceId = `staging-${jobId}`;
+  await dispatchTask(harness, evidenceId, "acceptance_rejected", 5, { evidenceId }, "runner-staging");
+  await dispatchTask(
+    harness,
+    "staging-rework-task-1-stage_task-4-6",
+    "acceptance_rejected_to_develop",
+    6,
+    {},
+    "runner-staging",
+  );
+  await seedCompletedAnalysis(harness);
+  await enqueueJob(harness.db, {
+    jobId,
+    commandId: "auto-stage_task-task-1",
+    jobType: "stage_task",
+    payload: {
+      taskId: "task-1",
+      pr: { url: "https://github.com/example/repo/pull/42" },
+      commitSha: "2222222222222222222222222222222222222222",
+      versionBranch: "version/1.0.1",
+      targetVersion: "1.0.1",
+      platforms: ["ios"],
+    },
+    payloadHash: "merge-conflict-evidence",
+    expiresAt: "2026-08-11T03:00:00.000Z",
+    createdAt: "2026-08-11T00:02:00.000Z",
+  });
+  await harness.db.prepare(
+    "UPDATE runner_jobs SET status = 'failed', result = ?, completed_at = ? WHERE id = ?",
+  ).bind(JSON.stringify({
+    status: "failed",
+    classification: "merge_conflict",
+    stage: "merge",
+    error: "CONFLICT (content): Merge conflict in apps/ios/Video.swift",
+    conflictedPaths: ["apps/ios/project.yml", "apps/ios/Video.swift"],
+  }), "2026-08-11T00:02:01.000Z", jobId).run();
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1",
+      listId: "901616314492",
+      status: "ready_for_development",
+      targetVersion: "1.0.1",
+      assignee: null,
+      updatedAt: "2026-08-11T00:03:00.000Z",
+      fieldsHash: "merge-conflict-ready",
+    },
+    readAt: "2026-08-11T00:03:00.000Z",
+  });
+
+  await pollClickUpOnce(await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]), { now: NOW });
+
+  const queued = await harness.db.prepare(
+    "SELECT payload FROM runner_jobs WHERE job_type = 'develop' AND status = 'queued'",
+  ).first();
+  const payload = JSON.parse(queued.payload);
+  assert.equal(payload.contextError, undefined);
+  assert.deepEqual(payload.rejectionFindings, [{
+    classification: "merge_conflict",
+    stage: "merge",
+    prUrl: "https://github.com/example/repo/pull/42",
+    versionBranch: "version/1.0.1",
+    conflictedPaths: ["apps/ios/project.yml", "apps/ios/Video.swift"],
+    description: "CONFLICT (content): Merge conflict in apps/ios/Video.swift",
+    requiredAction: "merge the latest version branch, resolve these conflicts, and update the original PR",
+  }]);
+});
+
+test("stage payload preserves iOS inferred by analysis when ClickUp and development omit platforms", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const transitions = ["start_analysis", "analysis_completed", "start_development", "development_completed"];
+  for (let index = 0; index < transitions.length; index += 1) {
+    await dispatchTask(harness, `ios-stage-${index}`, transitions[index], index + 1);
+  }
+  await seedCompletedRunnerJob(harness, {
+    jobId: "task-1-analysis-ios",
+    commandId: "auto-analyze-task-1",
+    jobType: "analyze",
+    payload: { taskId: "task-1" },
+    result: {
+      status: "completed",
+      platforms: ["ios"],
+      summary: {
+        acceptance_criteria: [
+          { id: "ac-ios", criterion: "iOS app behavior is verified", verification: "focused test" },
+        ],
+      },
+    },
+    createdAt: "2026-08-11T00:00:00.000Z",
+    completedAt: "2026-08-11T00:00:01.000Z",
+  });
+  await seedCompletedRunnerJob(harness, {
+    jobId: "task-1-develop-ios",
+    commandId: "auto-develop-task-1",
+    jobType: "develop",
+    payload: { taskId: "task-1", platforms: ["ios"] },
+    result: {
+      status: "completed",
+      commitSha: "2222222222222222222222222222222222222222",
+      pr: { url: "https://github.com/example/repo/pull/42" },
+      platforms: [],
+    },
+    createdAt: "2026-08-11T00:01:00.000Z",
+    completedAt: "2026-08-11T00:01:01.000Z",
+  });
+  await seedCompletedRunnerJob(harness, {
+    jobId: "task-1-accept-ios",
+    commandId: "auto-accept-task-1",
+    jobType: "accept",
+    payload: { taskId: "task-1" },
+    result: {
+      status: "completed",
+      result: "accepted",
+      commitSha: "2222222222222222222222222222222222222222",
+    },
+    createdAt: "2026-08-11T00:02:00.000Z",
+    completedAt: "2026-08-11T00:02:01.000Z",
+  });
+
+  await pollClickUpOnce(await makeEnv(harness, [
+    sandboxTask({ status: "开发中", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]), { now: NOW });
+
+  const queued = await harness.db.prepare(
+    "SELECT payload FROM runner_jobs WHERE job_type = 'stage_task' AND status = 'queued'",
+  ).first();
+  assert.ok(queued, "expected staging to be queued after acceptance");
+  assert.deepEqual(JSON.parse(queued.payload).platforms, ["ios"]);
+});
+
 test("poller retries staging from persisted evidence after an infrastructure rejection", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

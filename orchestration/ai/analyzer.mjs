@@ -2,6 +2,7 @@ import { dispatchCommand } from "../application/dispatch-command.mjs";
 import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { collectCommentMedia } from "../clickup/comment-media.mjs";
+import { inferPlatformsFromText, resolveTaskPlatforms } from "../domain/platforms.mjs";
 import {
   buildAnalysisPrompt,
   commentImageDecodeFailure,
@@ -215,6 +216,16 @@ export async function executeAnalysis({
   const summary = typeof parsed.summary === "string" && parsed.summary.trim() !== ""
     ? parsed.summary.trim()
     : concise(parsed.scope, 120);
+  const explicitPlatforms = resolveTaskPlatforms(task);
+  const platforms = explicitPlatforms.length > 0
+    ? explicitPlatforms
+    : inferPlatformsFromText([
+        task.name,
+        task.description,
+        parsed.summary,
+        parsed.scope,
+        ...parsed.acceptance_criteria.map((criterion) => criterion?.criterion),
+      ].filter(Boolean).join("\n"));
   const testNotes = Array.isArray(parsed.test_notes) && parsed.test_notes.length > 0
     ? parsed.test_notes.map((note) => String(note))
     : parsed.acceptance_criteria.map((criterion) => criterion.criterion);
@@ -327,6 +338,7 @@ export async function executeAnalysis({
         scope: parsed.scope,
         acceptance_criteria: parsed.acceptance_criteria,
       },
+      platforms,
     };
   } catch (error) {
     return { status: "failed", error: error.message };

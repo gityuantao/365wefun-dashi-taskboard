@@ -13,6 +13,16 @@ export function normalizePlatforms(value) {
   )];
 }
 
+export function inferPlatformsFromText(value) {
+  const text = String(value ?? "").toLowerCase();
+  const platforms = [];
+  if (/\b(?:ios|iphone|ipad)\b|苹果端|苹果 app/.test(text)) platforms.push("ios");
+  if (/\bandroid\b|安卓/.test(text)) platforms.push("android");
+  if (/\bweb\b|网页|前台页面/.test(text)) platforms.push("web");
+  if (/小程序|mini[- ]?program/.test(text)) platforms.push("mini-program");
+  return platforms;
+}
+
 function resolveSelectedOption(field, selected) {
   const options = field?.type_config?.options ?? [];
   const option = options.find((candidate) => (

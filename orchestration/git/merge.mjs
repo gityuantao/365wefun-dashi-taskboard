@@ -1,4 +1,12 @@
 import { spawnSync } from "node:child_process";
+import { redactCredentials } from "../domain/redaction.mjs";
+
+function boundedDiagnostic(...values) {
+  return redactCredentials(values.filter(Boolean).join("\n"))
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .trim()
+    .slice(0, 4000);
+}
 
 function runCommand(command, args) {
   const result = spawnSync(command, args, { encoding: "utf8" });
@@ -72,13 +80,22 @@ export function mergeTaskPrToVersionBranch({
     `Merge task PR ${prRef}`,
   ], run);
   if (merge.status !== 0) {
+    const unmerged = git(repoPath, ["diff", "--name-only", "--diff-filter=U"], run);
+    const conflictedPaths = unmerged.status === 0
+      ? [...new Set(unmerged.stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean))].sort()
+      : [];
+    const error = boundedDiagnostic(merge.stdout, merge.stderr)
+      || "task PR merge failed without diagnostic output";
     git(repoPath, ["merge", "--abort"], run);
     if (originalRef) git(repoPath, ["checkout", originalRef], run);
     return {
       merged: false,
       conflict: true,
+      ...(conflictedPaths.length > 0
+        ? { classification: "merge_conflict", conflictedPaths }
+        : {}),
       taskHead,
-      error: merge.stderr,
+      error,
     };
   }
   const candidate = git(repoPath, ["rev-parse", "HEAD"], run);

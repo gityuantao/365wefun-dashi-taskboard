@@ -254,6 +254,9 @@ test("mergeTaskPrToVersionBranch reports conflicts without resolving", async (t)
   });
   assert.equal(result.merged, false);
   assert.equal(result.conflict, true);
+  assert.equal(result.classification, "merge_conflict");
+  assert.deepEqual(result.conflictedPaths, ["file.txt"]);
+  assert.match(result.error, /CONFLICT|file\.txt/);
   assert.equal(git(root, ["status", "--porcelain"]).trim(), "");
 });
 

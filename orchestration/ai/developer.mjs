@@ -3,7 +3,7 @@ import { parseCommandEnvelope } from "../domain/commands.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import { collectCommentMedia } from "../clickup/comment-media.mjs";
 import { redactCredentials } from "../domain/redaction.mjs";
-import { resolveTaskPlatforms } from "../domain/platforms.mjs";
+import { normalizePlatforms, resolveTaskPlatforms } from "../domain/platforms.mjs";
 import {
   buildDevelopmentPrompt,
   commentImageDecodeFailure,
@@ -177,7 +177,10 @@ export async function executeDevelopment({
     }
     const executionVersion = startAggregate.version;
     const task = await client.getTask(taskId);
-    const platforms = resolveTaskPlatforms(task);
+    const explicitPlatforms = resolveTaskPlatforms(task);
+    const platforms = explicitPlatforms.length > 0
+      ? explicitPlatforms
+      : normalizePlatforms(job.payload.platforms);
     let mediaBundle;
     try {
       const comments = await client.getComments(taskId);

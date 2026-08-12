@@ -88,6 +88,34 @@ test("analysis passes the 影响平台 field into the prompt", async (t) => {
   });
   assert.equal(result.status, "completed");
   assert.match(prompt, /影响平台（ClickUp 字段）：web、ios/);
+  assert.deepEqual(result.platforms, ["web", "ios"]);
+});
+
+test("analysis persists an inferred iOS platform when the ClickUp platform field is empty", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await setupTask(harness);
+  const result = await executeAnalysis({
+    job: { id: "job-a-ios", commandId: "cmd-a-ios", jobType: "analyze", payload: { taskId: "task-1" } },
+    db: harness.db,
+    client: makeClient({
+      getTask: async () => ({
+        id: "task-1",
+        name: "IOS 话题视频页面不展示下一页按钮",
+        description: "iOS 客户端话题视频分页",
+        status: { status: "分析中" },
+        custom_fields: [
+          { id: "field-version", name: "目标版本", value: "version-9" },
+          { id: "field-platforms", name: "影响平台", value: [] },
+        ],
+      }),
+    }),
+    codex: { run: async () => ({ exitCode: 0, stdout: validOutput(), stderr: "" }) },
+    now: NOW,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.platforms, ["ios"]);
 });
 
 test("analysis blocks when the task has no target version", async (t) => {
