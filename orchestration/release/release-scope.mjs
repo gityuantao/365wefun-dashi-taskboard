@@ -4,9 +4,11 @@ function nonEmpty(value) {
   return Array.isArray(value) && normalizePlatforms(value).length > 0;
 }
 
-function currentJob(job, { taskId, aggregateVersion }) {
+function currentJob(job, { taskId, aggregateVersion, acceptedCommitSha, requireCommit = false }) {
   if (!job || job.status !== "completed") return false;
   if (job.payload?.taskId && job.payload.taskId !== taskId) return false;
+  const commitSha = job.result?.commitSha ?? job.payload?.commitSha ?? job.payload?.acceptedCommitSha ?? null;
+  if (acceptedCommitSha && requireCommit) return commitSha === acceptedCommitSha;
   const version = job.result?.aggregateVersion ?? job.payload?.aggregateVersion;
   return version === undefined || version === null || Number(version) === Number(aggregateVersion);
 }
@@ -69,7 +71,7 @@ export function resolveReleasePlatformEvidence({
   aggregate = {},
   acceptedCommitSha = null,
 }) {
-  const context = { taskId: task.id, aggregateVersion: aggregate.version };
+  const context = { taskId: task.id, aggregateVersion: aggregate.version, acceptedCommitSha };
   if (nonEmpty(task.platforms)) {
     return result({
       taskId: task.id, platforms: task.platforms, source: "clickup_snapshot",
@@ -77,7 +79,7 @@ export function resolveReleasePlatformEvidence({
     });
   }
 
-  const developed = newestCurrent(developJobs, context, (job) => job.result?.platforms);
+  const developed = newestCurrent(developJobs, { ...context, requireCommit: Boolean(acceptedCommitSha) }, (job) => job.result?.platforms);
   if (developed) {
     return result({
       taskId: task.id,
@@ -102,7 +104,7 @@ export function resolveReleasePlatformEvidence({
     });
   }
 
-  const staged = newestCurrent(stageJobs, context, (job) => {
+  const staged = newestCurrent(stageJobs, { ...context, requireCommit: true }, (job) => {
     const commitSha = job.payload?.commitSha ?? job.payload?.acceptedCommitSha;
     if (!acceptedCommitSha || commitSha !== acceptedCommitSha) return [];
     return job.payload?.platforms;

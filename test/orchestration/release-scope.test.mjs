@@ -80,3 +80,16 @@ test("failed, stale, wrong-task and wrong-commit job evidence is rejected", () =
   });
 });
 
+test("accepted commit lineage selects an earlier development generation after later workflow transitions", () => {
+  const accepted = "92e071495bde1971c17f4a98fa6a0caec70756b3";
+  const result = resolveReleasePlatformEvidence({
+    task: task("task-1"), aggregate: { version: 17 }, acceptedCommitSha: accepted,
+    developJobs: [
+      { id: "dev-current", status: "completed", payload: { taskId: "task-1", aggregateVersion: 15 }, result: { commitSha: accepted, platforms: ["ios"] } },
+      { id: "dev-old", status: "completed", payload: { taskId: "task-1", aggregateVersion: 11 }, result: { commitSha: "old", platforms: ["web"] } },
+    ],
+  });
+  assert.deepEqual(result.platforms, ["ios"]);
+  assert.equal(result.source, "develop_job");
+  assert.equal(result.evidenceId, "dev-current");
+});
