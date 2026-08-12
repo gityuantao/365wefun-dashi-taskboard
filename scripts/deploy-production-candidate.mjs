@@ -131,7 +131,8 @@ export function createProductionDeployment({ environment, config, operations = d
   const identity = environmentIdentity(environment);
   const target = loadProductionDeploymentConfig(config);
   const suffix = identity.candidateCommit.slice(0, 8);
-  const releaseId = `${identity.versionId}-${identity.manifestChecksum}-${identity.platform}-${suffix}`.replace(/[^A-Za-z0-9._-]/g, "-");
+  const deploymentPlatform = target.currentLinkMode === "shared" ? "shared" : identity.platform;
+  const releaseId = `${identity.versionId}-${identity.manifestChecksum}-${deploymentPlatform}-${suffix}`.replace(/[^A-Za-z0-9._-]/g, "-");
   const releasePath = path.posix.join(target.releaseRoot, "releases", releaseId);
   const statePath = path.posix.join(target.releaseRoot, "state", `${identity.platform}.json`);
   const currentPlatform = target.currentLinkMode === "shared" ? null : identity.platform;
@@ -188,7 +189,7 @@ export function createProductionDeployment({ environment, config, operations = d
         return { ok: true };
       }
       if (mode === "upload") {
-        const releaseIdentity = { versionId: identity.versionId, candidateCommit: identity.candidateCommit, manifestChecksum: identity.manifestChecksum, artifactIdentity: identity.artifactIdentity, platform: identity.platform, releaseId };
+        const releaseIdentity = { versionId: identity.versionId, candidateCommit: identity.candidateCommit, manifestChecksum: identity.manifestChecksum, artifactIdentity: identity.artifactIdentity, platform: deploymentPlatform, releaseId };
         await runRemote("prepare-immutable-release", { releasePath, identity: releaseIdentity });
         const inspection = await runRemote("inspect-immutable-release", { releasePath, identity: releaseIdentity });
         if (inspection?.complete === true) {

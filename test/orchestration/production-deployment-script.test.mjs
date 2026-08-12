@@ -80,6 +80,29 @@ test("shared production topology switches the real current link for every platfo
   assert.equal(switched[1].platform, null);
 });
 
+test("shared Web and API targets reuse one immutable release identity", async () => {
+  const identities = [];
+  for (const platform of ["web", "api"]) {
+    const deployment = createProductionDeployment({
+      environment: { ...baseEnvironment, PRODUCTION_PLATFORM: platform },
+      config: productionConfig,
+      operations: {
+        runLocal: async () => ({}),
+        runRemote: async (_host, operation, payload) => {
+          if (operation === "prepare-immutable-release") identities.push(payload.identity);
+          if (operation === "inspect-immutable-release") return { complete: true };
+          return { ok: true };
+        },
+        readRemoteState: async () => null, writeRemoteStateAtomic: async () => {},
+        probe: async () => ({ ok: true, status: 200 }), now: () => "2026-08-12T00:00:00.000Z",
+      },
+    });
+    await deployment.execute("upload");
+  }
+  assert.deepEqual(identities[0], identities[1]);
+  assert.equal(identities[0].platform, "shared");
+});
+
 test("the authoritative API readiness endpoint can supply database and Redis evidence", async () => {
   const effects = [];
   const config = { ...productionConfig, databaseReadyCommand: null, redisReadyCommand: null };
@@ -125,7 +148,7 @@ test("production deployment uses immutable releases, shared env, atomic switch, 
         if (operation === "read-release-metadata") return {
           candidateCommit: SHA, manifestChecksum: "manifest-abc",
           artifactIdentity: { digest: "sha256:artifact", object: "candidate.tgz" },
-          releaseId: "v1.0.3-manifest-abc-web-11111111",
+          releaseId: "v1.0.3-manifest-abc-shared-11111111",
         };
         return { ok: true };
       },
@@ -137,7 +160,7 @@ test("production deployment uses immutable releases, shared env, atomic switch, 
   });
 
   const uploaded = await deployment.execute("upload");
-  assert.match(uploaded.object, /^\/opt\/e365-production\/releases\/v1\.0\.3-manifest-abc-web-/);
+  assert.match(uploaded.object, /^\/opt\/e365-production\/releases\/v1\.0\.3-manifest-abc-shared-/);
   assert.ok(effects.some((entry) => entry[0] === "local" && entry[1] === "git" && entry[2].includes(SHA)));
   assert.ok(effects.some((entry) => entry[0] === "local" && entry[1] === "rsync"));
   const rsyncCount = effects.filter((entry) => entry[0] === "local" && entry[1] === "rsync").length;
@@ -146,7 +169,7 @@ test("production deployment uses immutable releases, shared env, atomic switch, 
   assert.ok(effects.some((entry) => entry[0] === "remote" && entry[2] === "link-shared-env" && entry[3].envPath === productionConfig.sharedEnvPath));
   const switched = await deployment.execute("switch");
   assert.ok(effects.some((entry) => entry[0] === "remote" && entry[2] === "switch-current-atomic"));
-  assert.equal(switched.productionReleaseId.startsWith("v1.0.3-manifest-abc-web-"), true);
+  assert.equal(switched.productionReleaseId.startsWith("v1.0.3-manifest-abc-shared-"), true);
   const health = await deployment.execute("health");
   assert.equal(health.ok, true);
   assert.deepEqual(effects.filter((entry) => entry[0] === "probe").map((entry) => entry[1]), [productionConfig.publicUrl, productionConfig.adminUrl, productionConfig.apiReadyUrl]);
@@ -168,7 +191,7 @@ test("production deployment uses immutable releases, shared env, atomic switch, 
       runRemote: async (_host, operation) => operation === "read-current" ? readCurrent : {
         candidateCommit: SHA, manifestChecksum: "manifest-abc",
         artifactIdentity: { digest: "sha256:artifact", object: "candidate.tgz" },
-        releaseId: "v1.0.3-manifest-abc-web-11111111",
+        releaseId: "v1.0.3-manifest-abc-shared-11111111",
       },
       probe: async () => ({ ok: true }), readRemoteState: async (_host, path) => files.get(path),
       writeRemoteStateAtomic: async () => {}, now: () => "2026-08-11T12:00:00.000Z",
@@ -249,7 +272,7 @@ test("authoritative readback rejects a remote current entry or metadata mismatch
   const files = new Map([["/opt/e365-production/state/web.json", {
     status: "published", candidateCommit: SHA, manifestChecksum: "manifest-abc",
     artifactIdentity: { digest: "sha256:artifact", object: "candidate.tgz" },
-    releaseId: "v1.0.3-manifest-abc-web-11111111", externalRequestId: "idem-1", healthStatus: "healthy",
+    releaseId: "v1.0.3-manifest-abc-shared-11111111", externalRequestId: "idem-1", healthStatus: "healthy",
   }]]);
   const deployment = createProductionDeployment({
     environment: baseEnvironment, config: productionConfig,
