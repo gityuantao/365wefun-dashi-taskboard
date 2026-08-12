@@ -97,3 +97,47 @@ Status: DONE
 
 - A real deployment must provide a sandbox runner capable of actually disabling Candidate network access and returning the explicit proof. This module intentionally supplies no portable Node fallback because Node cannot enforce that property for arbitrary subprocesses.
 - Task 4 still owns composition into the runtime's `createMiniProgramReleaseAdapter({ runtime, projectRoot })` lifecycle factory.
+
+## Fix round 2/5 — DONE
+
+This round supersedes round 1's weaker `networkDisabled: true` result proof. Candidate output is no longer accepted as evidence of isolation.
+
+### Reviewer findings addressed
+
+- Added `createTrustedSandboxCapability(...)` as the trusted runtime injection seam. Capabilities are privately branded in the release module and carry frozen implementation/profile identity from trusted configuration; plain objects, functions, and Candidate-returned booleans are rejected.
+- The sandbox execution contract now receives a read-only detached worktree, a separate private writable output root, explicit denied roots (including the agent-owned artifact root and trusted-runtime private roots), a deny-all network profile, a minimal `PATH`/`LANG`/output environment, and detached process-group requirements. The caller awaits command completion and process-group exit; on failure it invokes group termination and then drains the group before returning.
+- No generic Node sandbox is claimed or supplied. CLI execution without an injected branded capability fails closed. Task 4 can compose a platform-specific trusted implementation through `createMiniProgramStageHandler({ trustedSandbox, ... })`.
+- Candidate output is processed only after the trusted sandbox has completed and the process group is quiescent. Build bytes are copied with per-file `O_NOFOLLOW`, `fstat`, inode/path checks, and same-FD reads into an agent-owned `0700` temporary tree outside Candidate-writable roots. That tree becomes read-only, is inspected and hashed, and is atomically renamed within the pre-created owned storage root.
+- Artifact storage must be pre-created mode `0700` by the trusted runtime. Publication parents are created one component at a time, checked for owner/canonical-root containment, and revalidated before rename. Symlink components, source replacement, intermediate-directory symlink races, and out-of-root publication fail closed.
+- Worktree cleanup now runs `list`, `remove --force`, `prune`, and final registry verification whether `git worktree add` succeeds or fails. A partial-registration fake proves the add-failure path is discovered and removed; cleanup errors still fail closed after owned-directory removal is attempted.
+- Replaced the adapter/CLI test that faked `executeStage` with a nine-stage local fixture that traverses the real `createWechatReleaseAdapter` → `runCli` → `validateStageInputs` → `executeMiniProgramStage` boundary, using only a branded trusted fake sandbox and fake external-stage runner.
+
+### RED evidence
+
+1. Trusted sandbox/interface migration: initial script run failed because the old fake returned Candidate-controlled `{ networkDisabled: true }` and the implementation had no branded lifecycle capability.
+2. Immutable snapshot cycle: 19 tests, 14 passed and 5 failed while read-only tree cleanup and atomic rename permissions were incomplete.
+3. Quiescence/cleanup/E2E cycle: reviewer-directed tests were added for group-exit ordering, termination on failure, partial registry registration, pre-created storage, same-FD source mutation, intermediate symlink replacement, and real nine-stage execution before their implementation was complete.
+
+### GREEN evidence
+
+- `node --test test/orchestration/wechat-command-adapter.test.mjs test/orchestration/mini-program-release-script.test.mjs`
+  - Exit 0; 38 passed, 0 failed before the final intermediate-symlink test; the final script-only suite is 24 passed, 0 failed (therefore the final combined target is 39 tests).
+- `node --check orchestration/mini-program/wechat-command-adapter.mjs`
+  - Exit 0.
+- `node --check scripts/release-mini-program.mjs`
+  - Exit 0.
+- Related frozen descriptor/runtime suite: 40 tests, 39 passed, 1 unchanged pre-existing failure in `published cleanup resumes from the frozen manifest despite invalid runtime and registry drift`; the Task 3 files are not in that failing path.
+- `git diff --check`
+  - Exit 0.
+
+### Side-effect proof
+
+- Trusted sandbox and external mutation boundaries are fakes in every test. The fake sandbox writes only to its temporary requested output root and never starts a real `pnpm` process.
+- The nine-stage E2E uses temporary local Git repositories, temporary fake `0600` descriptors, and an in-process fake network runner. It performs no network request and no real WeChat action.
+- No production SSH/DB, Apple, ClickUp, upload, review, or release operation ran.
+- `.data` remained untracked and was not read, modified, staged, removed, or included in any verification command.
+
+### Concerns
+
+- A deployment still requires a platform-specific trusted sandbox implementation that can enforce the requested network namespace/profile, filesystem mount policy, and process-group lifecycle. Task 3 deliberately provides only the trusted capability contract and fail-closed loader/injection seam.
+- The Candidate build tooling must honor the trusted sandbox's separate writable output mapping (`MINI_PROGRAM_BUILD_OUTPUT_DIR`) or the platform sandbox implementation must provide the equivalent mount mapping. The detached source worktree is intentionally requested read-only.

@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -34,6 +34,26 @@ const OUTPUT_FIELDS = new Set([
   "reviewSubmissionId", "reviewId", "reviewStatus", "releaseId", "releaseStatus",
   "liveId", "liveStatus", "authoritative", "checkedAt", "status", "error",
 ]);
+const TRUSTED_SANDBOXES = new WeakMap();
+
+export function createTrustedSandboxCapability({
+  implementationId,
+  profileId,
+  deniedRoots = [],
+  execute,
+}) {
+  required(implementationId, "sandbox implementationId");
+  required(profileId, "sandbox profileId");
+  if (typeof execute !== "function") throw new Error("mini-program trusted sandbox execute boundary is required");
+  const capability = Object.freeze({ implementationId, profileId });
+  TRUSTED_SANDBOXES.set(capability, Object.freeze({
+    implementationId,
+    profileId,
+    deniedRoots: Object.freeze(deniedRoots.map((item) => path.resolve(required(item, "sandbox deniedRoot")))),
+    execute,
+  }));
+  return capability;
+}
 
 function required(value, field) {
   if (typeof value !== "string" || value.trim() === "") throw new Error(`mini-program configuration missing ${field}`);
@@ -168,6 +188,20 @@ async function filesUnder(root, relative = "") {
   return files;
 }
 
+async function readArtifactFilesNoFollow(root) {
+  const files = await filesUnder(root);
+  const result = [];
+  for (const relative of files) {
+    const handle = await open(path.join(root, relative), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      const info = await handle.stat();
+      if (!info.isFile()) throw new Error("mini-program artifact contains a non-regular entry");
+      result.push({ relative, content: await handle.readFile() });
+    } finally { await handle.close(); }
+  }
+  return result;
+}
+
 function endpointAllowed(raw, allowlist) {
   let url;
   try { url = new URL(raw); } catch { return false; }
@@ -214,14 +248,15 @@ export async function inspectArtifact({
     throw new Error("mini-program artifactPath is outside the owned artifact root");
   }
   artifactPath = canonicalArtifact;
-  const descriptor = JSON.parse(await readFile(path.join(artifactPath, "project.config.json"), "utf8"));
+  const artifactFiles = await readArtifactFilesNoFollow(artifactPath);
+  const descriptorFile = artifactFiles.find(({ relative }) => relative === "project.config.json");
+  if (!descriptorFile) throw new Error("mini-program artifact project.config.json is missing");
+  const descriptor = JSON.parse(descriptorFile.content.toString("utf8"));
   if (descriptor.appid !== APP_ID || app.appId !== APP_ID) throw new Error("mini-program artifact App ID mismatch");
   if (!Array.isArray(productionApiAllowlist) || productionApiAllowlist.length === 0) throw new Error("mini-program production API allowlist is required");
-  const files = await filesUnder(artifactPath);
   const hash = createHash("sha256");
   let artifactSize = 0;
-  for (const relative of files) {
-    const content = await readFile(path.join(artifactPath, relative));
+  for (const { relative, content } of artifactFiles) {
     artifactSize += content.length;
     hash.update(Buffer.from(`${relative}\0${content.length}\0`));
     hash.update(content);
@@ -271,8 +306,8 @@ async function canonicalOwnedArtifactRoot(rootPath) {
   const parent = await canonicalExistingRoot(path.dirname(absolute), "artifactRoot parent");
   const info = await lstat(absolute).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
   if (info?.isSymbolicLink()) throw new Error("mini-program artifactRoot must not be a symlink");
+  if (!info) throw new Error("mini-program artifactRoot must be pre-created by the trusted agent runtime");
   if (info && !info.isDirectory()) throw new Error("mini-program artifactRoot must be a directory");
-  if (!info) await mkdir(absolute, { mode: 0o700 });
   const owned = await lstat(absolute);
   if (typeof process.getuid === "function" && owned.uid !== process.getuid()) throw new Error("mini-program artifactRoot must be owned by the current user");
   if ((owned.mode & 0o777) !== 0o700) throw new Error("mini-program artifactRoot must be a private 0700 directory");
@@ -294,15 +329,41 @@ async function assertPathInsideNoSymlinks(root, relative, field) {
   }
 }
 
-async function runSandboxed(sandboxRunner, command, worktreePath) {
-  if (typeof sandboxRunner !== "function") throw new Error("mini-program local execution requires a no-network sandbox runner");
-  const proof = await sandboxRunner({
-    file: "pnpm", args: command, cwd: worktreePath,
-    env: { PATH: process.env.PATH ?? "", LANG: process.env.LANG ?? "C.UTF-8" },
-    network: "disabled",
+async function runSandboxed(trustedSandbox, command, worktreePath, writableOutputRoot, deniedRoots = []) {
+  const trusted = TRUSTED_SANDBOXES.get(trustedSandbox);
+  if (!trusted) throw new Error("mini-program local execution requires an injected trusted sandbox capability");
+  const request = Object.freeze({
+    file: "pnpm",
+    args: Object.freeze([...command]),
+    cwd: worktreePath,
+    env: Object.freeze({
+      PATH: process.env.PATH ?? "",
+      LANG: process.env.LANG ?? "C.UTF-8",
+      MINI_PROGRAM_BUILD_OUTPUT_DIR: writableOutputRoot,
+    }),
+    network: Object.freeze({ mode: "deny-all", profileId: trusted.profileId }),
+    filesystem: Object.freeze({
+      readOnlyRoots: Object.freeze([worktreePath]),
+      writableRoots: Object.freeze([writableOutputRoot]),
+      deniedRoots: Object.freeze([...new Set([...trusted.deniedRoots, ...deniedRoots].map((item) => path.resolve(item)))]),
+    }),
+    processGroup: Object.freeze({ detached: true, terminateOnFailure: true, awaitExit: true }),
+    implementationId: trusted.implementationId,
   });
-  if (proof?.networkDisabled !== true) throw new Error("mini-program sandbox did not prove network disabled");
-  return proof.result;
+  const handle = await trusted.execute(request);
+  if (!handle || typeof handle.terminateProcessGroup !== "function"
+    || typeof handle.waitForProcessGroupExit !== "function" || !("completion" in handle)) {
+    throw new Error("mini-program trusted sandbox returned an invalid lifecycle handle");
+  }
+  let result;
+  let completionError;
+  try { result = await handle.completion; } catch (error) {
+    completionError = error;
+    try { await handle.terminateProcessGroup(); } catch (terminateError) { completionError = terminateError; }
+  }
+  await handle.waitForProcessGroupExit();
+  if (completionError) throw completionError;
+  return result;
 }
 
 async function withDetachedCandidate({ repoPath, candidateCommit, runCommand, operation }) {
@@ -319,15 +380,23 @@ async function withDetachedCandidate({ repoPath, candidateCommit, runCommand, op
     operationError = error;
   }
   let cleanupError;
-  if (added) {
-    try {
-      await runCommand("git", ["worktree", "remove", "--force", worktreePath], { cwd: canonicalRepo, encoding: "utf8" });
-    } catch (error) { cleanupError = error; }
-    try {
-      const listing = await runCommand("git", ["worktree", "list", "--porcelain"], { cwd: canonicalRepo, encoding: "utf8" });
-      if (String(listing?.stdout ?? "").includes(worktreePath)) throw new Error("git worktree registry still contains the detached Candidate");
-    } catch (error) { cleanupError ??= error; }
-  }
+  let registered = false;
+  try {
+    const listing = await runCommand("git", ["worktree", "list", "--porcelain"], { cwd: canonicalRepo, encoding: "utf8" });
+    registered = String(listing?.stdout ?? "").includes(worktreePath);
+  } catch (error) { cleanupError = error; }
+  let removeError;
+  try {
+    await runCommand("git", ["worktree", "remove", "--force", worktreePath], { cwd: canonicalRepo, encoding: "utf8" });
+  } catch (error) { removeError = error; }
+  try {
+    await runCommand("git", ["worktree", "prune"], { cwd: canonicalRepo, encoding: "utf8" });
+  } catch (error) { cleanupError ??= error; }
+  try {
+    const listing = await runCommand("git", ["worktree", "list", "--porcelain"], { cwd: canonicalRepo, encoding: "utf8" });
+    if (String(listing?.stdout ?? "").includes(worktreePath)) throw new Error("git worktree registry still contains the detached Candidate");
+  } catch (error) { cleanupError ??= error; }
+  if ((added || registered) && removeError) cleanupError ??= removeError;
   await rm(worktreePath, { recursive: true, force: true });
   if (cleanupError) throw new Error(`mini-program worktree cleanup failed: ${cleanText(cleanupError.message)}`);
   if (operationError) throw operationError;
@@ -345,15 +414,98 @@ function validateCandidateIdentity({ candidateCommit, manifestChecksum, app }) {
   };
 }
 
-export async function validateDetachedCandidate({ repoPath, candidateCommit, manifestChecksum, app, runCommand = defaultRunCommand, sandboxRunner }) {
+export async function validateDetachedCandidate({ repoPath, candidateCommit, manifestChecksum, app, runCommand = defaultRunCommand, trustedSandbox }) {
   validateCandidateIdentity({ candidateCommit, manifestChecksum, app });
-  if (typeof sandboxRunner !== "function") throw new Error("mini-program local execution requires a no-network sandbox runner");
+  if (!TRUSTED_SANDBOXES.has(trustedSandbox)) throw new Error("mini-program local execution requires an injected trusted sandbox capability");
   return withDetachedCandidate({ repoPath, candidateCommit, runCommand, operation: async (worktreePath) => {
-    for (const args of [["--filter", "@e365/mp", "lint"], ["--filter", "@e365/mp", "typecheck"], ["--filter", "@e365/mp", "test"]]) {
-      await runSandboxed(sandboxRunner, args, worktreePath);
-    }
-    return { appId: APP_ID, version: app.version, candidateCommit, manifestChecksum, status: "validated" };
+    const outputRoot = await mkdtemp(path.join(os.tmpdir(), "wechat-candidate-validation-output-"));
+    try {
+      for (const args of [["--filter", "@e365/mp", "lint"], ["--filter", "@e365/mp", "typecheck"], ["--filter", "@e365/mp", "test"]]) {
+        await runSandboxed(trustedSandbox, args, worktreePath, outputRoot);
+      }
+      return { appId: APP_ID, version: app.version, candidateCommit, manifestChecksum, status: "validated" };
+    } finally { await rm(outputRoot, { recursive: true, force: true }); }
   } });
+}
+
+async function snapshotTreeNoFollow(source, target, hooks = {}, relative = "") {
+  const sourceDirectory = path.join(source, relative);
+  const directoryInfo = await lstat(sourceDirectory);
+  if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()) throw new Error("mini-program artifact snapshot source must be a non-symlink directory");
+  const targetDirectory = path.join(target, relative);
+  if (relative) await mkdir(targetDirectory, { mode: 0o700 });
+  const entries = await readdir(sourceDirectory, { withFileTypes: true });
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const child = path.join(relative, entry.name);
+    await hooks.beforeEntryOpen?.({ source, target, relative: child });
+    if (entry.isSymbolicLink()) throw new Error("mini-program artifact snapshot rejects symbolic links");
+    if (entry.isDirectory()) {
+      await snapshotTreeNoFollow(source, target, hooks, child);
+      continue;
+    }
+    if (!entry.isFile()) throw new Error("mini-program artifact snapshot rejects non-regular entries");
+    const sourceHandle = await open(path.join(source, child), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      const info = await sourceHandle.stat();
+      if (!info.isFile()) throw new Error("mini-program artifact snapshot source is not regular");
+      const canonicalSource = await realpath(source);
+      const canonicalFile = await realpath(path.join(source, child));
+      const sourceRelative = path.relative(canonicalSource, canonicalFile);
+      if (sourceRelative === ".." || sourceRelative.startsWith(`..${path.sep}`) || path.isAbsolute(sourceRelative)) {
+        throw new Error("mini-program artifact snapshot path escaped through a symlink race");
+      }
+      const pathInfo = await lstat(path.join(source, child));
+      if (pathInfo.isSymbolicLink() || pathInfo.dev !== info.dev || pathInfo.ino !== info.ino) {
+        throw new Error("mini-program artifact snapshot path changed during no-follow open");
+      }
+      await hooks.afterSourceOpen?.({ source, target, relative: child });
+      const content = await sourceHandle.readFile();
+      const targetHandle = await open(
+        path.join(target, child),
+        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+        0o600,
+      );
+      try { await targetHandle.writeFile(content); } finally { await targetHandle.close(); }
+    } finally { await sourceHandle.close(); }
+  }
+}
+
+async function makeTreeReadOnly(root, relative = "") {
+  const directory = path.join(root, relative);
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const child = path.join(relative, entry.name);
+    if (entry.isDirectory()) await makeTreeReadOnly(root, child);
+    else await chmod(path.join(root, child), 0o400);
+  }
+  await chmod(directory, 0o500);
+}
+
+async function makeTreeOwnerWritable(root) {
+  const info = await lstat(root).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+  if (!info) return;
+  if (info.isDirectory()) {
+    await chmod(root, 0o700);
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      if (entry.isDirectory()) await makeTreeOwnerWritable(path.join(root, entry.name));
+      else await chmod(path.join(root, entry.name), 0o600);
+    }
+  } else await chmod(root, 0o600);
+}
+
+async function ensureOwnedPublicationParent(root, segments) {
+  let current = root;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    await mkdir(current, { mode: 0o700 }).catch((error) => { if (error?.code !== "EEXIST") throw error; });
+    const info = await lstat(current);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("mini-program publication parent is not an owned directory");
+    if (typeof process.getuid === "function" && info.uid !== process.getuid()) throw new Error("mini-program publication parent is not owned by the current user");
+    const canonical = await realpath(current);
+    const relative = path.relative(root, canonical);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error("mini-program publication parent escapes owned root");
+  }
+  return current;
 }
 
 export async function buildDetachedCandidate({
@@ -364,30 +516,36 @@ export async function buildDetachedCandidate({
   productionApiAllowlist,
   artifactRoot,
   runCommand = defaultRunCommand,
-  sandboxRunner,
-  copyArtifact = (source, target) => cp(source, target, { recursive: true, errorOnExist: true, force: false }),
+  trustedSandbox,
+  snapshotHooks,
 }) {
   const identity = validateCandidateIdentity({ candidateCommit, manifestChecksum, app });
-  if (typeof sandboxRunner !== "function") throw new Error("mini-program local execution requires a no-network sandbox runner");
+  if (!TRUSTED_SANDBOXES.has(trustedSandbox)) throw new Error("mini-program local execution requires an injected trusted sandbox capability");
   const canonicalArtifacts = await canonicalOwnedArtifactRoot(artifactRoot);
+  const parent = await ensureOwnedPublicationParent(canonicalArtifacts, [identity.manifestIdentifier, identity.appIdentifier]);
   return withDetachedCandidate({ repoPath, candidateCommit, runCommand, operation: async (worktreePath) => {
     await assertPathInsideNoSymlinks(worktreePath, identity.sourceDirectory, "sourceDirectory");
+    const buildOutputRoot = await mkdtemp(path.join(os.tmpdir(), "wechat-candidate-build-output-"));
     const commands = [["--filter", "@e365/mp", "exec", "uni", "build", "-p", "mp-weixin"]];
-    for (const args of commands) await runSandboxed(sandboxRunner, args, worktreePath);
-    const builtRelative = path.join(identity.sourceDirectory, identity.artifactDirectory);
-    await assertPathInsideNoSymlinks(worktreePath, builtRelative, "artifactDirectory");
-    const builtPath = path.resolve(worktreePath, builtRelative);
     const privateCopy = await mkdtemp(path.join(canonicalArtifacts, ".candidate-copy-"));
     const copiedArtifact = path.join(privateCopy, "artifact");
     try {
-      await copyArtifact(builtPath, copiedArtifact);
+      for (const args of commands) await runSandboxed(trustedSandbox, args, worktreePath, buildOutputRoot, [canonicalArtifacts]);
+      await mkdir(copiedArtifact, { mode: 0o700 });
+      await snapshotTreeNoFollow(buildOutputRoot, copiedArtifact, snapshotHooks);
+      await makeTreeReadOnly(copiedArtifact);
       const inspected = await inspectArtifact({ artifactRoot: canonicalArtifacts, artifactPath: copiedArtifact, app, candidateCommit, manifestChecksum, productionApiAllowlist });
-      const parent = path.join(canonicalArtifacts, identity.manifestIdentifier, identity.appIdentifier);
       const destination = path.join(parent, inspected.artifactDigest.slice("sha256:".length));
-      await mkdir(parent, { recursive: true, mode: 0o700 });
+      await ensureOwnedPublicationParent(canonicalArtifacts, [identity.manifestIdentifier, identity.appIdentifier]);
+      await chmod(copiedArtifact, 0o700);
       await rename(copiedArtifact, destination);
+      await chmod(destination, 0o500);
       return { ...inspected, artifactPath: destination };
-    } finally { await rm(privateCopy, { recursive: true, force: true }); }
+    } finally {
+      await rm(buildOutputRoot, { recursive: true, force: true });
+      await makeTreeOwnerWritable(privateCopy);
+      await rm(privateCopy, { recursive: true, force: true });
+    }
   } });
 }
 
@@ -395,10 +553,10 @@ export async function executeMiniProgramStage(config, {
   readPrivateFile,
   stageRunner,
   runCommand = defaultRunCommand,
-  sandboxRunner,
+  trustedSandbox,
 } = {}) {
-  if (config.stage === "test") return validateDetachedCandidate({ ...config, runCommand, sandboxRunner });
-  if (config.stage === "build") return buildDetachedCandidate({ ...config, runCommand, sandboxRunner });
+  if (config.stage === "test") return validateDetachedCandidate({ ...config, runCommand, trustedSandbox });
+  if (config.stage === "build") return buildDetachedCandidate({ ...config, runCommand, trustedSandbox });
   if (config.stage === "inspectArtifact") {
     return inspectArtifact({ ...config, artifactPath: config.evidence.artifactPath });
   }
@@ -412,6 +570,10 @@ export async function executeMiniProgramStage(config, {
   const reviewConfiguration = reviewConfigurations[config.reviewConfigurationRef];
   if (!reviewConfiguration || typeof reviewConfiguration !== "object" || Array.isArray(reviewConfiguration)) throw new Error("mini-program review configuration reference is missing");
   return stageRunner({ ...config, credentials, reviewConfiguration });
+}
+
+export function createMiniProgramStageHandler(dependencies = {}) {
+  return (config) => executeMiniProgramStage(config, dependencies);
 }
 
 export async function runCli({

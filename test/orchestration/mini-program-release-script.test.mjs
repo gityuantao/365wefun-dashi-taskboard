@@ -9,6 +9,8 @@ import { promisify } from "node:util";
 
 import {
   buildDetachedCandidate,
+  createMiniProgramStageHandler,
+  createTrustedSandboxCapability,
   executeMiniProgramStage,
   inspectArtifact,
   readPrivateJsonNoFollow,
@@ -24,8 +26,20 @@ const baseEvidence = { appId: APP_ID, version: "1.2.3", candidateCommit: "1".rep
 
 async function fixtureRepo(t) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wechat-candidate-fixture-")));
-  t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+  t.after(async () => {
+    async function writable(target) {
+      const info = await stat(target).catch(() => null);
+      if (!info) return;
+      if (info.isDirectory()) {
+        await chmod(target, 0o700);
+        for (const entry of await import("node:fs/promises").then(({ readdir }) => readdir(target))) await writable(path.join(target, entry));
+      } else await chmod(target, 0o600);
+    }
+    await writable(root);
+    await rm(root, { recursive: true, force: true });
+  });
   await mkdir(path.join(root, "apps/mp"), { recursive: true });
+  await mkdir(path.join(root, "artifacts"), { mode: 0o700 });
   await writeFile(path.join(root, "package.json"), JSON.stringify({ private: true }));
   await writeFile(path.join(root, "apps/mp/source.txt"), "candidate-source\n");
   await execFile("git", ["init", "-q"], { cwd: root });
@@ -52,7 +66,7 @@ async function fakeBuildRunner(calls, file, args, options) {
   calls.push({ file, args: [...args], cwd: options.cwd });
   if (file === "git") return execFile(file, args, options);
   if (args.includes("build")) {
-    const artifact = path.join(options.cwd, "apps/mp/dist/build/mp-weixin");
+    const artifact = options.env.MINI_PROGRAM_BUILD_OUTPUT_DIR;
     await mkdir(artifact, { recursive: true });
     await writeFile(path.join(artifact, "project.config.json"), JSON.stringify({ appid: APP_ID }));
     await writeFile(path.join(artifact, "app.js"), "const api='https://api.365life.example/v1';\n");
@@ -61,11 +75,19 @@ async function fakeBuildRunner(calls, file, args, options) {
 }
 
 function fakeSandbox(calls, run = fakeBuildRunner) {
-  return async ({ file, args, cwd, env, network }) => {
-    calls.push({ file, args: [...args], cwd, env, network, sandbox: true });
-    const result = await run([], file, args, { cwd, env });
-    return { networkDisabled: true, result };
-  };
+  return createTrustedSandboxCapability({
+    implementationId: "test-trusted-sandbox-v1",
+    profileId: "test-deny-network-v1",
+    deniedRoots: ["/private/credentials", "/private/review"],
+    execute: async ({ file, args, cwd, env, network, filesystem, processGroup, implementationId }) => {
+      calls.push({ file, args: [...args], cwd, env, network, filesystem, processGroup, implementationId, sandbox: true });
+      return {
+        completion: run([], file, args, { cwd, env }),
+        terminateProcessGroup: async () => { calls.push({ lifecycle: "terminate" }); },
+        waitForProcessGroupExit: async () => { calls.push({ lifecycle: "group-exit" }); },
+      };
+    },
+  });
 }
 
 test("detached Candidate build runs exact quality and production build commands, verifies identity, and cleans the worktree", async (t) => {
@@ -80,15 +102,21 @@ test("detached Candidate build runs exact quality and production build commands,
     productionApiAllowlist: ["https://api.365life.example/"],
     artifactRoot,
     runCommand: (...args) => fakeBuildRunner(calls, ...args),
-    sandboxRunner: fakeSandbox(calls),
+    trustedSandbox: fakeSandbox(calls),
   });
 
   assert.deepEqual(calls.filter(({ file, sandbox }) => file === "pnpm" && sandbox).map(({ args }) => args), [
     ["--filter", "@e365/mp", "exec", "uni", "build", "-p", "mp-weixin"],
   ]);
   for (const call of calls.filter(({ sandbox }) => sandbox)) {
-    assert.equal(call.network, "disabled");
-    assert.deepEqual(call.env, { PATH: process.env.PATH ?? "", LANG: process.env.LANG ?? "C.UTF-8" });
+    assert.deepEqual(call.network, { mode: "deny-all", profileId: "test-deny-network-v1" });
+    assert.equal(call.env.PATH, process.env.PATH ?? "");
+    assert.equal(call.env.LANG, process.env.LANG ?? "C.UTF-8");
+    assert.match(call.env.MINI_PROGRAM_BUILD_OUTPUT_DIR, /wechat-candidate-build-output-/);
+    assert.deepEqual(call.filesystem.readOnlyRoots, [call.cwd]);
+    assert.deepEqual(call.filesystem.writableRoots, [call.env.MINI_PROGRAM_BUILD_OUTPUT_DIR]);
+    assert.ok(call.filesystem.deniedRoots.includes("/private/credentials"));
+    assert.equal(call.processGroup.awaitExit, true);
   }
   const worktreeAdd = calls.find(({ file, args }) => file === "git" && args.includes("add"));
   assert.ok(worktreeAdd.args.includes("--detach"));
@@ -121,11 +149,10 @@ test("detached Candidate worktree cleanup is guaranteed after a failed build", a
       if (args.includes("build")) throw new Error("production build failed");
       return { stdout: "", stderr: "", exitCode: 0 };
     },
-    sandboxRunner: async ({ file, args, cwd, env }) => {
-      calls.push({ file, args, cwd, env, sandbox: true });
+    trustedSandbox: fakeSandbox(calls, async (_calls, _file, args) => {
       if (args.includes("build")) throw new Error("production build failed");
-      return { networkDisabled: true, result: { stdout: "", stderr: "", exitCode: 0 } };
-    },
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }),
   }), /production build failed/);
   assert.ok(calls.some(({ file, args }) => file === "git" && args.includes("remove") && args.includes("--force")));
   const { stdout } = await execFile("git", ["worktree", "list", "--porcelain"], { cwd: fixture.root });
@@ -146,9 +173,34 @@ test("detached Candidate setup failure removes its allocated temporary worktree 
       }
       return { stdout: "", stderr: "", exitCode: 0 };
     },
-    sandboxRunner: fakeSandbox([]),
+    trustedSandbox: fakeSandbox([]),
   }), /worktree setup failed/);
   await assert.rejects(stat(allocatedPath), (error) => error.code === "ENOENT");
+});
+
+test("partial worktree registration after add failure is discovered, removed, pruned, and verified", async (t) => {
+  const fixture = await fixtureRepo(t);
+  const calls = [];
+  let registeredPath;
+  await assert.rejects(buildDetachedCandidate({
+    repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1",
+    app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"],
+    artifactRoot: path.join(fixture.root, "artifacts"), trustedSandbox: fakeSandbox([]),
+    runCommand: async (file, args) => {
+      calls.push([...args]);
+      if (file === "git" && args.includes("add")) {
+        registeredPath = args.at(-2);
+        throw new Error("add failed after registry write");
+      }
+      if (args.includes("list")) return { stdout: registeredPath ? `worktree ${registeredPath}\n` : "" };
+      if (args.includes("remove")) { registeredPath = undefined; return { stdout: "" }; }
+      return { stdout: "" };
+    },
+  }), /add failed after registry write/);
+  assert.ok(calls.some((args) => args.includes("list") && args.includes("--porcelain")));
+  assert.ok(calls.some((args) => args.includes("remove") && args.includes("--force")));
+  assert.ok(calls.some((args) => args.includes("prune")));
+  assert.equal(registeredPath, undefined);
 });
 
 test("worktree registry cleanup failure is never swallowed even when owned directory removal succeeds", async (t) => {
@@ -162,10 +214,10 @@ test("worktree registry cleanup failure is never swallowed even when owned direc
       if (file === "git" && args.includes("remove")) throw new Error("registry remove failed");
       return fakeBuildRunner([], file, args, options);
     },
-    sandboxRunner: fakeSandbox(calls),
+    trustedSandbox: fakeSandbox(calls),
   }), /registry remove failed|cleanup/i);
-  const removeCall = calls.find(({ args }) => args.includes("remove"));
-  assert.ok(calls.some(({ args }) => args.includes("list") && args.includes("--porcelain")));
+  const removeCall = calls.find(({ args }) => args?.includes("remove"));
+  assert.ok(calls.some(({ args }) => args?.includes("list") && args.includes("--porcelain")));
   await assert.rejects(stat(removeCall.args.at(-1)), (error) => error.code === "ENOENT");
 });
 
@@ -181,7 +233,7 @@ test("detached build rejects descriptor and artifact output paths that escape ow
       app: { ...app(fixture.candidateCommit), ...overrides },
       productionApiAllowlist: ["https://api.365life.example/"], artifactRoot: path.join(fixture.root, "artifacts"),
       runCommand: (...args) => fakeBuildRunner([], ...args),
-      sandboxRunner: fakeSandbox([]),
+      trustedSandbox: fakeSandbox([]),
     }), /path|relative|escape/i);
   }
 });
@@ -191,19 +243,19 @@ test("local Candidate execution defaults closed without a no-network sandbox pro
   const input = { repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1", app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"], artifactRoot: path.join(fixture.root, "artifacts") };
   await assert.rejects(validateDetachedCandidate(input), /sandbox|network/i);
   await assert.rejects(buildDetachedCandidate(input), /sandbox|network/i);
-  await assert.rejects(buildDetachedCandidate({ ...input, sandboxRunner: async () => ({ networkDisabled: false, result: {} }) }), /network.*disabled|sandbox/i);
+  await assert.rejects(buildDetachedCandidate({ ...input, trustedSandbox: { implementationId: "forged" } }), /trusted sandbox|capability/i);
 });
 
 test("test stage only validates Candidate while build alone creates the published artifact", async (t) => {
   const fixture = await fixtureRepo(t);
   const calls = [];
-  const base = { repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1", app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"], artifactRoot: path.join(fixture.root, "artifacts"), runCommand: (...args) => fakeBuildRunner(calls, ...args), sandboxRunner: fakeSandbox(calls) };
+  const base = { repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1", app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"], artifactRoot: path.join(fixture.root, "artifacts"), runCommand: (...args) => fakeBuildRunner(calls, ...args), trustedSandbox: fakeSandbox(calls) };
   const tested = await validateDetachedCandidate(base);
   assert.equal(tested.status, "validated");
   assert.deepEqual(calls.filter(({ sandbox }) => sandbox).map(({ args }) => args), [
     ["--filter", "@e365/mp", "lint"], ["--filter", "@e365/mp", "typecheck"], ["--filter", "@e365/mp", "test"],
   ]);
-  assert.equal(calls.some(({ args }) => args.includes("build")), false);
+  assert.equal(calls.some(({ args }) => args?.includes("build")), false);
   const built = await buildDetachedCandidate(base);
   assert.match(built.artifactDigest, /^sha256:/);
   assert.deepEqual(calls.filter(({ sandbox }) => sandbox).slice(3).map(({ args }) => args), [
@@ -220,7 +272,7 @@ test("canonical roots and every existing path component reject symlinks and esca
   await symlink(fixture.root, repoLink);
   await symlink(outside, artifactLink);
   t.after(() => rm(repoLink, { force: true }));
-  const common = { candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1", app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"], sandboxRunner: fakeSandbox([]) };
+  const common = { candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1", app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"], trustedSandbox: fakeSandbox([]) };
   await assert.rejects(buildDetachedCandidate({ ...common, repoPath: repoLink, artifactRoot: path.join(fixture.root, "artifacts") }), /symlink|canonical/i);
   const nestedRoot = path.join(path.dirname(fixture.root), `nested-root-${Date.now()}`);
   await mkdir(nestedRoot);
@@ -228,12 +280,13 @@ test("canonical roots and every existing path component reject symlinks and esca
   t.after(() => rm(nestedRoot, { recursive: true, force: true }));
   await assert.rejects(buildDetachedCandidate({ ...common, repoPath: path.join(nestedRoot, "component", path.basename(fixture.root)), artifactRoot: path.join(fixture.root, "artifacts") }), /symlink|canonical/i);
   await assert.rejects(buildDetachedCandidate({ ...common, repoPath: fixture.root, artifactRoot: artifactLink }), /symlink|canonical|owned/i);
-  await symlink(outside, path.join(fixture.root, "apps/mp/dist"));
-  await execFile("git", ["add", "apps/mp/dist"], { cwd: fixture.root });
-  await execFile("git", ["commit", "-qm", "symlink candidate"], { cwd: fixture.root });
-  const { stdout } = await execFile("git", ["rev-parse", "HEAD"], { cwd: fixture.root });
-  const symlinkCommit = stdout.trim();
-  await assert.rejects(buildDetachedCandidate({ ...common, candidateCommit: symlinkCommit, app: app(symlinkCommit), repoPath: fixture.root, artifactRoot: path.join(fixture.root, "artifacts"), runCommand: (...args) => fakeBuildRunner([], ...args) }), /symlink|canonical|escape/i);
+  const symlinkSandbox = fakeSandbox([], async (_calls, _file, args, options) => {
+    if (args.includes("build")) {
+      await symlink(outside, path.join(options.env.MINI_PROGRAM_BUILD_OUTPUT_DIR, "linked"));
+    }
+    return { stdout: "", stderr: "", exitCode: 0 };
+  });
+  await assert.rejects(buildDetachedCandidate({ ...common, repoPath: fixture.root, artifactRoot: path.join(fixture.root, "artifacts"), trustedSandbox: symlinkSandbox }), /symlink|symbolic link|canonical|escape/i);
 });
 
 test("artifact root must be a private directory owned by the current user", async (t) => {
@@ -243,8 +296,17 @@ test("artifact root must be a private directory owned by the current user", asyn
   await assert.rejects(buildDetachedCandidate({
     repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1",
     app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"], artifactRoot,
-    sandboxRunner: fakeSandbox([]),
+    trustedSandbox: fakeSandbox([]),
   }), /owned|private|0700/i);
+});
+
+test("artifact root must be pre-created by the trusted runtime", async (t) => {
+  const fixture = await fixtureRepo(t);
+  await assert.rejects(buildDetachedCandidate({
+    repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1",
+    app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"],
+    artifactRoot: path.join(fixture.root, "not-created"), trustedSandbox: fakeSandbox([]),
+  }), /pre-created|artifactRoot/i);
 });
 
 test("artifact publication hashes the private immutable copy and atomically renames those exact bytes", async (t) => {
@@ -253,15 +315,93 @@ test("artifact publication hashes the private immutable copy and atomically rena
   const result = await buildDetachedCandidate({
     repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1",
     app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"], artifactRoot: path.join(fixture.root, "artifacts"),
-    runCommand: (...args) => fakeBuildRunner(calls, ...args), sandboxRunner: fakeSandbox(calls),
-    copyArtifact: async (source, target) => {
-      await cp(source, target, { recursive: true });
-      await writeFile(path.join(source, "app.js"), "const api='https://evil.example/v10';\n");
+    runCommand: (...args) => fakeBuildRunner(calls, ...args), trustedSandbox: fakeSandbox(calls),
+    snapshotHooks: {
+      afterSourceOpen: async ({ source, relative }) => {
+        if (relative !== "app.js") return;
+        await rename(path.join(source, relative), path.join(source, `${relative}.original`));
+        await writeFile(path.join(source, relative), "const api='https://evil.example/v10';\n");
+      },
     },
   });
   assert.match(await readFile(path.join(result.artifactPath, "app.js"), "utf8"), /api\.365life\.example/);
   const verified = await inspectArtifact({ artifactRoot: path.join(fixture.root, "artifacts"), artifactPath: result.artifactPath, app: app(fixture.candidateCommit), candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1", productionApiAllowlist: ["https://api.365life.example/"] });
   assert.equal(verified.artifactDigest, result.artifactDigest);
+});
+
+test("artifact snapshot starts only after trusted sandbox completion and process-group quiescence", async (t) => {
+  const fixture = await fixtureRepo(t);
+  const events = [];
+  const trustedSandbox = createTrustedSandboxCapability({
+    implementationId: "test-lifecycle-sandbox-v1", profileId: "deny-all-v1",
+    execute: async ({ env }) => ({
+      completion: (async () => {
+        events.push("completion");
+        await mkdir(env.MINI_PROGRAM_BUILD_OUTPUT_DIR, { recursive: true });
+        await writeFile(path.join(env.MINI_PROGRAM_BUILD_OUTPUT_DIR, "project.config.json"), JSON.stringify({ appid: APP_ID }));
+        await writeFile(path.join(env.MINI_PROGRAM_BUILD_OUTPUT_DIR, "app.js"), "https://api.365life.example/v1");
+      })(),
+      terminateProcessGroup: async () => { events.push("terminate"); },
+      waitForProcessGroupExit: async () => { events.push("group-exit"); },
+    }),
+  });
+  await buildDetachedCandidate({
+    repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1",
+    app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"],
+    artifactRoot: path.join(fixture.root, "artifacts"), trustedSandbox,
+    snapshotHooks: { beforeEntryOpen: async () => { events.push("snapshot"); } },
+  });
+  assert.ok(events.indexOf("completion") < events.indexOf("group-exit"));
+  assert.ok(events.indexOf("group-exit") < events.indexOf("snapshot"));
+});
+
+test("artifact snapshot rejects an intermediate directory replaced by a symlink during traversal", async (t) => {
+  const fixture = await fixtureRepo(t);
+  const outside = await mkdtemp(path.join(os.tmpdir(), "wechat-snapshot-race-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await writeFile(path.join(outside, "escaped.js"), "https://evil.example/v1");
+  let swapped = false;
+  const trustedSandbox = createTrustedSandboxCapability({
+    implementationId: "test-lifecycle-sandbox-v1", profileId: "deny-all-v1",
+    execute: async ({ env }) => ({
+      completion: (async () => {
+        await mkdir(path.join(env.MINI_PROGRAM_BUILD_OUTPUT_DIR, "nested"), { recursive: true });
+        await writeFile(path.join(env.MINI_PROGRAM_BUILD_OUTPUT_DIR, "project.config.json"), JSON.stringify({ appid: APP_ID }));
+        await writeFile(path.join(env.MINI_PROGRAM_BUILD_OUTPUT_DIR, "nested/app.js"), "https://api.365life.example/v1");
+      })(),
+      terminateProcessGroup: async () => {}, waitForProcessGroupExit: async () => {},
+    }),
+  });
+  await assert.rejects(buildDetachedCandidate({
+    repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1",
+    app: app(fixture.candidateCommit), productionApiAllowlist: ["https://api.365life.example/"],
+    artifactRoot: path.join(fixture.root, "artifacts"), trustedSandbox,
+    snapshotHooks: { beforeEntryOpen: async ({ source, relative }) => {
+      if (relative !== "nested" || swapped) return;
+      swapped = true;
+      await rename(path.join(source, "nested"), path.join(source, "nested.original"));
+      await symlink(outside, path.join(source, "nested"));
+    } },
+  }), /symlink|symbolic link|changed|escape/i);
+  assert.equal(swapped, true);
+});
+
+test("sandbox command failure terminates and drains its process group before surfacing", async (t) => {
+  const fixture = await fixtureRepo(t);
+  const events = [];
+  const trustedSandbox = createTrustedSandboxCapability({
+    implementationId: "test-lifecycle-sandbox-v1", profileId: "deny-all-v1",
+    execute: async () => ({
+      completion: Promise.reject(new Error("sandboxed command failed")),
+      terminateProcessGroup: async () => { events.push("terminate"); },
+      waitForProcessGroupExit: async () => { events.push("group-exit"); },
+    }),
+  });
+  await assert.rejects(validateDetachedCandidate({
+    repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1",
+    app: app(fixture.candidateCommit), trustedSandbox,
+  }), /sandboxed command failed/);
+  assert.deepEqual(events, ["terminate", "group-exit"]);
 });
 
 test("artifact inspection rejects wrong App ID, non-production endpoints, non-allowlisted APIs, and secret material", async (t) => {
@@ -398,33 +538,53 @@ test("adapter-shaped CLI environments execute all nine stages without duplicate 
   assert.deepEqual(observed, stages);
 });
 
-test("the actual adapter and CLI boundary compose for all nine stage contracts", async () => {
+test("the actual adapter and CLI boundary compose through real executeMiniProgramStage for all nine stages", async (t) => {
+  const fixture = await fixtureRepo(t);
+  const privateRoot = await mkdtemp(path.join(os.tmpdir(), "wechat-nine-stage-private-"));
+  t.after(() => rm(privateRoot, { recursive: true, force: true }));
+  const credentialsPath = path.join(privateRoot, "credentials.private.json");
+  const reviewConfigurationPath = path.join(privateRoot, "review.private.json");
+  await writeFile(credentialsPath, JSON.stringify({ token: "fake-only" }), { mode: 0o600 });
+  await writeFile(reviewConfigurationPath, JSON.stringify({ "review/wechat": { category: "Education" } }), { mode: 0o600 });
+  const artifactRoot = path.join(fixture.root, "artifacts");
   const stages = [];
-  const manifest = { versionId: "version-1", candidateCommit: "1".repeat(40), candidateRef: `refs/heads/release-candidate/v/${"1".repeat(40)}`, checksum: "manifest" };
-  const descriptor = app("1".repeat(40));
+  const manifest = { versionId: "version-1", candidateCommit: fixture.candidateCommit, candidateRef: `refs/heads/release-candidate/v/${fixture.candidateCommit}`, checksum: "manifest" };
+  const descriptor = app(fixture.candidateCommit);
+  const trustedSandbox = fakeSandbox(stages, fakeBuildRunner);
+  const executeStage = createMiniProgramStageHandler({
+    trustedSandbox,
+    runCommand: (...args) => fakeBuildRunner(stages, ...args),
+    stageRunner: async (config) => {
+      stages.push({ externalStage: config.stage });
+      const common = { appId: APP_ID, version: descriptor.version, candidateCommit: manifest.candidateCommit, manifestChecksum: manifest.checksum, artifactDigest: config.evidence.artifactDigest };
+      if (config.stage === "upload") return { ...common, uploadId: "upload-1" };
+      if (config.stage === "readUpload") return { ...common, uploadId: "upload-1", authoritative: true };
+      if (config.stage === "submitReview") return { ...common, uploadId: "upload-1", reviewSubmissionId: "submission-1", reviewId: "review-1" };
+      if (config.stage === "readReview") return { ...common, uploadId: "upload-1", reviewSubmissionId: "submission-1", reviewId: "review-1", reviewStatus: "approved", authoritative: true };
+      if (config.stage === "release") return { ...common, uploadId: "upload-1", reviewSubmissionId: "submission-1", reviewId: "review-1", releaseId: "release-1" };
+      return { ...common, uploadId: "upload-1", reviewSubmissionId: "submission-1", reviewId: "review-1", releaseId: "release-1", liveId: "live-1", liveStatus: "live", authoritative: true };
+    },
+  });
   const adapter = createWechatReleaseAdapter({
-    command: ["fake"], credentialsPath: "/private/credentials", reviewConfigurationPath: "/private/review",
-    repoPath: "/repo", artifactRoot: "/owned", productionApiAllowlist: ["https://api.example/v1"],
+    command: ["fake"], credentialsPath, reviewConfigurationPath,
+    repoPath: fixture.root, artifactRoot, productionApiAllowlist: ["https://api.365life.example/v1"],
     runCommand: async (_file, _args, { env }) => {
       let output = "";
       await runCli({
         environment: env,
         write: (value) => { output = value; },
-        validateInputs: (value) => validateStageInputs(value, { checkFilesystem: false }),
-        executeStage: async (config) => {
-          stages.push(config.stage);
-          const lineage = { uploadId: "upload-1", reviewSubmissionId: "submission-1", reviewId: "review-1", reviewStatus: "approved", releaseId: "release-1", liveId: "live-1", liveStatus: "live", authoritative: true };
-          return { ...baseEvidence, ...lineage };
-        },
+        executeStage,
       });
       return { stdout: output, stderr: "", exitCode: 0 };
     },
   });
-  const lineage = { ...baseEvidence, uploadId: "upload-1", reviewSubmissionId: "submission-1", reviewId: "review-1", reviewStatus: "approved", releaseId: "release-1", authoritative: true };
+  let lineage = {};
   for (const stage of ["test", "build", "inspectArtifact", "upload", "readUpload", "submitReview", "readReview", "release", "readLive"]) {
-    await adapter[stage]({ manifest, app: descriptor, evidence: lineage, idempotencyKey: "stable" });
+    const next = await adapter[stage]({ manifest, app: descriptor, evidence: lineage, idempotencyKey: "stable" });
+    lineage = { ...lineage, ...next };
   }
-  assert.deepEqual(stages, ["test", "build", "inspectArtifact", "upload", "readUpload", "submitReview", "readReview", "release", "readLive"]);
+  assert.deepEqual(stages.filter(({ externalStage }) => externalStage).map(({ externalStage }) => externalStage), ["upload", "readUpload", "submitReview", "readReview", "release", "readLive"]);
+  assert.equal(lineage.liveStatus, "live");
 });
 
 test("unclassified mutation stage-runner errors become non-deterministic external-unknown JSON", async () => {
