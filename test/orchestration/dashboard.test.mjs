@@ -134,6 +134,21 @@ test("first-release iOS target preview derives the exact marketing version", asy
   assert.equal(JSON.stringify(detail).includes("undefined"), false);
 });
 
+test("version detail closes cleanly when iOS has no configured production App", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare("DELETE FROM release_manifests WHERE version_id = 'version-1'").run();
+  const row = await harness.db.prepare("SELECT snapshot FROM clickup_snapshots WHERE object_id = 'task-1'").first();
+  const task = JSON.parse(row.snapshot);
+  task.platforms = ["ios"];
+  await harness.db.prepare("UPDATE clickup_snapshots SET snapshot = ? WHERE object_id = 'task-1'").bind(JSON.stringify(task)).run();
+
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.equal(detail.releaseReadiness.ready, false);
+  assert.ok(detail.releaseReadiness.gaps.includes("iOS 生产目标注册表为空"));
+});
+
 test("activity correlates the development PR by command id even when the job completes later", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
@@ -361,7 +376,8 @@ test("version detail recovers canonical platforms from structured jobs and repor
     taskId: "task-1", platforms: ["api", "mini_program"], source: "develop_job",
     evidenceId: "task-1-develop-1", commitSha: null, acceptedCommitSha: null,
   }]);
-  assert.ok(detail.releaseReadiness.gaps.some((gap) => gap.includes("mini_program")));
+  assert.equal(detail.releaseReadiness.ready, true);
+  assert.equal(detail.releaseReadiness.gaps.some((gap) => gap.includes("mini_program")), false);
   assert.equal(detail.releaseReadiness.gaps.some((gap) => gap.includes("任务缺少影响平台")), false);
 });
 

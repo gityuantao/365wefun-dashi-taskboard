@@ -90,6 +90,7 @@ async function loadOpenTaskBlockers(db) {
 }
 
 async function releaseEligibilityFor({ db, version, tasks, manifest, openTaskBlockers }) {
+  if (manifest?.releaseEligibility) return structuredClone(manifest.releaseEligibility);
   const platformEvidence = manifest?.productionTargetPlan?.taskPlatforms
     ? manifest.productionTargetPlan.taskPlatforms.map((item) => ({ ...item, source: "frozen_manifest" }))
     : await loadReleasePlatformEvidence(db, tasks);
@@ -99,7 +100,7 @@ async function releaseEligibilityFor({ db, version, tasks, manifest, openTaskBlo
     blockers: [...openTaskBlockers],
     platformEvidence,
     candidateScope: manifest?.candidateScope ?? null,
-    configuredTargets: ["web", "api", "ios"],
+    configuredTargets: ["web", "api", "ios", "mini_program"],
     runtimeReadiness: { ready: true },
   });
 }
@@ -389,9 +390,6 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
       ready: (task.aggregateState ?? task.snapshotStatus) === "ready_for_release",
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
-  const resolvedTaskPlatforms = storedManifest?.productionTargetPlan?.taskPlatforms
-    ? storedManifest.productionTargetPlan.taskPlatforms.map((item) => ({ ...item, source: "frozen_manifest" }))
-    : await loadReleasePlatformEvidence(db, matchingTasks);
   const releaseEligibility = await releaseEligibilityFor({
     db,
     version: { ...snapshot, id: versionId, status },
@@ -404,10 +402,10 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
     && task.aggregateState !== null
     && task.aggregateState !== "ready_for_release"
   ));
-  if (workflowDrift.length > 0) {
+  if (!storedManifest?.releaseEligibility && workflowDrift.length > 0) {
     releaseEligibility.gaps.push(`任务内部流程尚未就绪：${workflowDrift.map((task) => `${task.id}(${task.aggregateState})`).join("、")}`);
   }
-  if (missingManifestTaskIds.length > 0) releaseEligibility.gaps.push(`Manifest 任务快照缺失：${missingManifestTaskIds.join("、")}`);
+  if (!storedManifest?.releaseEligibility && missingManifestTaskIds.length > 0) releaseEligibility.gaps.push(`Manifest 任务快照缺失：${missingManifestTaskIds.join("、")}`);
   releaseEligibility.ready = releaseEligibility.gaps.length === 0;
   const taskPlatforms = releaseEligibility.taskPlatforms.flatMap((task) => task.platforms);
   const latestTargets = new Map();
@@ -421,7 +419,7 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
     web: normalizedPlatforms.includes("web"), api: normalizedPlatforms.includes("api"), ios: normalizedPlatforms.includes("ios"),
   };
   const plannedTargets = [];
-  for (const platform of ["web", "api"]) if (platformFlags[platform]) plannedTargets.push({ platform, appId: null, label: platform.toUpperCase() });
+  for (const platform of ["web", "api", "mini_program"]) if (platformFlags[platform]) plannedTargets.push({ platform, appId: null, label: platform.toUpperCase() });
   const plannedApps = platformFlags.ios ? (planned?.iosApps ?? iosApps.filter((app) => app.enabled !== false)) : [];
   const previewMarketingVersion = String(snapshot.name ?? versionId).replace(/^v(?=\d)/i, "");
   for (const app of plannedApps) plannedTargets.push({
@@ -429,7 +427,10 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
     appStoreAppId: app.appStoreAppId, scheme: app.scheme, bundleId: app.bundleId,
     marketingVersion: app.marketingVersion ?? previewMarketingVersion,
   });
-  if (platformFlags.ios && plannedApps.length === 0) gaps.push("iOS 生产目标注册表为空");
+  if (platformFlags.ios && plannedApps.length === 0) {
+    releaseEligibility.gaps.push("iOS 生产目标注册表为空");
+    releaseEligibility.ready = false;
+  }
   const actualTargets = new Map([...latestTargets.values()].map((row) => {
     const plannedTarget = plannedTargets.find((target) => `${target.platform}:${target.appId ?? ""}` === `${row.platform}:${row.app_id}`);
     return [`${row.platform}:${row.app_id}`, {

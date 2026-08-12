@@ -71,6 +71,7 @@ export function resolveReleasePlatformEvidence({
   stageJobs = [],
   aggregate = {},
   acceptedCommitSha = null,
+  acceptedChangeScope = null,
 }) {
   const context = { taskId: task.id, aggregateVersion: aggregate.version, acceptedCommitSha };
   if (nonEmpty(task.platforms)) {
@@ -123,6 +124,14 @@ export function resolveReleasePlatformEvidence({
       acceptedCommitSha,
       aggregateVersion: aggregate.version,
       androidDelivery: analyzed.job.result?.summary?.androidDelivery ?? null,
+    });
+  }
+
+  if (acceptedCommitSha && nonEmpty(acceptedChangeScope?.platforms)) {
+    return result({
+      taskId: task.id, platforms: acceptedChangeScope.platforms, source: "accepted_pr_changes",
+      evidenceId: acceptedChangeScope.evidenceId ?? null, commitSha: acceptedCommitSha, acceptedCommitSha,
+      aggregateVersion: aggregate.version,
     });
   }
 

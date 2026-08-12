@@ -341,13 +341,9 @@ export async function startDashboardServer({
           });
         }
         const runtimeReadiness = await currentProductionReadiness();
-        const runtimeGaps = runtimeReadiness?.ready === true ? [] : [runtimeReadiness?.error ?? "生产发布运行配置未就绪"];
         return sendJson(response, 200, {
           ...detail,
-          releaseReadiness: {
-            ready: detail.releaseReadiness.ready && runtimeGaps.length === 0,
-            gaps: [...detail.releaseReadiness.gaps, ...runtimeGaps],
-          },
+          productionRuntimeReadiness: runtimeReadiness,
         });
       }
 

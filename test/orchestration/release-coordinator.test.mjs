@@ -509,6 +509,40 @@ test("production coordinator wiring blocks stale local and advanced remote PR he
   assert.deepEqual(sideEffects, []);
 });
 
+test("Candidate mini-program scope supplements missing task scope before freeze", async () => {
+  let frozen;
+  const result = await coordinateReleaseSnapshot({
+    productionReadiness: { ready: true }, snapshot: { id: "version-1", name: "version-1", status: "releasing" }, now: NOW,
+    db: {}, adapter: {
+      collectRegressionEvidence: async () => ({ passed: true }), identifyArtifact: async () => ({ digest: "sha256:artifact" }),
+    }, runtime: { repoPath: "/repo", worktreesRoot: "/worktrees", iosApps: [] }, repository: "owner/repo",
+    releaseGitOps: {
+      integrateTaskPr: async () => ({
+        merged: true, taskHead: "a".repeat(40), candidateCommit: "b".repeat(40), candidateBaseCommit: "c".repeat(40),
+        headRefName: "task/task-mp", prNumber: 42, repository: "owner/repo",
+      }),
+      persistCandidate: async () => ({ persisted: true, candidateRef: "refs/heads/release-candidate/version-1/b" }),
+      verifyCandidate: async () => ({ verified: true }),
+    },
+    services: {
+      loadManifest: async () => null, loadAggregate: async () => ({ state: "active", version: 1 }),
+      loadAllTaskSnapshots: async () => [{ id: "task-mp", targetVersion: "version-1", platforms: [] }],
+      loadTaskPullRequest: async () => "https://github.com/owner/repo/pull/42",
+      classifyCandidateChanges: () => ({ baseCommit: "c".repeat(40), candidateCommit: "b".repeat(40), mappingVersion: 1, changedPaths: ["apps/mp/pages/index.ts"], platforms: ["mini_program"], unsupported: [] }),
+      checkVersionGate: async () => ({ pass: true, reasons: [], releaseEligibility: {
+        ready: true, gaps: [], taskIds: ["task-mp"], taskPlatforms: [{ taskId: "task-mp", platforms: ["mini_program"], source: "candidate_scope", evidenceId: null, commitSha: null, acceptedCommitSha: null }],
+        candidateScope: { platforms: ["mini_program"] }, plannedTargets: ["mini_program"],
+      } }),
+      freezeManifest: async (input) => { frozen = input; return { status: "frozen", manifest: { ...input, taskPrHeads: input.taskPrHeads } }; },
+      handleConfirmRelease: async () => ({ status: "succeeded", publication: { candidateCommit: "b".repeat(40) } }),
+      loadCleanupAttempts: async () => [], recordCleanupAttempt: async () => ({}), closeTaskPullRequest: async () => ({}), deleteRemoteTaskBranch: async () => ({}), removeTaskWorktree: async () => ({}),
+    },
+  });
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(frozen.productionTargetPlan.taskPlatforms, [{ taskId: "task-mp", platforms: ["mini_program"] }]);
+  assert.equal(frozen.candidateScope.platforms[0], "mini_program");
+});
+
 test("unsupported production scope is rejected before every mutating release effect", async () => {
   const mutations = [];
   const result = await coordinateReleaseSnapshot({
@@ -544,7 +578,7 @@ test("unsupported production scope is rejected before every mutating release eff
   assert.deepEqual(mutations, []);
 });
 
-test("missing production scope is rejected before every mutating release effect", async () => {
+test("missing task scope reaches Candidate integration before a Candidate-derived gate closes it", async () => {
   const mutations = [];
   const result = await coordinateReleaseSnapshot({
     productionReadiness: { ready: true, error: null },
@@ -565,9 +599,9 @@ test("missing production scope is rejected before every mutating release effect"
       checkVersionGate: async () => ({ pass: true, reasons: [], taskIds: [] }),
     },
   });
-  assert.equal(result.status, "rejected");
-  assert.match(result.error, /snapshot|scope|non-empty/i);
-  assert.deepEqual(mutations, []);
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /regression|scope|non-empty/i);
+  assert.deepEqual(mutations, ["regression"]);
 });
 
 test("retry rejects frozen production target plan drift before verification or publication", async () => {

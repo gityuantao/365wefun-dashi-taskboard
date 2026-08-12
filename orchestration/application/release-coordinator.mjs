@@ -10,6 +10,7 @@ import {
   assertProductionTargetPlanMatches,
   buildProductionTargetPlan,
 } from "../release/production-target-plan.mjs";
+import { assertProductionPlatformsSupported } from "../release/platform-gate.mjs";
 import { removeTaskWorktree } from "../runner/worktree.mjs";
 import { closeTaskPullRequest, deleteRemoteTaskBranch } from "../git/pr.mjs";
 import {
@@ -98,39 +99,31 @@ export async function coordinateReleaseSnapshot({
     .sort();
   const releaseTaskSnapshots = existingManifest && versionTaskSnapshots.length > 0
     ? versionTaskSnapshots
-    : allTaskSnapshots.filter((taskSnapshot) => expectedTaskIds.includes(taskSnapshot.id));
+    : allTaskSnapshots.filter((task) => expectedTaskIds.includes(task.id));
   let productionTargetPlan = existingManifest?.productionTargetPlan;
-  if (!cleanupRetry) {
-    const configuredApps = apps ?? runtime?.iosApps ?? [];
+  if (!cleanupRetry && existingManifest) {
     try {
-      productionTargetPlan = buildProductionTargetPlan({
+      const currentPlan = buildProductionTargetPlan({
         taskSnapshots: releaseTaskSnapshots,
         taskIds: expectedTaskIds,
-        apps: configuredApps,
+        apps: apps ?? runtime?.iosApps ?? [],
         marketingVersion: String(snapshot.name ?? versionId).replace(/^v(?=\d)/, ""),
       });
-      if (existingManifest) {
-        assertProductionTargetPlanMatches(existingManifest.productionTargetPlan, productionTargetPlan);
-      }
+      assertProductionTargetPlanMatches(existingManifest.productionTargetPlan, currentPlan);
+    } catch (error) {
+      return { status: "rejected", error: `production target plan validation failed: ${error.message}` };
+    }
+  }
+  if (!cleanupRetry && !existingManifest) {
+    try {
+      const declaredScope = releaseTaskSnapshots.filter((task) => Array.isArray(task.platforms) && task.platforms.length > 0);
+      if (declaredScope.length > 0) assertProductionPlatformsSupported(declaredScope);
     } catch (error) {
       return { status: "rejected", error: `production target plan validation failed: ${error.message}` };
     }
   }
 
-  let taskIds = expectedTaskIds;
-  if (!existingManifest) {
-    const gate = await services.checkVersionGate({ db, versionId });
-    if (!gate.pass) {
-      return { status: "rejected", error: gate.reasons.join("; ") };
-    }
-    taskIds = gate.taskIds;
-    if (
-      taskIds.length !== expectedTaskIds.length
-      || taskIds.some((taskId, index) => taskId !== expectedTaskIds[index])
-    ) {
-      return { status: "rejected", error: "production task scope changed during release gating" };
-    }
-  }
+  const taskIds = expectedTaskIds;
   const versionBranch = existingManifest?.versionBranch ?? `version/${snapshot.name ?? versionId}`;
   const result = await coordinateVersionRelease({
     versionId,
@@ -147,7 +140,7 @@ export async function coordinateReleaseSnapshot({
     collectRegressionEvidence: (candidate) => adapter.collectRegressionEvidence(candidate),
     identifyArtifact: (candidate) => adapter.identifyArtifact(candidate),
     persistCandidate: (candidate) => releaseGitOps.persistCandidate(candidate),
-    freezeCandidate: (candidate) => {
+    freezeCandidate: async (candidate) => {
       let candidateScope;
       try {
         candidateScope = services.classifyCandidateChanges({
@@ -157,6 +150,19 @@ export async function coordinateReleaseSnapshot({
         });
       } catch (error) {
         return { status: "rejected", reasons: [error.message] };
+      }
+      const gate = await services.checkVersionGate({ db, versionId, candidateScope });
+      if (!gate.pass) return { status: "rejected", reasons: gate.reasons };
+      const eligibility = gate.releaseEligibility ?? gate;
+      try {
+        productionTargetPlan = buildProductionTargetPlan({
+          taskSnapshots: eligibility.taskPlatforms.map(({ taskId, platforms }) => ({ id: taskId, platforms })),
+          taskIds: eligibility.taskIds,
+          apps: apps ?? runtime?.iosApps ?? [],
+          marketingVersion: String(snapshot.name ?? versionId).replace(/^v(?=\d)/, ""),
+        });
+      } catch (error) {
+        return { status: "rejected", reasons: [`production target plan validation failed: ${error.message}`] };
       }
       return services.freezeManifest({
         db,

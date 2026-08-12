@@ -64,7 +64,12 @@ export function buildProductionTargetPlan({
   return {
     schemaVersion: 1,
     taskPlatforms,
-    platforms: { web: resolved.web, api: resolved.api, ios: resolved.ios },
+    platforms: {
+      web: resolved.web,
+      api: resolved.api,
+      ios: resolved.ios,
+      ...(resolved.mini_program ? { mini_program: true } : {}),
+    },
     iosApps,
   };
 }

@@ -1,6 +1,6 @@
 import { DomainError } from "../domain/errors.mjs";
 
-const SUPPORTED_PLATFORMS = new Set(["web", "api", "ios"]);
+const SUPPORTED_PLATFORMS = new Set(["web", "api", "ios", "mini_program"]);
 const DELIVERY_TARGET = Object.freeze({ android_twa: "web" });
 
 function invalid(message) {
@@ -25,7 +25,7 @@ export function resolveProductionPlatforms(taskSnapshots) {
   if (!Array.isArray(taskSnapshots) || taskSnapshots.length === 0) {
     invalid("production task snapshots must be a non-empty array");
   }
-  const resolved = { web: false, api: false, ios: false, unsupported: [] };
+  const resolved = { web: false, api: false, ios: false, mini_program: false, unsupported: [] };
   const unsupported = new Set();
 
   for (const [index, snapshot] of taskSnapshots.entries()) {

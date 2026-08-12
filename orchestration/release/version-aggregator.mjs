@@ -45,13 +45,15 @@ export async function checkVersionGate({ db, versionId, candidateScope = null, r
     blockers: [...blockedIds],
     platformEvidence: taskPlatforms,
     candidateScope: candidateScope ?? manifest?.candidateScope ?? null,
-    configuredTargets: ["web", "api", "ios"],
+    configuredTargets: ["web", "api", "ios", "mini_program"],
     runtimeReadiness,
   });
   return {
-    ...eligibility,
     pass: eligibility.ready,
     reasons: eligibility.gaps,
+    releaseEligibility: eligibility,
+    taskIds: eligibility.taskIds,
+    taskPlatforms: eligibility.taskPlatforms,
   };
 }
 
@@ -155,14 +157,8 @@ export async function freezeManifest({
     artifactIdentity,
     regressionEvidence,
     productionTargetPlan,
-    candidateScope: gate.candidateScope,
-    releaseEligibility: {
-      ready: gate.ready,
-      gaps: gate.gaps,
-      taskIds: gate.taskIds,
-      taskPlatforms: gate.taskPlatforms,
-      plannedTargets: gate.plannedTargets,
-    },
+    releaseEligibility: gate.releaseEligibility,
+    candidateScope: gate.releaseEligibility.candidateScope,
     createdAt: now,
   };
   const reasons = validateFrozenManifest(manifestWithoutChecksum);

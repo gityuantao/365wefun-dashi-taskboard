@@ -138,7 +138,7 @@ test("version gate excludes canceled tasks before the Manifest is frozen", async
   assert.deepEqual(gate.taskIds, ["task-ready"]);
 });
 
-test("version gate resolves structured platform evidence and reports unsupported mini-program", async (t) => {
+test("version gate resolves structured platform evidence and accepts configured mini-program", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await seedActiveVersion(harness);
@@ -153,13 +153,13 @@ test("version gate resolves structured platform evidence and reports unsupported
     .bind(JSON.stringify({ taskId: "task-a" }), JSON.stringify({ status: "completed", platforms: ["服务端", "小程序"] }), NOW, NOW).run();
 
   const gate = await checkVersionGate({ db: harness.db, versionId: "version-1" });
-  assert.equal(gate.pass, false);
+  assert.equal(gate.pass, true);
   assert.deepEqual(gate.taskIds, ["task-a"]);
   assert.deepEqual(gate.taskPlatforms, [{
     taskId: "task-a", platforms: ["api", "mini_program"], source: "develop_job",
     evidenceId: "task-a-develop-1", commitSha: null, acceptedCommitSha: null,
   }]);
-  assert.ok(gate.reasons.some((reason) => reason.includes("mini_program")));
+  assert.equal(gate.reasons.some((reason) => reason.includes("mini_program")), false);
 });
 
 test("version gate fails when a task is blocked", async (t) => {

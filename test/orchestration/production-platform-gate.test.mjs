@@ -24,21 +24,29 @@ test("production platform gate aggregates explicit Web, API, and iOS task scope"
     web: true,
     api: true,
     ios: true,
+    mini_program: false,
     unsupported: [],
   });
 });
 
-test("production platform gate marks Android and mini-program scope unsupported", () => {
+test("production platform gate marks Android scope unsupported while accepting mini-program aliases", () => {
   const platforms = resolveProductionPlatforms([
     { taskId: "android-task", platforms: ["android"] },
-    { taskId: "mini-task", platforms: ["mini-program"] },
+    { taskId: "mini-task", platforms: ["mini_program"] },
   ]);
 
   assert.deepEqual(platforms, {
     web: false,
     api: false,
     ios: false,
-    unsupported: ["android", "mini-program"],
+    mini_program: true,
+    unsupported: ["android"],
+  });
+});
+
+test("production platform gate accepts mini-program Candidate scope", () => {
+  assert.deepEqual(resolveProductionPlatforms([{ platforms: ["mini_program"] }]), {
+    web: false, api: false, ios: false, mini_program: true, unsupported: [],
   });
 });
 

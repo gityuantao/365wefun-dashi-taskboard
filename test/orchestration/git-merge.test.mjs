@@ -151,6 +151,7 @@ test("production git ops persist a merged remote Candidate without mutating a st
   });
   assert.equal(integrated.merged, true);
   assert.equal(integrated.candidateCommit, remoteHead);
+  assert.notEqual(integrated.candidateBaseCommit, integrated.candidateCommit);
   assert.equal(git(repo, ["rev-parse", "version/v-1"]).trim(), mergeCommit);
 
   const persisted = await ops.persistCandidate({

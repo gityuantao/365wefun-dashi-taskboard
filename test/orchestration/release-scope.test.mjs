@@ -112,3 +112,25 @@ test("successful staging evidence for the accepted commit overrides broader deve
   assert.equal(resolved.evidenceId, "stage-17");
   assert.deepEqual(resolved.platforms, ["ios"]);
 });
+
+test("exact accepted PR changes supplement otherwise missing platform evidence", () => {
+  const accepted = "92e071495bde1971c17f4a98fa6a0caec70756b3";
+  const resolved = resolveReleasePlatformEvidence({
+    task: task("task-mp"), aggregate: { version: 17 }, acceptedCommitSha: accepted,
+    acceptedChangeScope: { evidenceId: "accepted-pr-task-mp", platforms: ["mini_program"] },
+  });
+
+  assert.equal(resolved.source, "accepted_pr_changes");
+  assert.equal(resolved.commitSha, accepted);
+  assert.deepEqual(resolved.platforms, ["mini_program"]);
+});
+
+test("accepted commit rejects development evidence with a different commit", () => {
+  const resolved = resolveReleasePlatformEvidence({
+    task: task("task-unaccepted"), aggregate: { version: 17 }, acceptedCommitSha: "accepted",
+    developJobs: [{ id: "develop", status: "completed", result: { commitSha: "other", platforms: ["web"] } }],
+  });
+
+  assert.equal(resolved.source, "missing");
+  assert.deepEqual(resolved.platforms, []);
+});

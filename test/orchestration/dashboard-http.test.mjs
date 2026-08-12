@@ -56,6 +56,10 @@ test("orchestrator dashboard server exposes read-only JSON endpoints", async (t)
   assert.equal(versionResponse.status, 200);
   const version = await versionResponse.json();
   assert.equal(version.tasks.length, 1);
+  assert.deepEqual(Object.keys(version.releaseReadiness).sort(), [
+    "candidateScope", "gaps", "plannedTargets", "ready", "taskIds", "taskPlatforms",
+  ]);
+  assert.equal(version.productionRuntimeReadiness.ready, false);
 
   const post = await fetch(`http://127.0.0.1:${dashboard.port}/api/orchestration/dashboard`, {
     method: "POST",

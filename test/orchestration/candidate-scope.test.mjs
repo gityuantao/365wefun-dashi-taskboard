@@ -84,6 +84,17 @@ test("classifies Android wrapper separately while native Android is unsupported"
   assert.deepEqual(scope.unsupported, ["android_native"]);
 });
 
+test("plain Web Candidate changes never claim an Android TWA target", (t) => {
+  const repository = createRepository(t);
+  const candidateCommit = repository.commit(["apps/web/src/App.tsx"]);
+  const scope = classifyCandidateChanges({
+    repoPath: repository.repoPath, baseCommit: repository.baseCommit, candidateCommit,
+  });
+
+  assert.deepEqual(scope.platforms, ["web"]);
+  assert.equal(scope.platforms.includes("android_twa"), false);
+});
+
 test("fails closed for invalid, missing, and non-ancestor Candidate commits", (t) => {
   const repository = createRepository(t);
   const candidateCommit = repository.commit(["apps/web/src/App.tsx"]);

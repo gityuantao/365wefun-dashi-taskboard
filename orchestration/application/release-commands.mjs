@@ -198,7 +198,7 @@ export async function handleConfirmRelease({
     return { status: "rejected", error: error.message };
   }
   if (
-    (resolvedPlatforms.web || resolvedPlatforms.api)
+    (resolvedPlatforms.web || resolvedPlatforms.api || resolvedPlatforms.mini_program)
     && (
       !webAdapter
       || webAdapter.placeholder === true
@@ -252,7 +252,7 @@ export async function handleConfirmRelease({
   }
 
   const deployments = new Map();
-  const persistentWebAdapter = (resolvedPlatforms.web || resolvedPlatforms.api) ? {
+  const persistentWebAdapter = (resolvedPlatforms.web || resolvedPlatforms.api || resolvedPlatforms.mini_program) ? {
     release: async (options) => {
       const released = await webAdapter.release(options);
       deployments.set(options.platform, released);

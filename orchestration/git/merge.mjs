@@ -174,6 +174,10 @@ export function fetchAndMergeTaskPullRequest({
       return { merged: false, conflict: false, error: "refreshed version branch head is invalid" };
     }
     const candidateCommit = refreshedHead.stdout.trim();
+    const mergeBase = git(repoPath, ["rev-parse", "--verify", `${mergeCommit}^1`], run);
+    if (mergeBase.status !== 0 || !/^[0-9a-f]{40,64}$/i.test(mergeBase.stdout.trim())) {
+      return { merged: false, conflict: false, error: "merged PR base commit is invalid" };
+    }
     return {
       merged: true,
       taskId,
@@ -182,7 +186,7 @@ export function fetchAndMergeTaskPullRequest({
       headRefName: pr.headRefName,
       taskHead: pr.headRefOid,
       candidateCommit,
-      candidateBaseCommit: candidateCommit,
+      candidateBaseCommit: mergeBase.stdout.trim(),
       candidateSourceRef: fetchedBase,
       versionBranch,
       alreadyMerged: true,

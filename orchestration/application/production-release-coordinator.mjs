@@ -136,6 +136,7 @@ function requiredTargets(platforms, apps) {
   const targets = [];
   if (platforms.web) targets.push(targetDescriptor("web"));
   if (platforms.api) targets.push(targetDescriptor("api"));
+  if (platforms.mini_program) targets.push(targetDescriptor("mini_program"));
   if (platforms.ios) {
     for (const app of enabledApps(apps)) {
       validateApp(app);
@@ -847,7 +848,7 @@ export async function executeProductionRelease({
   validateManifest(manifest);
   const resolvedPlatforms = assertProductionPlatformsSupported(platforms);
   const descriptors = requiredTargets(resolvedPlatforms, apps);
-  if (resolvedPlatforms.web || resolvedPlatforms.api) validateAdapter(webAdapter, "Web/API");
+  if (resolvedPlatforms.web || resolvedPlatforms.api || resolvedPlatforms.mini_program) validateAdapter(webAdapter, "Web/API/mini-program");
   if (resolvedPlatforms.ios) validateAdapter(iosAdapter, "iOS");
   if (!lease || !nonEmpty(lease.holder)) invalid("version-scoped release lease holder is required");
 
