@@ -49,3 +49,51 @@ Status: DONE
 
 - The dedicated runtime loader currently expects a future `createMiniProgramReleaseAdapter({ runtime, projectRoot })` lifecycle factory with `release/readback`. Task 3 intentionally delivers the brief's lower-level `createWechatReleaseAdapter` stage contract; Task 4 owns lifecycle composition and runtime wiring.
 - The related runtime regression has one existing published-cleanup failure described above. This task does not modify that path or weaken its frozen-Manifest checks.
+
+## Fix round 1/5 — DONE
+
+### Reviewer findings addressed
+
+- Split adapter inputs by stage. `test`, `build`, and `inspectArtifact` receive only frozen non-secret App identity fields, exact repository/artifact roots, and the production API allowlist. They never receive credential/review paths, idempotency data, or the full frozen descriptor containing private command/reference fields. Network stages receive only their required private references and lineage inputs.
+- Candidate `pnpm` commands now cross an explicit injected sandbox contract with `network: "disabled"`, a minimal `PATH`/`LANG` environment, and a required `networkDisabled: true` proof. There is deliberately no unsandboxed fallback; real local stages fail closed without that capability. This is the isolation boundary—`0600` is only a file-permission validation and is not claimed to isolate another process running as the same user.
+- Added exact adapter inputs for `repoPath`, `artifactRoot`, and `productionApiAllowlist`, and verified the actual adapter-to-CLI environment contract across all nine stages.
+- Separated `test` (detached lint/typecheck/tests only) from `build` (detached production `uni build -p mp-weixin` and artifact publication only), so the nine-stage lifecycle does not duplicate validation work.
+- Unclassified mutation runner failures are non-deterministic `external_unknown` in both parent adapter and child final JSON and therefore trigger authoritative lookup.
+- Successful mutations now require stable stage-specific lineage: upload ID; upload/review-submission/review IDs; and upload/review/release IDs respectively.
+- Worktree removal errors are no longer swallowed. Git worktree registry readback is attempted even if removal reports failure, any cleanup failure is surfaced, and owned temporary directory removal is still attempted.
+- Artifact publication now copies build output to a private owned temporary directory, inspects and hashes that copy, and atomically renames the exact inspected bytes into their digest-addressed destination. Independent inspection is restricted to canonical paths inside the owned root.
+- Private descriptor loading uses `O_NOFOLLOW`, then `fstat` and read on the same file descriptor. Tests cover direct symlinks and replacement of the pathname after the descriptor is opened.
+- Repository, worktree artifact, and owned artifact roots are canonicalized. Root and intermediate symlinks, realpath escapes, unsafe relative paths, non-owned roots, and roots not mode `0700` fail closed.
+- Production API matching now requires exact path equality or a slash boundary, so an allowlisted `/v1` accepts `/v1/...` but rejects `/v10evil`.
+
+### RED evidence
+
+1. Initial reviewer batch: exit 1. The suite failed for missing stage-specific environments, sandbox/private-file exports, stage lineage, and script boundary behavior.
+2. Filesystem/sandbox implementation cycle: 30 tests, 16 passed and 14 failed before canonical-root and test fixture corrections.
+3. Lifecycle completion cycle: 17 tests, 13 passed and 4 failed for repeated build validation, skipped registry verification after remove failure, and child mutation misclassification.
+4. Canonical component/ownership cycle: 33 tests, 31 passed and 2 failed for an intermediate repository symlink and a shared-mode artifact root.
+5. Owned independent-inspection cycle: 19 script tests, 18 passed and 1 failed because out-of-root artifacts were still accepted.
+
+### GREEN evidence
+
+- `node --test test/orchestration/wechat-command-adapter.test.mjs test/orchestration/mini-program-release-script.test.mjs`
+  - Exit 0; 34 passed, 0 failed.
+- `node --check orchestration/mini-program/wechat-command-adapter.mjs`
+  - Exit 0.
+- `node --check scripts/release-mini-program.mjs`
+  - Exit 0.
+- Related frozen descriptor/runtime suite: 40 tests, 39 passed, 1 unchanged pre-existing failure in `published cleanup resumes from the frozen manifest despite invalid runtime and registry drift`; neither Task 3 module participates in that failing path.
+- `git diff --check -- ':!.data'`
+  - Exit 0.
+
+### Side-effect proof
+
+- All sandbox runners, stage runners, and adapter child commands are injected fakes. Temporary local Git repositories are the only repositories mutated by tests.
+- No real `pnpm`, WeChat command, network request, production SSH/DB, Apple, or ClickUp operation ran.
+- Private descriptor tests use only temporary files and never claim `0600` protects against same-user processes; the security property tested is same-fd no-follow validation/read.
+- No `.data` path was read, modified, staged, or removed.
+
+### Concerns
+
+- A real deployment must provide a sandbox runner capable of actually disabling Candidate network access and returning the explicit proof. This module intentionally supplies no portable Node fallback because Node cannot enforce that property for arbitrary subprocesses.
+- Task 4 still owns composition into the runtime's `createMiniProgramReleaseAdapter({ runtime, projectRoot })` lifecycle factory.

@@ -67,6 +67,9 @@ test("every stage receives the exact frozen Candidate, App, version, artifact, a
     command: [process.execPath, "safe-wechat-gateway.mjs"],
     credentialsPath: "/private/wechat.private.json",
     reviewConfigurationPath: "/private/review.private.json",
+    repoPath: "/repo",
+    artifactRoot: "/owned-artifacts",
+    productionApiAllowlist: ["https://api.365life.example/v1"],
     runCommand: async (file, args, options) => {
       calls.push({ file, args, options });
       return final(outputs[options.env.MINI_PROGRAM_STAGE]);
@@ -88,23 +91,29 @@ test("every stage receives the exact frozen Candidate, App, version, artifact, a
     assert.equal(call.options.env.PRODUCTION_CANDIDATE_REF, manifest.candidateRef);
     assert.equal(call.options.env.PRODUCTION_MANIFEST_CHECKSUM, manifest.checksum);
     assert.equal(call.options.env.MINI_PROGRAM_ARTIFACT_DIGEST, DIGEST);
-    assert.equal(call.options.env.MINI_PROGRAM_IDEMPOTENCY_KEY, "idem-1");
-    assert.equal(call.options.env.MINI_PROGRAM_CREDENTIALS_PATH, "/private/wechat.private.json");
-    assert.equal(call.options.env.MINI_PROGRAM_REVIEW_CONFIGURATION_PATH, "/private/review.private.json");
-    assert.equal(call.options.env.MINI_PROGRAM_REVIEW_CONFIGURATION_REF, "review/wechat");
+    const local = ["test", "build", "inspectArtifact"].includes(call.options.env.MINI_PROGRAM_STAGE);
+    assert.equal(call.options.env.MINI_PROGRAM_IDEMPOTENCY_KEY, local ? undefined : "idem-1");
+    assert.equal(call.options.env.MINI_PROGRAM_CREDENTIALS_PATH, local ? undefined : "/private/wechat.private.json");
+    assert.equal(call.options.env.MINI_PROGRAM_REVIEW_CONFIGURATION_PATH, local ? undefined : "/private/review.private.json");
+    assert.equal(call.options.env.MINI_PROGRAM_REVIEW_CONFIGURATION_REF, local ? undefined : "review/wechat");
+    assert.equal(call.options.env.MINI_PROGRAM_APP_DESCRIPTOR, undefined);
+    assert.equal(call.options.env.MINI_PROGRAM_REPO_PATH, local ? "/repo" : undefined);
+    assert.equal(call.options.env.MINI_PROGRAM_ARTIFACT_ROOT, local ? "/owned-artifacts" : undefined);
+    assert.equal(call.options.env.MINI_PROGRAM_PRODUCTION_API_ALLOWLIST, local ? '["https://api.365life.example/v1"]' : undefined);
     assert.equal(call.options.env.NODE_OPTIONS, undefined);
     assert.equal(call.options.env.HOME, undefined);
     assert.equal(call.options.env.AWS_SECRET_ACCESS_KEY, undefined);
-    assert.deepEqual(Object.keys(call.options.env).sort(), [
-      "LANG", "MINI_PROGRAM_APP_DESCRIPTOR", "MINI_PROGRAM_APP_ID",
-      "MINI_PROGRAM_ARTIFACT_DIGEST", "MINI_PROGRAM_ARTIFACT_IDENTITY",
-      "MINI_PROGRAM_ARTIFACT_SIZE", "MINI_PROGRAM_CREDENTIALS_PATH",
-      "MINI_PROGRAM_EVIDENCE", "MINI_PROGRAM_IDEMPOTENCY_KEY",
-      "MINI_PROGRAM_REVIEW_CONFIGURATION_PATH", "MINI_PROGRAM_REVIEW_CONFIGURATION_REF",
-      "MINI_PROGRAM_STAGE", "MINI_PROGRAM_VERSION", "PATH",
-      "PRODUCTION_CANDIDATE_COMMIT", "PRODUCTION_CANDIDATE_REF",
-      "PRODUCTION_MANIFEST_CHECKSUM", "PRODUCTION_VERSION_ID",
-    ].sort());
+    const common = ["LANG", "MINI_PROGRAM_APP_ID", "MINI_PROGRAM_ARTIFACT_DIGEST",
+      "MINI_PROGRAM_ARTIFACT_IDENTITY", "MINI_PROGRAM_ARTIFACT_SIZE", "MINI_PROGRAM_EVIDENCE",
+      "MINI_PROGRAM_STAGE", "MINI_PROGRAM_VERSION", "PATH", "PRODUCTION_CANDIDATE_COMMIT",
+      "PRODUCTION_CANDIDATE_REF", "PRODUCTION_MANIFEST_CHECKSUM", "PRODUCTION_VERSION_ID"];
+    const stageSpecific = local
+      ? ["MINI_PROGRAM_APP_IDENTITY", "MINI_PROGRAM_ARTIFACT_DIRECTORY", "MINI_PROGRAM_ARTIFACT_ROOT",
+        "MINI_PROGRAM_DESCRIPTION", "MINI_PROGRAM_PRODUCTION_API_ALLOWLIST", "MINI_PROGRAM_REPO_PATH",
+        "MINI_PROGRAM_SOURCE_DIRECTORY"]
+      : ["MINI_PROGRAM_CREDENTIALS_PATH", "MINI_PROGRAM_IDEMPOTENCY_KEY",
+        "MINI_PROGRAM_REVIEW_CONFIGURATION_PATH", "MINI_PROGRAM_REVIEW_CONFIGURATION_REF"];
+    assert.deepEqual(Object.keys(call.options.env).sort(), [...common, ...stageSpecific].sort());
   }
 });
 
@@ -113,10 +122,53 @@ test("the parent adapter never reads credential descriptors", async () => {
   const adapter = createWechatReleaseAdapter({
     command: ["fake"], credentialsPath: "/definitely/missing/private.json",
     reviewConfigurationPath: "/also/missing/review.json",
+    repoPath: "/repo", artifactRoot: "/artifacts", productionApiAllowlist: ["https://api.example/v1"],
     runCommand: async () => { invoked = true; return final(baseEvidence); },
   });
   await adapter.test({ manifest, app, evidence: baseEvidence });
   assert.equal(invoked, true);
+});
+
+test("local stage child environments cannot exfiltrate inherited or private-path secrets", async () => {
+  const seen = [];
+  const adapter = createWechatReleaseAdapter({
+    command: ["fake"], credentialsPath: "/private/credentials", reviewConfigurationPath: "/private/review",
+    repoPath: "/repo", artifactRoot: "/owned", productionApiAllowlist: ["https://api.example/v1"],
+    runCommand: async (_file, _args, options) => { seen.push(options.env); return final(baseEvidence); },
+  });
+  for (const stage of ["test", "build", "inspectArtifact"]) await adapter[stage]({ manifest, app, evidence: baseEvidence });
+  for (const env of seen) {
+    const serialized = JSON.stringify(env);
+    assert.doesNotMatch(serialized, /credentials|review\/wechat|upload\.mjs|release\.mjs|readback\.mjs/i);
+    assert.equal(env.HOME, undefined);
+    assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined);
+  }
+});
+
+test("unclassified mutation runner exceptions are external-unknown and reconcile", async () => {
+  const stages = [];
+  const adapter = createWechatReleaseAdapter({
+    command: ["fake"], credentialsPath: "/p", reviewConfigurationPath: "/r",
+    runCommand: async (_file, _args, { env }) => {
+      stages.push(env.MINI_PROGRAM_STAGE);
+      if (env.MINI_PROGRAM_STAGE === "upload") throw new Error("socket vanished");
+      return final({ ...baseEvidence, uploadId: "upload-1", authoritative: true });
+    },
+  });
+  const result = await adapter.upload({ manifest, app, evidence: baseEvidence, idempotencyKey: "stable" });
+  assert.deepEqual(stages, ["upload", "readUpload"]);
+  assert.equal(result.uploadId, "upload-1");
+});
+
+test("successful mutation stages require stable stage-specific lineage", async () => {
+  for (const [stage, evidence, output, pattern] of [
+    ["upload", baseEvidence, baseEvidence, /uploadId/i],
+    ["submitReview", { ...baseEvidence, uploadId: "upload-1" }, { ...baseEvidence, reviewId: "review-1" }, /uploadId|reviewSubmissionId/i],
+    ["release", { ...baseEvidence, uploadId: "upload-1", reviewSubmissionId: "submission-1", reviewId: "review-1", reviewStatus: "approved", authoritative: true }, { ...baseEvidence, uploadId: "upload-1", reviewSubmissionId: "submission-1", reviewId: "review-1", releaseId: "" }, /releaseId/i],
+  ]) {
+    const adapter = createWechatReleaseAdapter({ command: ["fake"], credentialsPath: "/p", reviewConfigurationPath: "/r", runCommand: async () => final(output) });
+    await assert.rejects(adapter[stage]({ manifest, app, evidence, idempotencyKey: "stable" }), pattern);
+  }
 });
 
 test("mutation stages require stable idempotency and reconcile unknown outcomes through authoritative lookup", async () => {
@@ -234,7 +286,7 @@ test("authoritative lookup can prove an unknown mutation absent without inventin
 
 test("nonzero exits, malformed final JSON, typed child failures, and oversized output fail closed", async () => {
   async function failure(result) {
-    const adapter = createWechatReleaseAdapter({ command: ["fake"], credentialsPath: "/p", reviewConfigurationPath: "/r", runCommand: async () => result });
+    const adapter = createWechatReleaseAdapter({ command: ["fake"], credentialsPath: "/p", reviewConfigurationPath: "/r", repoPath: "/repo", artifactRoot: "/artifacts", productionApiAllowlist: ["https://api.example/v1"], runCommand: async () => result });
     return adapter.test({ manifest, app, evidence: baseEvidence });
   }
   await assert.rejects(failure({ stdout: JSON.stringify(baseEvidence), stderr: "failed", exitCode: 9 }), (error) => error.failureClassification === "release_infrastructure");
@@ -256,6 +308,7 @@ test("all surfaced failures redact URL credentials, headers, JWTs, private keys,
   for (const secret of secrets) {
     const adapter = createWechatReleaseAdapter({
       command: ["fake"], credentialsPath: "/p", reviewConfigurationPath: "/r",
+      repoPath: "/repo", artifactRoot: "/artifacts", productionApiAllowlist: ["https://api.example/v1"],
       runCommand: async () => { const error = new Error(secret); error.failureClassification = "external_unknown"; throw error; },
     });
     await assert.rejects(adapter.test({ manifest, app, evidence: baseEvidence }), (error) => {

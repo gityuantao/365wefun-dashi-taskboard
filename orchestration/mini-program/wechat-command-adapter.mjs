@@ -9,6 +9,7 @@ const STAGES = Object.freeze([
   "test", "build", "inspectArtifact", "upload", "readUpload",
   "submitReview", "readReview", "release", "readLive",
 ]);
+const LOCAL_STAGES = new Set(["test", "build", "inspectArtifact"]);
 const MUTATION_LOOKUP = Object.freeze({
   upload: "readUpload",
   submitReview: "readReview",
@@ -202,21 +203,28 @@ function assertIdentity(value, { manifest, app, evidence }, stage) {
       if (evidence?.[field] !== undefined) assertExact(value, field, evidence[field]);
     }
   }
+  if (stage === "upload") requiredString(value?.uploadId, "upload.uploadId");
+  if (stage === "submitReview") {
+    assertExact(value, "uploadId", requiredString(evidence?.uploadId, "evidence.uploadId"));
+    requiredString(value?.reviewSubmissionId, "submitReview.reviewSubmissionId");
+    requiredString(value?.reviewId, "submitReview.reviewId");
+  }
+  if (stage === "release") {
+    for (const field of ["uploadId", "reviewSubmissionId", "reviewId"]) {
+      assertExact(value, field, requiredString(evidence?.[field], `evidence.${field}`));
+    }
+    requiredString(value?.releaseId, "release.releaseId");
+  }
   return sanitizeEvidence(value);
 }
 
-function environmentFor(stage, { manifest, app, evidence = {}, idempotencyKey }, paths) {
+function environmentFor(stage, { manifest, app, evidence = {}, idempotencyKey }, configuration) {
   const env = {
     PATH: process.env.PATH ?? "",
     LANG: process.env.LANG ?? "C.UTF-8",
     MINI_PROGRAM_STAGE: stage,
     MINI_PROGRAM_APP_ID: requiredString(app?.appId, "app.appId"),
     MINI_PROGRAM_VERSION: requiredString(app?.version, "app.version"),
-    MINI_PROGRAM_APP_DESCRIPTOR: JSON.stringify(app),
-    MINI_PROGRAM_CREDENTIALS_PATH: requiredString(paths.credentialsPath, "credentialsPath"),
-    MINI_PROGRAM_REVIEW_CONFIGURATION_PATH: requiredString(paths.reviewConfigurationPath, "reviewConfigurationPath"),
-    MINI_PROGRAM_REVIEW_CONFIGURATION_REF: requiredString(app?.reviewConfigurationRef, "app.reviewConfigurationRef"),
-    MINI_PROGRAM_IDEMPOTENCY_KEY: String(idempotencyKey ?? ""),
     MINI_PROGRAM_EVIDENCE: JSON.stringify(sanitizeEvidence(evidence)),
     MINI_PROGRAM_ARTIFACT_DIGEST: String(evidence.artifactDigest ?? ""),
     MINI_PROGRAM_ARTIFACT_SIZE: String(evidence.artifactSize ?? ""),
@@ -226,6 +234,21 @@ function environmentFor(stage, { manifest, app, evidence = {}, idempotencyKey },
     PRODUCTION_MANIFEST_CHECKSUM: requiredString(manifest?.checksum, "manifest.checksum"),
     PRODUCTION_VERSION_ID: requiredString(manifest?.versionId, "manifest.versionId"),
   };
+  if (LOCAL_STAGES.has(stage)) Object.assign(env, {
+    MINI_PROGRAM_APP_IDENTITY: requiredString(app?.id, "app.id"),
+    MINI_PROGRAM_SOURCE_DIRECTORY: requiredString(app?.sourceDirectory, "app.sourceDirectory"),
+    MINI_PROGRAM_ARTIFACT_DIRECTORY: requiredString(app?.artifactDirectory, "app.artifactDirectory"),
+    MINI_PROGRAM_DESCRIPTION: requiredString(app?.description, "app.description"),
+    MINI_PROGRAM_REPO_PATH: requiredString(configuration.repoPath, "repoPath"),
+    MINI_PROGRAM_ARTIFACT_ROOT: requiredString(configuration.artifactRoot, "artifactRoot"),
+    MINI_PROGRAM_PRODUCTION_API_ALLOWLIST: JSON.stringify(configuration.productionApiAllowlist),
+  });
+  else Object.assign(env, {
+    MINI_PROGRAM_CREDENTIALS_PATH: requiredString(configuration.credentialsPath, "credentialsPath"),
+    MINI_PROGRAM_REVIEW_CONFIGURATION_PATH: requiredString(configuration.reviewConfigurationPath, "reviewConfigurationPath"),
+    MINI_PROGRAM_REVIEW_CONFIGURATION_REF: requiredString(app?.reviewConfigurationRef, "app.reviewConfigurationRef"),
+    MINI_PROGRAM_IDEMPOTENCY_KEY: String(idempotencyKey ?? ""),
+  });
   return env;
 }
 
@@ -233,6 +256,9 @@ export function createWechatReleaseAdapter({
   command,
   credentialsPath,
   reviewConfigurationPath,
+  repoPath,
+  artifactRoot,
+  productionApiAllowlist = [],
   runCommand = runCommandBoundary,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   cwd,
@@ -259,7 +285,9 @@ export function createWechatReleaseAdapter({
         cwd,
         timeout: positiveTimeout(timeoutMs),
         signal: context?.signal,
-        env: environmentFor(stage, context, { credentialsPath, reviewConfigurationPath }),
+        env: environmentFor(stage, context, {
+          credentialsPath, reviewConfigurationPath, repoPath, artifactRoot, productionApiAllowlist,
+        }),
       });
     } catch (error) {
       const normalized = error?.name === "WechatReleaseCommandError"
