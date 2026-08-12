@@ -47,11 +47,12 @@ async function loadTasks(db) {
   `).all()).results;
   return rows
     .map((row) => {
-      // 展示以 ClickUp 实际（快照）状态为准：用户手动改状态可实时反映；聚合状态兜底
-      const state = row.snapshot_status ?? row.aggregate_state;
+      // 编排进度与发布门禁以内部状态机为准；ClickUp 快照仍保留用于检测并展示状态分叉。
+      const state = row.aggregate_state ?? row.snapshot_status;
       return {
         ...parseSnapshot(row),
         status: state === "accepting" ? "developing" : state,
+        snapshotStatus: row.snapshot_status ?? null,
         aggregateState: row.aggregate_state ?? null,
         aggregateVersion: row.aggregate_version ?? null,
       };
@@ -374,7 +375,7 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
       id: task.id,
       name: task.name ?? task.id,
       status: task.status,
-      ready: task.status === "ready_for_release",
+      ready: task.aggregateState === "ready_for_release",
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
   const releasable = versionTasks.length > 0
@@ -389,7 +390,7 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
   if (missingManifestTaskIds.length > 0) gaps.push(`Manifest 任务快照缺失：${missingManifestTaskIds.join("、")}`);
   if (versionTasks.some((task) => !task.ready)) gaps.push("版本任务必须全部处于待发布");
   const workflowDrift = matchingTasks.filter((task) => (
-    task.status === "ready_for_release"
+    task.snapshotStatus === "ready_for_release"
     && task.aggregateState !== null
     && task.aggregateState !== "ready_for_release"
   ));
@@ -465,7 +466,7 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
     name: snapshot.name ?? versionId,
     status,
     releasable,
-    blocked: snapshot.blocked === true,
+    blocked: snapshot.blocked === true || blockedTasks.length > 0,
     tasks: versionTasks,
     manifest,
     releaseReadiness: { ready: releasable && gaps.length === 0, gaps },

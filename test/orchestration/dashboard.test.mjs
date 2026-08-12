@@ -364,7 +364,39 @@ test("version detail reports internal workflow state drift behind a ready ClickU
   ).run();
 
   const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.equal(detail.tasks.find(({ id }) => id === "task-1").ready, false);
   assert.ok(detail.releaseReadiness.gaps.some((gap) => (
     gap.includes("内部流程尚未就绪") && gap.includes("task-1(acceptance_rejected)")
   )));
+});
+
+test("version detail marks the release blocked when a scoped task has an open blocker", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare(`INSERT INTO blockers
+    (id,object_type,object_id,type,reason,status,created_at)
+    VALUES ('task-blocker','task','task-1','rework_budget','unfinished','open',?)`)
+    .bind(DASHBOARD_NOW).run();
+
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  assert.equal(detail.blocked, true);
+});
+
+test("dashboard progress and pipeline use internal workflow readiness instead of a stale ready snapshot", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+  await harness.db.prepare(
+    "UPDATE orchestration_aggregates SET state='waiting_info' WHERE aggregate_type='task' AND aggregate_id='task-1'",
+  ).run();
+
+  const dashboard = await buildDashboard(harness.db);
+  const version = dashboard.versions.find(({ id }) => id === "version-1");
+  assert.equal(version.taskCount, 1);
+  assert.equal(version.readyCount, 0);
+  assert.equal(version.notReadyCount, 1);
+  assert.equal(version.releasable, false);
+  assert.equal(dashboard.pipeline.waiting_info, 2);
+  assert.equal(dashboard.pipeline.ready_for_release, 2);
 });
