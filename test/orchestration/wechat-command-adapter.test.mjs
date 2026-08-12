@@ -300,6 +300,17 @@ test("nonzero exits, malformed final JSON, typed child failures, and oversized o
   await assert.rejects(failure({ stdout: `${"x".repeat(70_000)}\n${JSON.stringify(baseEvidence)}\n`, stderr: "", exitCode: 0 }), /bounded|large/i);
 });
 
+test("command completion requires an explicit finite integer zero exit code", async () => {
+  for (const completion of [undefined, {}, { stdout: JSON.stringify(baseEvidence), stderr: "" }, { stdout: JSON.stringify(baseEvidence), exitCode: Number.NaN }, { stdout: JSON.stringify(baseEvidence), code: 0.5 }]) {
+    const adapter = createWechatReleaseAdapter({
+      command: ["fake"], credentialsPath: "/private/wechat.private.json", reviewConfigurationPath: "/private/review.private.json",
+      repoPath: "/repo", artifactRoot: "/owned", productionApiAllowlist: ["https://api.365life.example/v1"],
+      runCommand: async () => completion,
+    });
+    await assert.rejects(adapter.test({ manifest, app, evidence: baseEvidence }), /exit code|completion|unsuccessfully/i);
+  }
+});
+
 test("all surfaced failures redact URL credentials, headers, JWTs, private keys, controls, and oversized text", async () => {
   const secrets = [
     "https://alice:password@example.com/path",

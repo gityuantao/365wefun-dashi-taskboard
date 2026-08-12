@@ -183,3 +183,44 @@ This round supersedes round 2's public capability issuer and consumer-side pathn
 
 - Task 4 must provide a reviewed platform-specific provider whose mount/network/process-group/export guarantees are implemented below the ordinary same-UID Node pathname boundary. Task 3 defines and tests the consumer contract but does not claim that Node alone supplies those guarantees.
 - The platform provider must map the default uni output path to the private writable target exactly as requested. If its sandbox cannot supply that mount, local build remains fail closed.
+
+## Fix round 4/5 — DONE
+
+This round supersedes round 3's caller-controlled loader authority and its missing production provider/runner ownership.
+
+### Reviewer findings addressed
+
+- Removed `projectRoot`, `importModule`, and `runtimeLoader` injection from the production loader/CLI path. The production trusted root is derived from `trusted-runtime-loader.mjs` itself; imports use only native `import()` after fixed-root validation.
+- Moved `createTrustedMiniProgramTestRuntime` into `test/fixtures/trusted-mini-program-runtime/runtime-loader.mjs`. Its private authority can select only the repository's fixed test fixture root and cannot inject a provider, stage runner, project root, importer, or public WeakSet issuer. The spawned nine-stage E2E traverses this same production loader validation and branding path.
+- Fixed root validation now walks the absolute `projectRoot/orchestration/mini-program` equivalent one component at a time with `lstat`, rejects every symlink before `realpath`, requires exact canonical equality, and applies current-UID/non-writable/regular-file checks to the imported module.
+- Added the Task 3-owned fixed-root production modules `sandbox-providers/darwin-sandbox-exec.mjs` and `stage-runners/wechat-command.mjs`. The Darwin provider reports runtime readiness from the actual OS/tool, runs a detached process group under `/usr/bin/sandbox-exec`, denies network, restricts reads to the Candidate/output/system runtime roots, denies non-output writes, protects/restores the Candidate tree even after partial startup failure, maps the default uni output path to a private `0700` target, removes the mount, and exports owned same-FD/no-follow bytes with matching path/size/digest evidence. The production loader refuses to issue a runtime when readiness is unavailable, including non-Darwin or missing `sandbox-exec`.
+- The WeChat runner is a fixed fail-closed command adapter. Commands exist only in the already-private review configuration per stage; no configured command means unavailable. The runner sends bounded private stage input over stdin, uses a minimal environment, a detached process group, bounded output, explicit zero exit, and final JSON.
+- Sandboxed command completion now succeeds only for an explicit finite safe integer `exitCode` or `code` equal to zero. `undefined`, `{}`, NaN, infinity, and fractional codes fail, terminate, and drain.
+- Provider artifact entries must be non-empty safe relative canonical POSIX paths without empty/dot/parent/backslash/control components or duplicates. Contents must be Buffers; entry count, per-file size, and aggregate size are bounded. Entries are byte-sorted before digesting, so digest is order independent. Published handle path/size/digest are mandatory and must match the consumer's canonical recomputation.
+
+### RED evidence
+
+1. Authority/completion/artifact batch: 47 tests, 41 passed and 6 failed for the exposed test issuer/arbitrary root, root-chain symlink, missing/fractional completion code, unsafe artifact entries, order-dependent digest, and adapter completion default.
+2. Provider ownership batch: provider suite failed because the reviewed production modules were absent.
+3. Provider mount/export batch: failed because the initial provider explicitly rejected the required Candidate output mount.
+4. Provider-owned read-only lifecycle batch: failed while read-only permissions and mount cleanup were still caller-owned or not restored after pre-spawn validation failure.
+5. Filesystem read-boundary audit: a new private sibling-file probe passed under the initial `allow file-read*` profile; the provider now permits reads only from the Candidate/output/system-runtime/PATH roots and the same probe is denied.
+
+### GREEN evidence
+
+- Target plus provider suite: 54 passed, 0 failed. This includes the real spawned-child nine-stage E2E and seven production provider/runner tests.
+- Syntax checks for the adapter, production loader, release script, Darwin provider, WeChat runner, test bootstrap, and test helper: exit 0.
+- Related production runtime/security/persistence suite: 82 tests, 71 passed and 11 failed in existing D1 schema/readiness fixture drift, including the previously recorded `published cleanup resumes from the frozen manifest despite invalid runtime and registry drift`. None imports or invokes the Task 3 loader/provider/runner/script path.
+- `git diff --check -- ':!.data'`: exit 0.
+
+### Side-effect proof
+
+- The spawned nine-stage E2E uses only the fixed repository test provider/runner, temporary `0600` descriptors, temporary local Git repositories, and local Node children.
+- Darwin provider tests use temporary local directories and a local `sandbox-exec` process. The network probe verifies a denied curl result; the filesystem probe verifies an undeclared sibling private file cannot be read; no successful external request or production WeChat operation occurs.
+- The production WeChat runner test invokes only a local Node echo child through an explicit fake private configuration command.
+- No production SSH/DB, Apple, ClickUp, upload, review, or release operation ran. `.data` remained untracked and was not read, modified, staged, or removed.
+
+### Concerns
+
+- `sandbox-exec` is Darwin-specific and deprecated by Apple. The provider therefore exposes a runtime readiness result and fails closed elsewhere; another reviewed provider is required if the deployment platform or future macOS release removes it.
+- The fixed production WeChat runner is an abstract command protocol, as allowed by the Task 3 brief. Production stays fail-closed until every needed stage has an explicit command in the private review configuration and the broader production hold is deliberately cleared.

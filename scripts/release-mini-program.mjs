@@ -18,6 +18,9 @@ const STAGES = new Set(["test", "build", "inspectArtifact", "upload", "readUploa
 const LOCAL_STAGES = new Set(["test", "build", "inspectArtifact"]);
 const NETWORK_STAGES = new Set(["upload", "readUpload", "submitReview", "readReview", "release", "readLive"]);
 const MUTATIONS = new Set(["upload", "submitReview", "release"]);
+const MAX_ARTIFACT_FILES = 20_000;
+const MAX_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_ARTIFACT_BYTES = 512 * 1024 * 1024;
 const ALLOWED_ENV = new Set([
   "PATH", "LANG", "MINI_PROGRAM_STAGE", "MINI_PROGRAM_APP_ID", "MINI_PROGRAM_VERSION",
   "MINI_PROGRAM_APP_IDENTITY", "MINI_PROGRAM_SOURCE_DIRECTORY", "MINI_PROGRAM_ARTIFACT_DIRECTORY",
@@ -233,18 +236,43 @@ export async function inspectArtifact({
   const artifactFiles = exportedArtifact
     ? await exportedArtifact.readFiles()
     : await readArtifactFilesNoFollow(artifactPath);
-  if (!Array.isArray(artifactFiles) || artifactFiles.some(({ relative, content }) => typeof relative !== "string" || !Buffer.isBuffer(content))) {
+  if (!Array.isArray(artifactFiles) || artifactFiles.length === 0 || artifactFiles.length > MAX_ARTIFACT_FILES) {
     throw new Error("mini-program trusted provider exported artifact handle is invalid");
   }
-  const descriptorFile = artifactFiles.find(({ relative }) => relative === "project.config.json");
+  const seen = new Set();
+  const normalizedArtifactFiles = [];
+  for (const entry of artifactFiles) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || !Buffer.isBuffer(entry.content)) {
+      throw new Error("mini-program trusted provider exported artifact entries must contain buffers");
+    }
+    const relative = safeRelative(entry.relative, "exported artifact relative path");
+    if (/[\u0000-\u001f\u007f]/u.test(relative)) throw new Error("mini-program exported artifact path must not contain control characters");
+    if (relative !== path.posix.normalize(relative)) throw new Error("mini-program exported artifact path must be canonical POSIX");
+    if (seen.has(relative)) throw new Error("mini-program exported artifact contains duplicate paths");
+    if (entry.content.length > MAX_ARTIFACT_FILE_BYTES) throw new Error("mini-program exported artifact entry exceeded the bounded limit");
+    seen.add(relative);
+    normalizedArtifactFiles.push({ relative, content: entry.content });
+  }
+  normalizedArtifactFiles.sort((left, right) => Buffer.compare(Buffer.from(left.relative), Buffer.from(right.relative)));
+  if (exportedArtifact) {
+    if (typeof exportedArtifact.artifactPath !== "string"
+      || !Number.isSafeInteger(exportedArtifact.artifactSize)
+      || typeof exportedArtifact.artifactDigest !== "string") {
+      throw new Error("mini-program provider published artifact path, size, and digest evidence is required");
+    }
+    const publishedPath = await realpath(path.resolve(required(exportedArtifact.artifactPath, "exportedArtifact.artifactPath")));
+    if (publishedPath !== artifactPath) throw new Error("mini-program provider published artifact path mismatch");
+  }
+  const descriptorFile = normalizedArtifactFiles.find(({ relative }) => relative === "project.config.json");
   if (!descriptorFile) throw new Error("mini-program artifact project.config.json is missing");
   const descriptor = JSON.parse(descriptorFile.content.toString("utf8"));
   if (descriptor.appid !== APP_ID || app.appId !== APP_ID) throw new Error("mini-program artifact App ID mismatch");
   if (!Array.isArray(productionApiAllowlist) || productionApiAllowlist.length === 0) throw new Error("mini-program production API allowlist is required");
   const hash = createHash("sha256");
   let artifactSize = 0;
-  for (const { relative, content } of artifactFiles) {
+  for (const { relative, content } of normalizedArtifactFiles) {
     artifactSize += content.length;
+    if (artifactSize > MAX_ARTIFACT_BYTES) throw new Error("mini-program exported artifact exceeded the bounded limit");
     hash.update(Buffer.from(`${relative}\0${content.length}\0`));
     hash.update(content);
     const text = content.toString("utf8");
@@ -258,6 +286,12 @@ export async function inspectArtifact({
     }
   }
   const artifactDigest = `sha256:${hash.digest("hex")}`;
+  if (exportedArtifact && exportedArtifact.artifactSize !== artifactSize) {
+    throw new Error("mini-program provider published artifact size mismatch");
+  }
+  if (exportedArtifact && exportedArtifact.artifactDigest !== artifactDigest) {
+    throw new Error("mini-program provider published artifact digest mismatch");
+  }
   return {
     appId: APP_ID,
     version: required(app.version, "app.version"),
@@ -363,8 +397,8 @@ async function runSandboxed(trustedRuntime, command, worktreePath, writableOutpu
   let failure;
   try {
     result = await session.start();
-    const exitCode = result?.exitCode ?? result?.code ?? 0;
-    if (exitCode !== 0) throw new Error("mini-program sandboxed command exited unsuccessfully");
+    const exitCode = result?.exitCode ?? result?.code;
+    if (!Number.isSafeInteger(exitCode) || exitCode !== 0) throw new Error("mini-program sandboxed command completion failed: an explicit zero exit code is required");
   } catch (error) { failure = error; }
   failure = await drainSession(session, failure);
   if (failure) throw Object.assign(failure, { failureClassification: failure.failureClassification ?? "release_infrastructure" });
@@ -493,12 +527,12 @@ export function createMiniProgramStageHandler(dependencies = {}) {
   return (config) => executeMiniProgramStage(config, dependencies);
 }
 
-export async function runCliMain({ environment = process.env, projectRoot = path.resolve("."), runtimeLoader = createTrustedMiniProgramRuntimeLoader, write } = {}) {
+export async function runCliMain({ environment = process.env, write, testAuthority } = {}) {
   const stageEnvironment = Object.fromEntries(Object.entries(environment).filter(([key]) => ALLOWED_ENV.has(key)));
-  const runtime = await runtimeLoader({
-    projectRoot,
+  const runtime = await createTrustedMiniProgramRuntimeLoader({
     sandboxProviderModule: stageEnvironment.MINI_PROGRAM_SANDBOX_PROVIDER_MODULE,
     stageRunnerModule: stageEnvironment.MINI_PROGRAM_STAGE_RUNNER_MODULE,
+    testAuthority,
   });
   return runCli({ environment: stageEnvironment, write, executeStage: createMiniProgramStageHandler({ trustedRuntime: runtime, stageRunner: runtime.stageRunner }) });
 }

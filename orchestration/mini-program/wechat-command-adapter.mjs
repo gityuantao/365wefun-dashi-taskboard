@@ -138,9 +138,9 @@ function parseFinalJson(result, stage) {
   if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > MAX_COMMAND_OUTPUT_BYTES) {
     throw typedError("mini-program command output exceeded the bounded limit", "validation", true, "COMMAND_OUTPUT_TOO_LARGE");
   }
-  const exitCode = result?.exitCode ?? result?.code ?? 0;
-  if (exitCode !== 0) {
-    throw typedError(`${stage} command exited unsuccessfully: ${stderr}`, "release_infrastructure", false, "COMMAND_NONZERO");
+  const exitCode = result?.exitCode ?? result?.code;
+  if (!Number.isSafeInteger(exitCode) || exitCode !== 0) {
+    throw typedError(`${stage} command completion requires an explicit zero exit code: ${stderr}`, "release_infrastructure", false, "COMMAND_NONZERO");
   }
   const line = stdout.trim().split(/\r?\n/u).at(-1);
   if (!line || Buffer.byteLength(line) > 16 * 1024) {
@@ -261,8 +261,8 @@ export function createWechatReleaseAdapter({
   repoPath,
   artifactRoot,
   productionApiAllowlist = [],
-  sandboxProviderModule = "platform-sandbox.mjs",
-  stageRunnerModule = "wechat-stage-runner.mjs",
+  sandboxProviderModule = "darwin-sandbox-exec.mjs",
+  stageRunnerModule = "wechat-command.mjs",
   runCommand = runCommandBoundary,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   cwd,

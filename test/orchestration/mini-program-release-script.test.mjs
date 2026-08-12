@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import os from "node:os";
@@ -20,13 +21,26 @@ import {
   validateDetachedCandidate,
 } from "../../scripts/release-mini-program.mjs";
 import { createWechatReleaseAdapter } from "../../orchestration/mini-program/wechat-command-adapter.mjs";
-import { createTrustedMiniProgramRuntimeLoader, createTrustedMiniProgramTestRuntime } from "../../orchestration/mini-program/trusted-runtime-loader.mjs";
-import { exportOwnedArtifact } from "../fixtures/trusted-mini-program-runtime/sandbox-providers/fake.mjs";
+import * as trustedRuntimeLoader from "../../orchestration/mini-program/trusted-runtime-loader.mjs";
+const { createTrustedMiniProgramRuntimeLoader } = trustedRuntimeLoader;
+import { createTrustedMiniProgramTestRuntime } from "../fixtures/trusted-mini-program-runtime/runtime-loader.mjs";
+import { configureFakeSandboxProvider, exportOwnedArtifact } from "../fixtures/trusted-mini-program-runtime/sandbox-providers/fake.mjs";
 
 const execFile = promisify(execFileCallback);
 const APP_ID = "wx1fdac5e27c6b5366";
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const baseEvidence = { appId: APP_ID, version: "1.2.3", candidateCommit: "1".repeat(40), manifestChecksum: "manifest", artifactDigest: `sha256:${"a".repeat(64)}` };
+
+function providerEvidence(entries) {
+  const hash = createHash("sha256");
+  let artifactSize = 0;
+  for (const { relative, content } of entries.toSorted((left, right) => Buffer.compare(Buffer.from(left.relative), Buffer.from(right.relative)))) {
+    artifactSize += content.length;
+    hash.update(Buffer.from(`${relative}\0${content.length}\0`));
+    hash.update(content);
+  }
+  return { artifactSize, artifactDigest: `sha256:${hash.digest("hex")}` };
+}
 
 async function fixtureRepo(t) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wechat-candidate-fixture-")));
@@ -79,24 +93,19 @@ async function fakeBuildRunner(calls, file, args, options) {
 }
 
 async function fakeRuntime(calls, run = fakeBuildRunner, sessionOverrides = {}) {
-  const provider = {
-    implementationId: "test-trusted-sandbox-v1",
-    profileId: "test-deny-network-v1",
-    deniedRoots: ["/private/credentials", "/private/review"],
-    createSession(request) {
-      const { file, args, cwd, env, network, filesystem, processGroup, implementationId } = request;
-      calls.push({ file, args: [...args], cwd, env, network, filesystem, processGroup, implementationId, sandbox: true });
-      const outputRoot = filesystem.mounts[0].targetPath;
-      return {
-        start: async () => run([], file, args, { cwd, env, outputRoot }),
-        terminate: async () => { calls.push({ lifecycle: "terminate" }); },
-        wait: async () => { calls.push({ lifecycle: "group-exit" }); },
-        exportArtifact: ({ ownedArtifactRoot }) => exportOwnedArtifact({ sourceRoot: outputRoot, ownedArtifactRoot }),
-        ...sessionOverrides,
-      };
-    },
-  };
-  return createTrustedMiniProgramTestRuntime({ projectRoot: PROJECT_ROOT, provider });
+  configureFakeSandboxProvider((request) => {
+    const { file, args, cwd, env, network, filesystem, processGroup, implementationId } = request;
+    calls.push({ file, args: [...args], cwd, env, network, filesystem, processGroup, implementationId, sandbox: true });
+    const outputRoot = filesystem.mounts[0].targetPath;
+    return {
+      start: async () => run([], file, args, { cwd, env, outputRoot }),
+      terminate: async () => { calls.push({ lifecycle: "terminate" }); },
+      wait: async () => { calls.push({ lifecycle: "group-exit" }); },
+      exportArtifact: ({ ownedArtifactRoot }) => exportOwnedArtifact({ sourceRoot: outputRoot, ownedArtifactRoot }),
+      ...sessionOverrides,
+    };
+  });
+  return createTrustedMiniProgramTestRuntime();
 }
 
 test("detached Candidate build runs exact quality and production build commands, verifies identity, and cleans the worktree", async (t) => {
@@ -118,7 +127,7 @@ test("detached Candidate build runs exact quality and production build commands,
     ["--filter", "@e365/mp", "exec", "uni", "build", "-p", "mp-weixin"],
   ]);
   for (const call of calls.filter(({ sandbox }) => sandbox)) {
-    assert.deepEqual(call.network, { mode: "deny-all", profileId: "test-deny-network-v1" });
+    assert.deepEqual(call.network, { mode: "deny-all", profileId: "spawned-deny-all-v1" });
     assert.equal(call.env.PATH, process.env.PATH ?? "");
     assert.equal(call.env.LANG, process.env.LANG ?? "C.UTF-8");
     assert.equal(call.env.MINI_PROGRAM_BUILD_OUTPUT_DIR, undefined);
@@ -369,30 +378,67 @@ test("sandbox lifecycle drains start throw, invalid session, nonzero result, and
     await assert.rejects(validateDetachedCandidate({ ...input, trustedRuntime: runtime }), /failed|unsuccessfully/i, scenario.name);
     assert.deepEqual(events.filter(({ lifecycle }) => lifecycle).map(({ lifecycle }) => lifecycle), scenario.expected, scenario.name);
   }
-  const invalidRuntime = await createTrustedMiniProgramTestRuntime({
-    projectRoot: PROJECT_ROOT,
-    provider: { implementationId: "invalid-session-v1", profileId: "deny-all-v1", createSession: () => ({ terminate: async () => {}, wait: async () => {} }) },
-  });
+  configureFakeSandboxProvider(() => ({ terminate: async () => {}, wait: async () => {} }));
+  const invalidRuntime = await createTrustedMiniProgramTestRuntime();
   await assert.rejects(validateDetachedCandidate({ ...input, trustedRuntime: invalidRuntime }), /invalid lifecycle session/i);
 });
 
+test("sandbox completion requires an explicit finite integer zero exit code and drains every invalid completion", async (t) => {
+  const fixture = await fixtureRepo(t);
+  const input = { repoPath: fixture.root, candidateCommit: fixture.candidateCommit, manifestChecksum: "manifest-1", app: app(fixture.candidateCommit) };
+  for (const completion of [undefined, {}, { exitCode: Number.NaN }, { exitCode: 0.5 }, { code: Infinity }]) {
+    const events = [];
+    const runtime = await fakeRuntime(events, async () => completion);
+    await assert.rejects(validateDetachedCandidate({ ...input, trustedRuntime: runtime }), /exit code|completion|unsuccessfully/i);
+    assert.deepEqual(events.filter(({ lifecycle }) => lifecycle).map(({ lifecycle }) => lifecycle), ["terminate", "group-exit"]);
+  }
+});
+
 test("trusted runtime loaders accept only fixed owned non-writable regular modules", async (t) => {
-  const fakeProvider = { implementationId: "loader-test-v1", profileId: "deny-all-v1", createSession: () => ({}) };
-  const runtime = await createTrustedMiniProgramTestRuntime({ projectRoot: PROJECT_ROOT, provider: fakeProvider });
-  assert.equal(runtime.provider, fakeProvider);
+  const runtime = await createTrustedMiniProgramTestRuntime();
+  assert.equal(runtime.provider.implementationId, "spawned-test-provider-v1");
   for (const moduleName of ["../fake.mjs", "/tmp/fake.mjs", "nested/fake.mjs"]) {
-    await assert.rejects(createTrustedMiniProgramTestRuntime({ projectRoot: PROJECT_ROOT, provider: fakeProvider, sandboxProviderModule: moduleName }), /relative allowlisted/i);
+    await assert.rejects(createTrustedMiniProgramTestRuntime({ sandboxProviderModule: moduleName }), /relative allowlisted/i);
   }
   const providerPath = path.join(PROJECT_ROOT, "test/fixtures/trusted-mini-program-runtime/sandbox-providers/fake.mjs");
   await chmod(providerPath, 0o666);
   t.after(() => chmod(providerPath, 0o644));
-  await assert.rejects(createTrustedMiniProgramTestRuntime({ projectRoot: PROJECT_ROOT, provider: fakeProvider }), /group\/world writable/i);
+  await assert.rejects(createTrustedMiniProgramTestRuntime(), /group\/world writable/i);
   await chmod(providerPath, 0o644);
   const linkedPath = path.join(path.dirname(providerPath), "linked.mjs");
   await symlink(providerPath, linkedPath);
   t.after(() => rm(linkedPath, { force: true }));
-  await assert.rejects(createTrustedMiniProgramTestRuntime({ projectRoot: PROJECT_ROOT, provider: fakeProvider, sandboxProviderModule: "linked.mjs" }), /symlink/i);
+  await assert.rejects(createTrustedMiniProgramTestRuntime({ sandboxProviderModule: "linked.mjs" }), /symlink/i);
   await assert.rejects(createTrustedMiniProgramRuntimeLoader({ projectRoot: PROJECT_ROOT, sandboxProviderModule: "/tmp/provider.mjs", stageRunnerModule: "runner.mjs" }), /relative allowlisted/i);
+});
+
+test("production runtime authority cannot be redirected or supplied by production test helpers", async () => {
+  assert.equal(trustedRuntimeLoader.createTrustedMiniProgramTestRuntime, undefined);
+  let imported = false;
+  await assert.rejects(createTrustedMiniProgramRuntimeLoader({
+    projectRoot: "/tmp/attacker-root",
+    sandboxProviderModule: "missing-provider.mjs",
+    stageRunnerModule: "missing-runner.mjs",
+    importModule: async () => {
+      imported = true;
+      return { default: { implementationId: "forged", profileId: "forged", createSession() {} } };
+    },
+  }), /missing|module|trusted|ENOENT/i);
+  assert.equal(imported, false);
+});
+
+test("trusted module validation rejects symlinks in the fixed root chain before canonicalization", async (t) => {
+  const actual = await mkdtemp(path.join(os.tmpdir(), "wechat-loader-actual-"));
+  const linked = path.join(os.tmpdir(), `wechat-loader-linked-${process.pid}-${Date.now()}`);
+  t.after(() => Promise.all([rm(actual, { recursive: true, force: true }), rm(linked, { force: true })]));
+  await mkdir(path.join(actual, "orchestration/mini-program/sandbox-providers"), { recursive: true });
+  await mkdir(path.join(actual, "orchestration/mini-program/stage-runners"), { recursive: true });
+  await writeFile(path.join(actual, "orchestration/mini-program/sandbox-providers/provider.mjs"), "export default {}\n", { mode: 0o600 });
+  await writeFile(path.join(actual, "orchestration/mini-program/stage-runners/runner.mjs"), "export default () => ({})\n", { mode: 0o600 });
+  await symlink(actual, linked);
+  await assert.rejects(trustedRuntimeLoader.validateTrustedRuntimeModuleAtFixedRoot(
+    path.join(linked, "orchestration/mini-program"), "sandbox-providers", "provider.mjs",
+  ), /symlink/i);
 });
 
 test("artifact inspection rejects wrong App ID, non-production endpoints, non-allowlisted APIs, and secret material", async (t) => {
@@ -410,6 +456,56 @@ test("artifact inspection rejects wrong App ID, non-production endpoints, non-al
   await rejected({ appid: APP_ID }, "https://evil.example/v1", /allowlist/i);
   await rejected({ appid: APP_ID }, "https://api.365life.example/v10evil", /allowlist/i);
   await rejected({ appid: APP_ID }, "-----BEGIN PRIVATE KEY-----", /secret|private key/i);
+});
+
+test("provider artifact entries require canonical unique bounded POSIX paths and buffers", async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wechat-artifact-entries-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const descriptor = Buffer.from(JSON.stringify({ appid: APP_ID }));
+  const source = Buffer.from("https://api.365life.example/v1");
+  const common = {
+    artifactRoot: root, artifactPath: root, app: app("1".repeat(40)), candidateCommit: "1".repeat(40),
+    manifestChecksum: "manifest", productionApiAllowlist: ["https://api.365life.example/v1"],
+  };
+  for (const entries of [
+    [{ relative: "project.config.json", content: descriptor }, { relative: "/app.js", content: source }],
+    [{ relative: "project.config.json", content: descriptor }, { relative: "../app.js", content: source }],
+    [{ relative: "project.config.json", content: descriptor }, { relative: "./app.js", content: source }],
+    [{ relative: "project.config.json", content: descriptor }, { relative: "app\u0000.js", content: source }],
+    [{ relative: "project.config.json", content: descriptor }, { relative: "app.js", content: source }, { relative: "app.js", content: source }],
+    [{ relative: "project.config.json", content: descriptor }, { relative: "app.js", content: "not-a-buffer" }],
+  ]) {
+    await assert.rejects(inspectArtifact({ ...common, exportedArtifact: { readFiles: async () => entries } }), /artifact|path|relative|duplicate|buffer/i);
+  }
+});
+
+test("artifact digest is entry-order independent and must match provider published path, size, and digest", async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wechat-artifact-order-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const entries = [
+    { relative: "project.config.json", content: Buffer.from(JSON.stringify({ appid: APP_ID })) },
+    { relative: "app.js", content: Buffer.from("https://api.365life.example/v1") },
+  ];
+  const common = {
+    artifactRoot: root, artifactPath: root, app: app("1".repeat(40)), candidateCommit: "1".repeat(40),
+    manifestChecksum: "manifest", productionApiAllowlist: ["https://api.365life.example/v1"],
+  };
+  const evidence = providerEvidence(entries);
+  const first = await inspectArtifact({ ...common, exportedArtifact: { artifactPath: root, ...evidence, readFiles: async () => entries } });
+  const second = await inspectArtifact({ ...common, exportedArtifact: {
+    artifactPath: root, artifactSize: first.artifactSize, artifactDigest: first.artifactDigest,
+    readFiles: async () => entries.toReversed().map((entry) => Object.freeze({ ...entry })),
+  } });
+  assert.equal(second.artifactDigest, first.artifactDigest);
+  assert.equal(second.artifactSize, first.artifactSize);
+  for (const exportedArtifact of [
+    { artifactPath: root, readFiles: async () => entries },
+    { artifactPath: path.join(root, "other"), artifactSize: first.artifactSize, artifactDigest: first.artifactDigest, readFiles: async () => entries },
+    { artifactPath: root, artifactSize: first.artifactSize + 1, artifactDigest: first.artifactDigest, readFiles: async () => entries },
+    { artifactPath: root, artifactSize: first.artifactSize, artifactDigest: `sha256:${"f".repeat(64)}`, readFiles: async () => entries },
+  ]) {
+    await assert.rejects(inspectArtifact({ ...common, exportedArtifact }), /published|path|size|digest|mismatch/i);
+  }
 });
 
 test("independent artifact inspection accepts only canonical paths inside its owned root", async (t) => {

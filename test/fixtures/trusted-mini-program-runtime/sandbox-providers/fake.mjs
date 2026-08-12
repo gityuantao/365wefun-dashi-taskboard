@@ -1,4 +1,5 @@
 import { constants as fsConstants } from "node:fs";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, open, readdir } from "node:fs/promises";
 import path from "node:path";
 
@@ -36,19 +37,40 @@ async function readTreeNoFollow(root, relative = "") {
   return result.sort((left, right) => left.relative.localeCompare(right.relative));
 }
 
+let sessionFactory;
+
+export function configureFakeSandboxProvider(factory) {
+  sessionFactory = factory;
+}
+
 export async function exportOwnedArtifact({ sourceRoot, ownedArtifactRoot }) {
   const exportedRoot = await mkdtemp(path.join(ownedArtifactRoot, ".trusted-provider-export-"));
   const artifactPath = path.join(exportedRoot, "artifact");
   await mkdir(artifactPath, { mode: 0o700 });
   await copyTreeNoFollow(sourceRoot, artifactPath);
-  return Object.freeze({ artifactPath, readFiles: () => readTreeNoFollow(artifactPath) });
+  const entries = await readTreeNoFollow(artifactPath);
+  const hash = createHash("sha256");
+  let artifactSize = 0;
+  for (const { relative, content } of entries) {
+    artifactSize += content.length;
+    hash.update(Buffer.from(`${relative}\0${content.length}\0`));
+    hash.update(content);
+  }
+  return Object.freeze({
+    artifactPath,
+    artifactSize,
+    artifactDigest: `sha256:${hash.digest("hex")}`,
+    readFiles: () => readTreeNoFollow(artifactPath),
+  });
 }
 
 export default Object.freeze({
   implementationId: "spawned-test-provider-v1",
   profileId: "spawned-deny-all-v1",
-  deniedRoots: [],
+  deniedRoots: ["/private/credentials", "/private/review"],
+  async readiness() { return { available: true, platform: "test" }; },
   createSession(request) {
+    if (sessionFactory) return sessionFactory(request);
     const outputRoot = request.filesystem.mounts[0].targetPath;
     return {
       async start() {
