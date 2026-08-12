@@ -1,5 +1,6 @@
 import { TASK_STATES } from "../domain/task-state.mjs";
 import { activeVersionTasks, loadReleasePlatformEvidence } from "../release/release-scope.mjs";
+import { buildReleaseEligibility } from "../release/release-eligibility.mjs";
 import { compareVersions } from "../release/version-utils.mjs";
 
 const ACTIVITY_LABELS = {
@@ -86,6 +87,21 @@ async function loadOpenTaskBlockers(db) {
     `)
     .all()).results;
   return new Set(rows.map((row) => row.object_id));
+}
+
+async function releaseEligibilityFor({ db, version, tasks, manifest, openTaskBlockers }) {
+  const platformEvidence = manifest?.productionTargetPlan?.taskPlatforms
+    ? manifest.productionTargetPlan.taskPlatforms.map((item) => ({ ...item, source: "frozen_manifest" }))
+    : await loadReleasePlatformEvidence(db, tasks);
+  return buildReleaseEligibility({
+    version,
+    tasks,
+    blockers: [...openTaskBlockers],
+    platformEvidence,
+    candidateScope: manifest?.candidateScope ?? null,
+    configuredTargets: ["web", "api", "ios"],
+    runtimeReadiness: { ready: true },
+  });
 }
 
 async function latestJob(db, taskId, jobType) {
@@ -192,11 +208,14 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
     if (pipeline[displayStatus] !== undefined) pipeline[displayStatus] += 1;
   }
 
-  const versionProgress = versions
+  const versionProgress = await Promise.all(versions
     .filter((version) => version.status !== "published" && version.status !== "canceled")
-    .map((version) => {
+    .map(async (version) => {
       const tasksInVersion = activeVersionTasks({
         tasks, versionName: version.name ?? version.id, manifest: manifests.get(version.id) ?? null,
+      });
+      const releaseEligibility = await releaseEligibilityFor({
+        db, version, tasks: tasksInVersion, manifest: manifests.get(version.id) ?? null, openTaskBlockers,
       });
       const readyCount = tasksInVersion.filter(
         (task) => task.status === "ready_for_release",
@@ -204,14 +223,7 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
       const notReadyCount = tasksInVersion.filter(
         (task) => task.status !== "ready_for_release",
       ).length;
-      const hasOpenBlockers = tasksInVersion.some(
-        (task) => openTaskBlockers.has(task.id),
-      );
-      const allReady = tasksInVersion.length > 0
-        && tasksInVersion.every((task) => task.status === "ready_for_release");
-      const noOpenBlockers = tasksInVersion.every(
-        (task) => !openTaskBlockers.has(task.id),
-      );
+      const hasOpenBlockers = tasksInVersion.some((task) => openTaskBlockers.has(task.id));
       return {
         id: version.id,
         name: version.name ?? version.id,
@@ -220,16 +232,12 @@ export async function buildDashboard(db, { versionListUrl } = {}) {
         readyCount,
         notReadyCount,
         hasOpenBlockers,
-        releasable: version.status !== "published"
-          && version.status !== "canceled"
-          && version.status !== "releasing"
-          && version.blocked !== true
-          && allReady
-          && noOpenBlockers,
+        releasable: releaseEligibility.ready,
+        releaseEligibility,
         releaseFailed: version.status === "release_failed",
       };
-    })
-    .sort((left, right) => compareVersions(left.name, right.name) || left.name.localeCompare(right.name));
+    }));
+  versionProgress.sort((left, right) => compareVersions(left.name, right.name) || left.name.localeCompare(right.name));
 
   const releasableVersions = versionProgress
     .filter((version) => version.releasable)
@@ -381,42 +389,27 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
       ready: (task.aggregateState ?? task.snapshotStatus) === "ready_for_release",
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
-  const releasable = versionTasks.length > 0
-    && versionTasks.every((task) => task.ready)
-    && snapshot.blocked !== true
-    && status !== "published"
-    && status !== "canceled"
-    && status !== "releasing";
-
-  const gaps = [];
-  if (versionTasks.length === 0) gaps.push("版本内至少需要一个任务");
-  if (missingManifestTaskIds.length > 0) gaps.push(`Manifest 任务快照缺失：${missingManifestTaskIds.join("、")}`);
-  if (versionTasks.some((task) => !task.ready)) gaps.push("版本任务必须全部处于待发布");
+  const resolvedTaskPlatforms = storedManifest?.productionTargetPlan?.taskPlatforms
+    ? storedManifest.productionTargetPlan.taskPlatforms.map((item) => ({ ...item, source: "frozen_manifest" }))
+    : await loadReleasePlatformEvidence(db, matchingTasks);
+  const releaseEligibility = await releaseEligibilityFor({
+    db,
+    version: { ...snapshot, id: versionId, status },
+    tasks: matchingTasks,
+    manifest: storedManifest,
+    openTaskBlockers,
+  });
   const workflowDrift = matchingTasks.filter((task) => (
     task.snapshotStatus === "ready_for_release"
     && task.aggregateState !== null
     && task.aggregateState !== "ready_for_release"
   ));
   if (workflowDrift.length > 0) {
-    gaps.push(`任务内部流程尚未就绪：${workflowDrift.map((task) => `${task.id}(${task.aggregateState})`).join("、")}`);
+    releaseEligibility.gaps.push(`任务内部流程尚未就绪：${workflowDrift.map((task) => `${task.id}(${task.aggregateState})`).join("、")}`);
   }
-  if (snapshot.blocked === true) gaps.push("版本存在开放阻塞项");
-  const blockedTasks = versionTasks.filter((task) => openTaskBlockers.has(task.id));
-  if (blockedTasks.length > 0) gaps.push(`任务存在开放阻塞项：${blockedTasks.map((task) => task.id).join("、")}`);
-  if (["published", "canceled", "releasing"].includes(status)) gaps.push("当前版本状态不可发起发布");
-  const resolvedTaskPlatforms = storedManifest?.productionTargetPlan?.taskPlatforms
-    ? storedManifest.productionTargetPlan.taskPlatforms.map((item) => ({ ...item, source: "frozen_manifest" }))
-    : await loadReleasePlatformEvidence(db, matchingTasks);
-  const platformScope = resolvedTaskPlatforms;
-  const taskPlatforms = platformScope.flatMap((task) => Array.isArray(task.platforms) ? task.platforms : []);
-  const missingPlatformTasks = platformScope.filter((task) => !Array.isArray(task.platforms) || task.platforms.length === 0);
-  if (missingPlatformTasks.length > 0) gaps.push(`任务缺少影响平台：${missingPlatformTasks.map((task) => task.taskId).join("、")}`);
-  const invalidPlatformTasks = platformScope.filter((task) => Array.isArray(task.platforms)
-    && task.platforms.some((value) => typeof value !== "string" || value.trim() === ""));
-  if (invalidPlatformTasks.length > 0) gaps.push(`任务影响平台格式无效：${invalidPlatformTasks.map((task) => task.taskId).join("、")}`);
-  const supported = new Set(["web", "api", "ios"]);
-  const unsupported = [...new Set(taskPlatforms.filter((value) => typeof value === "string").map((value) => value.trim().toLowerCase()).filter((value) => value && !supported.has(value)))];
-  if (unsupported.length > 0) gaps.push(`尚未配置的生产平台：${unsupported.join("、")}`);
+  if (missingManifestTaskIds.length > 0) releaseEligibility.gaps.push(`Manifest 任务快照缺失：${missingManifestTaskIds.join("、")}`);
+  releaseEligibility.ready = releaseEligibility.gaps.length === 0;
+  const taskPlatforms = releaseEligibility.taskPlatforms.flatMap((task) => task.platforms);
   const latestTargets = new Map();
   for (const row of targetRowsResult.results) {
     const key = `${row.platform}:${row.app_id}`;
@@ -468,12 +461,12 @@ export async function buildVersionDetail(db, versionId, { iosApps = [] } = {}) {
     id: versionId,
     name: snapshot.name ?? versionId,
     status,
-    releasable,
-    blocked: snapshot.blocked === true || blockedTasks.length > 0,
+    releasable: releaseEligibility.ready,
+    blocked: snapshot.blocked === true || matchingTasks.some((task) => openTaskBlockers.has(task.id)),
     tasks: versionTasks,
     manifest,
-    releaseReadiness: { ready: releasable && gaps.length === 0, gaps },
-    taskPlatforms: resolvedTaskPlatforms.map(({ taskId, platforms, source }) => ({ taskId, platforms, source })),
+    releaseReadiness: releaseEligibility,
+    taskPlatforms: releaseEligibility.taskPlatforms,
     releaseTargets,
   };
 }

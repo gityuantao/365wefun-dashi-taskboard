@@ -48,7 +48,7 @@ export function canonicalizeReleasePlatforms(values, {
   return [...new Set(projected)];
 }
 
-function result({ taskId, platforms, source, evidenceId = null, commitSha = null, aggregateVersion, androidDelivery = null }) {
+function result({ taskId, platforms, source, evidenceId = null, commitSha = null, acceptedCommitSha = null, aggregateVersion, androidDelivery = null }) {
   return {
     taskId,
     platforms: canonicalizeReleasePlatforms(platforms, {
@@ -58,6 +58,7 @@ function result({ taskId, platforms, source, evidenceId = null, commitSha = null
     source,
     evidenceId,
     commitSha,
+    acceptedCommitSha,
     aggregateVersion,
     androidDelivery,
   };
@@ -75,6 +76,7 @@ export function resolveReleasePlatformEvidence({
   if (nonEmpty(task.platforms)) {
     return result({
       taskId: task.id, platforms: task.platforms, source: "clickup_snapshot",
+      acceptedCommitSha,
       aggregateVersion: aggregate.version,
     });
   }
@@ -91,6 +93,7 @@ export function resolveReleasePlatformEvidence({
       source: "staging_job",
       evidenceId: staged.job.id,
       commitSha: staged.job.payload?.commitSha ?? staged.job.payload?.acceptedCommitSha ?? null,
+      acceptedCommitSha,
       aggregateVersion: aggregate.version,
       androidDelivery: staged.job.payload?.androidDelivery ?? null,
     });
@@ -104,6 +107,7 @@ export function resolveReleasePlatformEvidence({
       source: "develop_job",
       evidenceId: developed.job.id,
       commitSha: developed.job.result?.commitSha ?? null,
+      acceptedCommitSha,
       aggregateVersion: aggregate.version,
       androidDelivery: developed.job.result?.androidDelivery ?? null,
     });
@@ -116,13 +120,14 @@ export function resolveReleasePlatformEvidence({
       platforms: analyzed.platforms,
       source: "analyze_job",
       evidenceId: analyzed.job.id,
+      acceptedCommitSha,
       aggregateVersion: aggregate.version,
       androidDelivery: analyzed.job.result?.summary?.androidDelivery ?? null,
     });
   }
 
   return result({
-    taskId: task.id, platforms: [], source: "missing", aggregateVersion: aggregate.version,
+    taskId: task.id, platforms: [], source: "missing", acceptedCommitSha, aggregateVersion: aggregate.version,
   });
 }
 

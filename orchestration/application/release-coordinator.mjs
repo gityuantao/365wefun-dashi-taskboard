@@ -4,6 +4,7 @@ import {
   loadAllTaskSnapshots,
   loadManifest,
 } from "../release/version-aggregator.mjs";
+import { classifyCandidateChanges } from "../release/candidate-scope.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import {
   assertProductionTargetPlanMatches,
@@ -34,6 +35,7 @@ const DEFAULT_SERVICES = {
   loadCleanupAttempts,
   loadTaskPullRequest,
   recordCleanupAttempt,
+  classifyCandidateChanges,
 };
 
 export async function coordinateReleaseSnapshot({
@@ -145,11 +147,24 @@ export async function coordinateReleaseSnapshot({
     collectRegressionEvidence: (candidate) => adapter.collectRegressionEvidence(candidate),
     identifyArtifact: (candidate) => adapter.identifyArtifact(candidate),
     persistCandidate: (candidate) => releaseGitOps.persistCandidate(candidate),
-    freezeCandidate: (candidate) => services.freezeManifest({
-      db,
-      ...candidate,
-      productionTargetPlan,
-    }),
+    freezeCandidate: (candidate) => {
+      let candidateScope;
+      try {
+        candidateScope = services.classifyCandidateChanges({
+          repoPath: runtime.repoPath,
+          baseCommit: candidate.candidateBaseCommit,
+          candidateCommit: candidate.candidateCommit,
+        });
+      } catch (error) {
+        return { status: "rejected", reasons: [error.message] };
+      }
+      return services.freezeManifest({
+        db,
+        ...candidate,
+        candidateScope,
+        productionTargetPlan,
+      });
+    },
     verifyCandidate: (candidate) => releaseGitOps.verifyCandidate(candidate),
     publishCandidate: async ({ manifest }) => {
       return services.handleConfirmRelease({

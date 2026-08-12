@@ -414,6 +414,7 @@ export async function coordinateVersionRelease({
     const taskPrHeads = [];
     let candidateCommit = null;
     let candidateSourceRef = null;
+    let candidateBaseCommit = null;
     for (const taskId of taskIds) {
       const integrated = await integrateTaskPr({ taskId, versionBranch });
       if (!integrated?.merged || !integrated.taskHead || !integrated.candidateCommit) {
@@ -425,6 +426,7 @@ export async function coordinateVersionRelease({
       }
       candidateCommit = integrated.candidateCommit;
       candidateSourceRef = integrated.candidateSourceRef ?? versionBranch;
+      candidateBaseCommit ??= integrated.candidateBaseCommit ?? null;
       taskPrHeads.push({
         taskId,
         branch: integrated.headRefName,
@@ -457,6 +459,7 @@ export async function coordinateVersionRelease({
       versionBranch,
       candidateCommit,
       candidateSourceRef,
+      candidateBaseCommit,
       taskPrHeads,
     });
     if (persisted?.persisted !== true || !persisted.candidateRef) {
@@ -471,6 +474,7 @@ export async function coordinateVersionRelease({
       versionBranch,
       candidateCommit,
       candidateRef: persisted.candidateRef,
+      candidateBaseCommit,
       taskPrHeads,
       artifactIdentity,
       regressionEvidence,

@@ -1,6 +1,7 @@
 import { DomainError } from "../domain/errors.mjs";
 
 const SUPPORTED_PLATFORMS = new Set(["web", "api", "ios"]);
+const DELIVERY_TARGET = Object.freeze({ android_twa: "web" });
 
 function invalid(message) {
   throw new DomainError("INVALID_PRODUCTION_PLATFORM_SCOPE", message);
@@ -32,7 +33,7 @@ export function resolveProductionPlatforms(taskSnapshots) {
       if (typeof value !== "string" || value.trim() === "") {
         invalid(`production task snapshot ${index} has an invalid platform value`);
       }
-      const platform = value.trim().toLowerCase();
+      const platform = DELIVERY_TARGET[value.trim().toLowerCase()] ?? value.trim().toLowerCase();
       if (SUPPORTED_PLATFORMS.has(platform)) {
         resolved[platform] = true;
       } else if (platform !== "") {

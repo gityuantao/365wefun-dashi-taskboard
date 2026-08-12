@@ -101,7 +101,8 @@ test("version detail returns safe readiness gaps and per-target release progress
     '${DASHBOARD_NOW}','${DASHBOARD_NOW}','${DASHBOARD_NOW}','review rejected')`).run();
 
   const detail = await buildVersionDetail(harness.db, "version-1");
-  assert.deepEqual(detail.releaseReadiness, { ready: true, gaps: [] });
+  assert.equal(detail.releaseReadiness.ready, true);
+  assert.deepEqual(detail.releaseReadiness.gaps, []);
   assert.deepEqual(detail.releaseTargets, [{
     platform: "web", appId: null, label: "WEB", stage: "pending", status: "pending",
     attempt: 0, updatedAt: DASHBOARD_NOW, error: null, reviewStatus: null,
@@ -356,7 +357,10 @@ test("version detail recovers canonical platforms from structured jobs and repor
     .bind(JSON.stringify({ status: "completed", platforms: ["服务端", "小程序"], changeSummary: "完成登录页" })).run();
 
   const detail = await buildVersionDetail(harness.db, "version-1");
-  assert.deepEqual(detail.taskPlatforms, [{ taskId: "task-1", platforms: ["api", "mini_program"], source: "develop_job" }]);
+  assert.deepEqual(detail.taskPlatforms, [{
+    taskId: "task-1", platforms: ["api", "mini_program"], source: "develop_job",
+    evidenceId: "task-1-develop-1", commitSha: null, acceptedCommitSha: null,
+  }]);
   assert.ok(detail.releaseReadiness.gaps.some((gap) => gap.includes("mini_program")));
   assert.equal(detail.releaseReadiness.gaps.some((gap) => gap.includes("任务缺少影响平台")), false);
 });
@@ -407,6 +411,19 @@ test("dashboard progress and pipeline use internal workflow readiness instead of
   assert.equal(dashboard.pipeline.ready_for_release, 2);
   const detail = await buildVersionDetail(harness.db, "version-1");
   assert.equal(detail.tasks.filter(({ ready }) => ready).length, version.readyCount);
+});
+
+test("dashboard card and version detail expose the same canonical release eligibility", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedDashboardFixture(harness.db);
+
+  const dashboard = await buildDashboard(harness.db);
+  const detail = await buildVersionDetail(harness.db, "version-1");
+  const card = dashboard.versions.find((version) => version.id === "version-1");
+
+  assert.equal(card.releasable, detail.releaseReadiness.ready);
+  assert.deepEqual(card.releaseEligibility, detail.releaseReadiness);
 });
 
 test("version detail treats a ready snapshot as ready when no internal aggregate exists", async (t) => {

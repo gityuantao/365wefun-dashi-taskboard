@@ -5,6 +5,7 @@ import {
   activeVersionTasks,
   loadReleasePlatformEvidence,
 } from "./release-scope.mjs";
+import { buildReleaseEligibility } from "./release-eligibility.mjs";
 
 export async function loadAllTaskSnapshots(db) {
   const rows = await db
@@ -13,7 +14,7 @@ export async function loadAllTaskSnapshots(db) {
   return rows.results.map((row) => JSON.parse(row.snapshot));
 }
 
-export async function checkVersionGate({ db, versionId }) {
+export async function checkVersionGate({ db, versionId, candidateScope = null, runtimeReadiness = { ready: true } }) {
   const versionSnapshot = await loadLastConfirmed(db, "version", versionId);
   const matchKey = versionSnapshot?.name ?? versionId;
   const manifestRow = await db.prepare("SELECT manifest FROM release_manifests WHERE version_id = ?").bind(versionId).first();
@@ -27,40 +28,30 @@ export async function checkVersionGate({ db, versionId }) {
     task.status = task.status ?? aggregate?.state ?? null;
   }
   const tasks = activeVersionTasks({ tasks: allTasks, versionName: matchKey, manifest });
-  const reasons = [];
-  if (tasks.length === 0) {
-    reasons.push("version has no tasks");
-  }
-  const notReady = [];
+  const resolvedTasks = [];
   for (const task of tasks) {
     const aggregate = await loadAggregate(db, "task", task.id);
     const state = aggregate.state ?? task.status;
-    if (state !== "ready_for_release") {
-      notReady.push(task);
-    }
-  }
-  if (notReady.length > 0) {
-    reasons.push(`tasks not ready for release: ${[...new Set(notReady.map((task) => task.id))].join(", ")}`);
+    resolvedTasks.push({ ...task, status: state });
   }
   const blockers = await db
     .prepare("SELECT object_id FROM blockers WHERE status = 'open' AND object_type = 'task'")
     .all();
   const blockedIds = new Set(blockers.results.map((row) => row.object_id));
-  const blockedTasks = tasks.filter((task) => blockedIds.has(task.id));
-  if (blockedTasks.length > 0) {
-    reasons.push(`blocked tasks: ${blockedTasks.map((task) => task.id).join(", ")}`);
-  }
   const taskPlatforms = await loadReleasePlatformEvidence(db, tasks);
-  const missing = taskPlatforms.filter((item) => item.platforms.length === 0);
-  if (missing.length > 0) reasons.push(`tasks missing release platforms: ${missing.map((item) => item.taskId).join(", ")}`);
-  const supported = new Set(["web", "api", "ios"]);
-  const unsupported = [...new Set(taskPlatforms.flatMap((item) => item.platforms).filter((platform) => !supported.has(platform)))];
-  if (unsupported.length > 0) reasons.push(`unsupported production platforms: ${unsupported.join(", ")}`);
+  const eligibility = buildReleaseEligibility({
+    version: versionSnapshot ?? { id: versionId },
+    tasks: resolvedTasks,
+    blockers: [...blockedIds],
+    platformEvidence: taskPlatforms,
+    candidateScope: candidateScope ?? manifest?.candidateScope ?? null,
+    configuredTargets: ["web", "api", "ios"],
+    runtimeReadiness,
+  });
   return {
-    pass: reasons.length === 0,
-    reasons,
-    taskIds: tasks.map((task) => task.id).sort(),
-    taskPlatforms: taskPlatforms.map(({ taskId, platforms, source }) => ({ taskId, platforms, source })),
+    ...eligibility,
+    pass: eligibility.ready,
+    reasons: eligibility.gaps,
   };
 }
 
@@ -144,12 +135,13 @@ export async function freezeManifest({
   artifactIdentity,
   regressionEvidence,
   productionTargetPlan,
+  candidateScope = null,
 }) {
   const existing = await loadManifest({ db, versionId });
   if (existing) {
     return { status: "already_frozen", manifest: existing };
   }
-  const gate = await checkVersionGate({ db, versionId });
+  const gate = await checkVersionGate({ db, versionId, candidateScope });
   if (!gate.pass) {
     return { status: "rejected", reasons: gate.reasons };
   }
@@ -163,6 +155,14 @@ export async function freezeManifest({
     artifactIdentity,
     regressionEvidence,
     productionTargetPlan,
+    candidateScope: gate.candidateScope,
+    releaseEligibility: {
+      ready: gate.ready,
+      gaps: gate.gaps,
+      taskIds: gate.taskIds,
+      taskPlatforms: gate.taskPlatforms,
+      plannedTargets: gate.plannedTargets,
+    },
     createdAt: now,
   };
   const reasons = validateFrozenManifest(manifestWithoutChecksum);

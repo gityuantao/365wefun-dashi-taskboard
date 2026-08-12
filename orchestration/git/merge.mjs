@@ -182,6 +182,7 @@ export function fetchAndMergeTaskPullRequest({
       headRefName: pr.headRefName,
       taskHead: pr.headRefOid,
       candidateCommit,
+      candidateBaseCommit: candidateCommit,
       candidateSourceRef: fetchedBase,
       versionBranch,
       alreadyMerged: true,
@@ -198,6 +199,10 @@ export function fetchAndMergeTaskPullRequest({
       conflict: false,
       error: refreshedBase.stderr || "version branch refresh failed",
     };
+  }
+  const baseHead = git(repoPath, ["rev-parse", "--verify", fetchedBase], run);
+  if (baseHead.status !== 0 || !/^[0-9a-f]{40,64}$/i.test(baseHead.stdout.trim())) {
+    return { merged: false, conflict: false, error: "version branch base commit is invalid" };
   }
   const fetchedRef = `refs/taskboard/pull/${pr.number}/${pr.headRefOid}`;
   const fetched = git(repoPath, [
@@ -226,6 +231,7 @@ export function fetchAndMergeTaskPullRequest({
     headRefName: pr.headRefName,
     fetchedRef,
     candidateSourceRef: versionBranch,
+    candidateBaseCommit: baseHead.stdout.trim(),
   };
 }
 

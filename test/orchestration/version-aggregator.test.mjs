@@ -155,7 +155,10 @@ test("version gate resolves structured platform evidence and reports unsupported
   const gate = await checkVersionGate({ db: harness.db, versionId: "version-1" });
   assert.equal(gate.pass, false);
   assert.deepEqual(gate.taskIds, ["task-a"]);
-  assert.deepEqual(gate.taskPlatforms, [{ taskId: "task-a", platforms: ["api", "mini_program"], source: "develop_job" }]);
+  assert.deepEqual(gate.taskPlatforms, [{
+    taskId: "task-a", platforms: ["api", "mini_program"], source: "develop_job",
+    evidenceId: "task-a-develop-1", commitSha: null, acceptedCommitSha: null,
+  }]);
   assert.ok(gate.reasons.some((reason) => reason.includes("mini_program")));
 });
 

@@ -43,7 +43,7 @@ test("explicit snapshot platforms win over job evidence", () => {
     developJobs: [{ id: "dev", status: "completed", result: { platforms: ["web"] } }],
   }), {
     taskId: "task-1", platforms: ["api", "ios"], source: "clickup_snapshot",
-    evidenceId: null, commitSha: null, aggregateVersion: 12, androidDelivery: null,
+    evidenceId: null, commitSha: null, acceptedCommitSha: null, aggregateVersion: 12, androidDelivery: null,
   });
 });
 
@@ -76,7 +76,7 @@ test("failed, stale, wrong-task and wrong-commit job evidence is rejected", () =
   });
   assert.deepEqual(result, {
     taskId: "task-1", platforms: [], source: "missing", evidenceId: null,
-    commitSha: null, aggregateVersion: 12, androidDelivery: null,
+    commitSha: null, acceptedCommitSha: "accepted", aggregateVersion: 12, androidDelivery: null,
   });
 });
 
