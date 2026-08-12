@@ -88,3 +88,39 @@ Status: DONE
 ### Concerns
 
 - The sole wider-run failure remains the explicitly deferred Task 4 seam: the old direct executor test constructs a mini-program target without a frozen App descriptor, which the all-platform D1 schema correctly rejects. This round did not weaken the schema or implement the Task 3 adapter/Task 4 executor migration.
+
+## Fix round 2/5 — DONE
+
+### Changes
+
+- Added a frozen-Manifest cross-contract check that normalizes both `releaseEligibility.plannedTargets` and `productionTargetPlan.plannedTargets` as lower-cased, trimmed, deduplicated, sorted sets and requires exact equality.
+- Kept `validateProductionTargetPlan` plan-local: it continues to validate only the plan's own flags/DAG canonical form and does not infer Candidate eligibility semantics.
+- Added negative coverage for a plan that drops Candidate-supplemental mini-program eligibility and for an unexplained mini-program plan target absent from canonical eligibility.
+
+### RED evidence
+
+- `node --test test/orchestration/version-aggregator.test.mjs`
+  - Exit 1; 15 tests, 13 passed, 2 failed.
+  - Both new negative cases were incorrectly accepted before the frozen-Manifest cross-contract check.
+
+### GREEN evidence
+
+- `node --test test/orchestration/version-aggregator.test.mjs test/orchestration/release-coordinator.test.mjs test/orchestration/release-commands.test.mjs test/orchestration/mini-program-app-registry.test.mjs test/orchestration/production-release-persistence.test.mjs test/orchestration/migration-runner.test.mjs`
+  - Exit 0; 78 passed, 0 failed.
+- `git diff --check -- ':!.data'`
+  - Exit 0.
+
+### Self-review
+
+- Verified exact set comparison is owned by `validateFrozenManifest`, where both canonical eligibility and frozen plan are available.
+- Verified schemaVersion 1 compatibility is unchanged; the new cross-contract applies to schemaVersion 2.
+- Verified plan flags and DAG remain derived from and canonically rebuilt against the plan's frozen `plannedTargets`.
+- Verified no `.data` or external production/platform side effect was touched.
+
+### Commit
+
+- Pending at report append time; recorded in the final handoff.
+
+### Concerns
+
+- None for round 2. The previously documented Task 4 legacy executor seam remains outside this focused contract fix.

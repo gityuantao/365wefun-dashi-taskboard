@@ -85,6 +85,11 @@ function hasArtifactIdentity(value) {
     && Object.keys(value).length > 0;
 }
 
+function normalizedTargetSet(value) {
+  if (!Array.isArray(value) || value.some((target) => !nonEmptyString(target))) return null;
+  return [...new Set(value.map((target) => target.trim().toLowerCase()))].sort();
+}
+
 export function validateFrozenManifest(manifest) {
   const reasons = [];
   if (!manifest || typeof manifest !== "object") {
@@ -121,6 +126,14 @@ export function validateFrozenManifest(manifest) {
   }
   if (!manifest.regressionEvidence || manifest.regressionEvidence.passed !== true) {
     reasons.push("passing regression evidence is missing");
+  }
+  if (manifest.productionTargetPlan?.schemaVersion === 2) {
+    const eligibilityTargets = normalizedTargetSet(manifest.releaseEligibility?.plannedTargets);
+    const planTargets = normalizedTargetSet(manifest.productionTargetPlan?.plannedTargets);
+    if (!eligibilityTargets || !planTargets
+      || JSON.stringify(eligibilityTargets) !== JSON.stringify(planTargets)) {
+      reasons.push("production target plan planned targets do not match canonical release eligibility");
+    }
   }
   reasons.push(...validateProductionTargetPlan(manifest.productionTargetPlan, taskIds));
   if (nonEmptyString(manifest.checksum)) {

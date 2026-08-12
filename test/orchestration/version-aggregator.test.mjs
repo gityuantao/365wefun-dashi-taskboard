@@ -386,6 +386,66 @@ test("canonical planned targets retain Candidate supplemental mini-program work 
   assert.equal(plan.miniProgramApps[0].appId, "wx1fdac5e27c6b5366");
 });
 
+function schema2ManifestForPlannedTargetValidation({ plan, eligibilityPlannedTargets }) {
+  return {
+    versionId: "version-planned-targets",
+    versionBranch: "version/planned-targets",
+    candidateCommit: "1".repeat(40),
+    candidateRef: `refs/heads/release-candidate/planned-targets/${"1".repeat(40)}`,
+    taskIds: ["task-web"],
+    taskPrHeads: [{
+      taskId: "task-web", branch: "task/task-web", headCommit: "2".repeat(40),
+      prNumber: 42, repository: "owner/repo",
+    }],
+    artifactIdentity: { digest: "sha256:artifact" },
+    regressionEvidence: { passed: true },
+    releaseEligibility: { plannedTargets: eligibilityPlannedTargets },
+    productionTargetPlan: plan,
+  };
+}
+
+test("frozen Manifest rejects a plan that drops Candidate supplemental mini-program eligibility", () => {
+  const candidateScope = {
+    baseCommit: "0".repeat(40), candidateCommit: "1".repeat(40), mappingVersion: 1,
+    changedPaths: ["apps/mp/app.ts", "apps/web/index.ts"],
+    platforms: ["mini_program", "web"], unsupported: [],
+  };
+  const plan = buildProductionTargetPlan({
+    taskSnapshots: [{ id: "task-web", platforms: ["web"] }], taskIds: ["task-web"],
+    candidateScope, plannedTargets: ["web"], apps: [], miniProgramApps: [],
+  });
+
+  assert.ok(validateFrozenManifest(schema2ManifestForPlannedTargetValidation({
+    plan,
+    eligibilityPlannedTargets: ["web", "mini_program"],
+  })).some((reason) => /planned targets.*eligibility|eligibility.*planned targets/i.test(reason)));
+});
+
+test("frozen Manifest rejects an unexplained mini-program plan target absent from canonical eligibility", () => {
+  const candidateScope = {
+    baseCommit: "0".repeat(40), candidateCommit: "1".repeat(40), mappingVersion: 1,
+    changedPaths: ["apps/web/index.ts"], platforms: ["web"], unsupported: [],
+  };
+  const miniProgramApps = [{
+    id: "wechat", name: "Wechat", enabled: true, appId: "wx1fdac5e27c6b5366",
+    sourceDirectory: "apps/mp", buildCommand: ["npm", "run", "build:mp-weixin"],
+    artifactDirectory: "dist/build/mp-weixin", uploadCommand: ["node", "upload.mjs"],
+    reviewCommand: ["node", "review.mjs"], releaseCommand: ["node", "release.mjs"],
+    readbackCommand: ["node", "readback.mjs"], credentialsPath: "private/wechat.private.json",
+    reviewConfigurationRef: "review/wechat",
+  }];
+  const plan = buildProductionTargetPlan({
+    taskSnapshots: [{ id: "task-web", platforms: ["web"] }], taskIds: ["task-web"],
+    candidateScope, plannedTargets: ["mini_program", "web"], apps: [], miniProgramApps,
+    marketingVersion: "2.0.0",
+  });
+
+  assert.ok(validateFrozenManifest(schema2ManifestForPlannedTargetValidation({
+    plan,
+    eligibilityPlannedTargets: ["web"],
+  })).some((reason) => /planned targets.*eligibility|eligibility.*planned targets/i.test(reason)));
+});
+
 test("Manifest checksum covers Candidate paths, mapping, App descriptors, and DAG", async (t) => {
   async function freezeWith(mutator) {
     const harness = await createCloudWorkerHarness();
@@ -430,7 +490,11 @@ test("Manifest checksum covers Candidate paths, mapping, App descriptors, and DA
     await freezeWith(({ candidateScope }) => { candidateScope.mappingVersion = 2; }),
     await freezeWith(({ miniProgramApps }) => { miniProgramApps[0].appId = "wx0000000000000000"; }),
     await freezeWith(({ releaseIdentity }) => { releaseIdentity.marketingVersion = "1.2.4"; }),
-    await freezeWith(({ plannedTargets }) => { plannedTargets.push("web"); }),
+    await freezeWith(({ candidateScope, plannedTargets }) => {
+      candidateScope.platforms.push("web");
+      candidateScope.changedPaths.push("apps/web/index.ts");
+      plannedTargets.push("web");
+    }),
     await freezeWith(({ candidateScope, taskSnapshots, plannedTargets }) => {
       candidateScope.platforms.unshift("android_twa");
       candidateScope.changedPaths.unshift("apps/android-web-wrapper/manifest.json");
