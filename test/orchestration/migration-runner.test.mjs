@@ -260,3 +260,22 @@ test("0015 upgrades only the complete canonical 0014 schema", async (t) => {
   const columns = await harness.db.prepare("SELECT name FROM pragma_table_info('production_release_targets')").all();
   assert.ok(columns.results.some(({ name }) => name === "artifact_digest"));
 });
+
+test("0015 fails closed instead of dropping legacy mini-program target identity", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await harness.db.exec("DROP TRIGGER production_release_targets_immutable_succeeded; DROP TRIGGER production_release_targets_immutable_succeeded_delete; DROP INDEX idx_production_release_targets_latest; DROP INDEX idx_production_release_targets_reusable_success; DROP TABLE production_release_targets;");
+  await harness.db.exec(await readFile(path.join(MIGRATIONS_DIR, PRODUCTION_MIGRATION_NAME), "utf8"));
+  await harness.db.exec(await readFile(path.join(MIGRATIONS_DIR, "0014_mini_program_production_target.sql"), "utf8"));
+  await harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, started_at, created_at, updated_at) VALUES ('v-legacy-mp', 'candidate', 'checksum', 'mini_program', '', 1, 'preflight', 'pending', '2026-08-12T00:00:00.000Z', '2026-08-12T00:00:00.000Z', '2026-08-12T00:00:00.000Z');");
+  const migration = await loadAllPlatformMigration();
+
+  await assert.rejects(
+    () => applyMigrations({ db: harness.db, migrations: [migration], now: "2026-08-12T00:00:00.000Z" }),
+    /CHECK constraint failed/,
+  );
+  assert.deepEqual(
+    await harness.db.prepare("SELECT platform, app_id FROM production_release_targets WHERE version_id = 'v-legacy-mp'").first(),
+    { platform: "mini_program", app_id: "" },
+  );
+});
