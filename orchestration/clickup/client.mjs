@@ -274,9 +274,9 @@ export function createClickUpClient({
     throw lastError;
   }
 
-  function listTasks(listId, page) {
+  function listTasks(listId, page, { includeClosed = false } = {}) {
     return request(
-      `/list/${encodeURIComponent(listId)}/task?archived=false&page=${page}`,
+      `/list/${encodeURIComponent(listId)}/task?archived=false&page=${page}${includeClosed ? "&include_closed=true" : ""}`,
     );
   }
 
@@ -288,7 +288,7 @@ export function createClickUpClient({
     },
     getVersion: (id) => request(`/task/${encodeURIComponent(id)}`),
     getVersionsByList: async (listId, { page = 0 } = {}) => {
-      const data = await listTasks(listId, page);
+      const data = await listTasks(listId, page, { includeClosed: true });
       return data.tasks ?? [];
     },
     createTask: (listId, data) => request(

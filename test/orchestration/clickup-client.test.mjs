@@ -46,6 +46,21 @@ test("getTasksByList returns the tasks array", async () => {
   assert.equal(result.length, 2);
 });
 
+test("getVersionsByList includes closed published versions", async () => {
+  let requestedUrl;
+  const client = createClickUpClient({
+    token: "pk-test",
+    fetchImpl: async (url) => {
+      requestedUrl = String(url);
+      return new Response(JSON.stringify({ tasks: [] }), { status: 200 });
+    },
+  });
+
+  await client.getVersionsByList("version-list");
+
+  assert.match(requestedUrl, /[?&]include_closed=true(?:&|$)/);
+});
+
 test("client retries transient 429 and 5xx responses", async () => {
   let attempts = 0;
   const client = createClickUpClient({
