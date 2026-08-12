@@ -23,7 +23,7 @@ Status: DONE
 ## GREEN evidence
 
 - `node --test test/orchestration/mini-program-app-registry.test.mjs test/orchestration/version-aggregator.test.mjs test/orchestration/production-release-persistence.test.mjs test/orchestration/migration-runner.test.mjs`
-  - Exit 0; 44 tests passed, 0 failed.
+  - Exit 0; 45 tests passed, 0 failed.
 - `node --test test/orchestration/release-coordinator.test.mjs test/orchestration/release-commands.test.mjs`
   - Exit 0; 25 tests passed, 0 failed.
 - `git diff --check`
@@ -33,6 +33,7 @@ Status: DONE
 
 - Verified the existing Task 1 migration is byte-for-byte unchanged.
 - Verified 0015 upgrades the exact canonical 0014 schema and rejects missing indexes or same-name malformed triggers.
+- Verified 0015 fails closed rather than silently dropping any legacy mini-program row whose App identity cannot be reconstructed safely.
 - Verified current mini-program App ID is `wx1fdac5e27c6b5366` and runtime example stores only references, not credentials.
 - Verified persisted tuples are checked against frozen DAG/App identity before D1 mutation.
 - Verified no `.data` path was read, modified, staged, or deleted and no production SSH/DB, WeChat, Apple, ClickUp, or other external release side effect was invoked.
@@ -40,6 +41,7 @@ Status: DONE
 ## Commit
 
 - `efdb6fb` — `feat: persist all-platform release targets`
+- `27320f3` — `fix: preserve legacy release target identity`
 - The report itself is recorded in a follow-up docs-only commit because the implementation commit hash did not exist until after that commit completed.
 
 ## Concerns
