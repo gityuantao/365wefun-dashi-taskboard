@@ -5,6 +5,9 @@ import { createCloudWorkerHarness } from "../helpers/cloud-worker-harness.mjs";
 import {
   acquireProductionReleaseLease,
   initializeProductionTargets,
+  listReusableProductionTargetSuccesses,
+  loadLatestProductionTarget,
+  updateProductionTarget,
 } from "../../orchestration/application/production-release-store.mjs";
 
 async function tableColumns(db, table) {
@@ -174,6 +177,50 @@ test("store rejects target tuples absent from the frozen production target plan"
   assert.equal(
     await harness.db.prepare("SELECT COUNT(*) AS count FROM production_release_targets WHERE version_id = 'v-plan'").first().then((row) => row.count),
     0,
+  );
+});
+
+test("store keeps the frozen mini-program App ID immutable during completion", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const now = "2026-08-12T00:00:00.000Z";
+  const lease = await acquireProductionReleaseLease({ db: harness.db, versionId: "v-frozen-app", holder: "test", now });
+  const manifest = {
+    versionId: "v-frozen-app", candidateCommit: "candidate", checksum: "checksum",
+    productionTargetPlan: {
+      dag: { nodes: [{ platform: "mini_program", appId: "wechat" }] },
+      miniProgramApps: [{ id: "wechat", appId: "wx1fdac5e27c6b5366" }],
+    },
+  };
+  await initializeProductionTargets({
+    db: harness.db, manifest, lease, now,
+    targets: [{ platform: "mini_program", app: manifest.productionTargetPlan.miniProgramApps[0] }],
+  });
+  const target = await loadLatestProductionTarget({ db: harness.db, manifest, platform: "mini_program", appId: "wechat" });
+
+  await assert.rejects(
+    () => updateProductionTarget({
+      db: harness.db, target, values: { miniProgramAppId: "wx0000000000000000" }, lease, now,
+    }),
+    /frozen.*App ID|immutable/i,
+  );
+  assert.equal((await loadLatestProductionTarget({ db: harness.db, manifest, platform: "mini_program", appId: "wechat" })).miniProgramAppId, "wx1fdac5e27c6b5366");
+});
+
+test("store rejects reusable mini-program success with the wrong frozen App ID", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  const manifest = {
+    versionId: "v-reuse-app", candidateCommit: "candidate", checksum: "checksum",
+    productionTargetPlan: {
+      miniProgramApps: [{ id: "wechat", appId: "wx1fdac5e27c6b5366" }],
+    },
+  };
+  await harness.db.exec("INSERT INTO production_release_targets (version_id, candidate_commit, manifest_checksum, platform, app_id, attempt, stage, status, external_request_id, reconciliation_status, mini_program_app_id, artifact_identity, artifact_digest, upload_id, review_submission_id, review_id, release_id, live_id, review_status, release_status, live_status, sanitized_observed_evidence, sanitized_readback_evidence, sanitized_live_evidence, completed_at, started_at, created_at, updated_at) VALUES ('v-reuse-app', 'candidate', 'checksum', 'mini_program', 'wechat', 1, 'live_readback', 'succeeded', 'request', 'readback_confirmed', 'wx0000000000000000', 'artifact', 'sha256:artifact', 'upload', 'submission', 'review', 'release', 'live', 'approved', 'released', 'live', '{\"authoritative\":true}', '{\"confirmed\":true}', '{\"live\":true}', '2026-08-12T00:01:00.000Z', '2026-08-12T00:00:00.000Z', '2026-08-12T00:00:00.000Z', '2026-08-12T00:01:00.000Z');");
+
+  await assert.rejects(
+    () => listReusableProductionTargetSuccesses({ db: harness.db, manifest }),
+    /frozen.*App ID|identity/i,
   );
 });
 

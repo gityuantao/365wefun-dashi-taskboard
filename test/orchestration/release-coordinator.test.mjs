@@ -375,9 +375,14 @@ test("release snapshot wiring passes frozen platform and App identity into the p
     versionId: "version-1",
     versionBranch: "version/v1.2.3",
     candidateCommit: "1111111111111111111111111111111111111111",
-    checksum: "manifest-checksum-v1",
+    candidateRef: "refs/heads/release-candidate/version-1/1111111",
+    artifactIdentity: { digest: "sha256:artifact" },
+    regressionEvidence: { passed: true },
     taskIds: ["task-a"],
-    taskPrHeads: [{ taskId: "task-a", branch: "task/task-a" }],
+    taskPrHeads: [{
+      taskId: "task-a", branch: "task/task-a", headCommit: "2".repeat(40),
+      prNumber: 42, repository: "owner/repo",
+    }],
     productionTargetPlan: {
       schemaVersion: 1,
       taskPlatforms: [{ taskId: "task-a", platforms: ["web", "ios"] }],
@@ -617,15 +622,20 @@ test("missing task scope reaches Candidate integration before a Candidate-derive
   assert.deepEqual(mutations, ["regression"]);
 });
 
-test("retry rejects frozen production target plan drift before verification or publication", async () => {
+test("retry uses only the frozen Manifest identity despite registry and task drift", async () => {
   const mutations = [];
   const manifest = {
     versionId: "version-1",
     versionBranch: "version/v1.2.3",
     candidateCommit: "1111111111111111111111111111111111111111",
-    checksum: "manifest-checksum-v1",
+    candidateRef: "refs/heads/release-candidate/version-1/1111111",
+    artifactIdentity: { digest: "sha256:artifact" },
+    regressionEvidence: { passed: true },
     taskIds: ["task-a"],
-    taskPrHeads: [{ taskId: "task-a", branch: "task/task-a" }],
+    taskPrHeads: [{
+      taskId: "task-a", branch: "task/task-a", headCommit: "2".repeat(40),
+      prNumber: 42, repository: "owner/repo",
+    }],
     productionTargetPlan: {
       schemaVersion: 1,
       taskPlatforms: [{ taskId: "task-a", platforms: ["ios"] }],
@@ -649,19 +659,30 @@ test("retry rejects frozen production target plan drift before verification or p
     apps: [{
       ...manifest.productionTargetPlan.iosApps[0],
       enabled: false,
+      appStoreAppId: "runtime-drifted",
     }],
     runtime: { repoPath: "/repo", worktreesRoot: "/worktrees" },
     repository: "owner/repo",
-    releaseGitOps: { verifyCandidate: async () => mutations.push("verify") },
+    releaseGitOps: { verifyCandidate: async () => {
+      mutations.push("verify");
+      return { verified: true };
+    } },
     services: {
       loadManifest: async () => manifest,
       loadAggregate: async () => ({ state: "releasing", version: 2 }),
-      loadAllTaskSnapshots: async () => [{ id: "task-a", platforms: ["ios"] }],
-      handleConfirmRelease: async () => mutations.push("publish"),
+      loadAllTaskSnapshots: async () => [{ id: "task-a", targetVersion: "v1.2.3", platforms: ["web"] }],
+      handleConfirmRelease: async () => {
+        mutations.push("publish");
+        return { status: "succeeded", publication: { candidateCommit: manifest.candidateCommit } };
+      },
+      loadCleanupAttempts: async () => [],
+      recordCleanupAttempt: async (attempt) => attempt,
+      closeTaskPullRequest: async () => ({}),
+      deleteRemoteTaskBranch: async () => ({}),
+      removeTaskWorktree: async () => ({}),
     },
   });
 
-  assert.equal(result.status, "rejected");
-  assert.match(result.error, /target plan|drift|registry/i);
-  assert.deepEqual(mutations, []);
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(mutations, ["verify", "publish"]);
 });

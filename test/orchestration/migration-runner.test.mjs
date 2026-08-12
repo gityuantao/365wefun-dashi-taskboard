@@ -24,6 +24,37 @@ async function loadAllPlatformMigration() {
   };
 }
 
+async function loadMigration(name) {
+  return { name, sql: await readFile(path.join(MIGRATIONS_DIR, name), "utf8") };
+}
+
+test("empty production schema applies the complete 0013 through 0015 migration sequence", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await harness.db.exec("DROP TABLE production_release_targets; DROP TABLE production_release_attempts;");
+  const names = [PRODUCTION_MIGRATION_NAME, "0014_mini_program_production_target.sql", ALL_PLATFORM_MIGRATION_NAME];
+
+  assert.deepEqual(
+    await applyMigrations({ db: harness.db, migrations: await Promise.all(names.map(loadMigration)) }),
+    { applied: names, adopted: [] },
+  );
+});
+
+test("recorded canonical 0014 upgrades through the complete ordered migration list", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await harness.db.exec("DROP TABLE production_release_targets; DROP TABLE production_release_attempts;");
+  await harness.db.exec(await readFile(path.join(MIGRATIONS_DIR, PRODUCTION_MIGRATION_NAME), "utf8"));
+  await harness.db.exec(await readFile(path.join(MIGRATIONS_DIR, "0014_mini_program_production_target.sql"), "utf8"));
+  await harness.db.exec("CREATE TABLE orchestration_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL, adopted INTEGER NOT NULL CHECK (adopted IN (0, 1))); INSERT INTO orchestration_migrations VALUES ('0013_production_release_attempts.sql', '2026-08-12T00:00:00.000Z', 0), ('0014_mini_program_production_target.sql', '2026-08-12T00:00:00.000Z', 0);");
+  const names = [PRODUCTION_MIGRATION_NAME, "0014_mini_program_production_target.sql", ALL_PLATFORM_MIGRATION_NAME];
+
+  assert.deepEqual(
+    await applyMigrations({ db: harness.db, migrations: await Promise.all(names.map(loadMigration)) }),
+    { applied: [ALL_PLATFORM_MIGRATION_NAME], adopted: [] },
+  );
+});
+
 async function assertProductionSchemaDrift(db, migration) {
   await assert.rejects(
     () => applyMigrations({

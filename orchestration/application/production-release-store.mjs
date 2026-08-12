@@ -405,6 +405,14 @@ export async function listReusableProductionTargetSuccesses({ db, manifest }) {
   ).bind(manifest.versionId, manifest.candidateCommit, manifest.checksum).all();
   const exact = new Map();
   for (const row of rows.results) {
+    if (row.platform === "mini_program") {
+      const frozenApp = manifest.productionTargetPlan?.miniProgramApps?.find(
+        (app) => app.id === row.app_id,
+      );
+      if (!frozenApp || row.mini_program_app_id !== frozenApp.appId) {
+        throw new Error("reusable mini-program target identity does not match the frozen App ID");
+      }
+    }
     const key = `${row.platform}:${row.app_id}`;
     if (!exact.has(key)) exact.set(key, mapTarget(row));
   }
@@ -581,13 +589,18 @@ export async function updateProductionTarget({
   now,
   leaseNow = now,
 }) {
+  if (target.platform === "mini_program"
+    && Object.hasOwn(values, "miniProgramAppId")
+    && values.miniProgramAppId !== target.miniProgramAppId) {
+    throw new Error("frozen mini-program App ID is immutable");
+  }
   const next = { ...target, ...values, updatedAt: now };
   const updated = await db.prepare(
     `UPDATE production_release_targets SET
        stage = ?, status = ?, external_request_id = ?, reconciliation_status = ?,
        failure_classification = ?, sanitized_error_summary = ?, artifact_identity = ?,
        production_readback_sha = ?, production_release_id = ?, health_status = ?,
-       readback_status = ?, mini_program_app_id = ?, artifact_digest = ?,
+       readback_status = ?, artifact_digest = ?,
        app_store_app_id = ?, bundle_id = ?, marketing_version = ?,
        build_number = ?, processing_status = ?, processing_id = ?, review_status = ?,
        review_submission_id = ?, upload_id = ?, review_id = ?, release_status = ?,
@@ -616,7 +629,6 @@ export async function updateProductionTarget({
     next.productionReleaseId,
     next.healthStatus,
     next.readbackStatus,
-    next.miniProgramAppId,
     next.artifactDigest,
     next.appStoreAppId,
     next.bundleId,

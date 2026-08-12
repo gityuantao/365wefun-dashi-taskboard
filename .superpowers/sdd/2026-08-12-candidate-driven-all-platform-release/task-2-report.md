@@ -47,3 +47,44 @@ Status: DONE
 ## Concerns
 
 - The pre-Task-2 direct production coordinator mini-program test still models mini-program as an empty-App Web-style target with `readback` terminal stage. The new frozen schema correctly rejects that legacy tuple. App-aware mini-program executor/DAG wiring belongs to the subsequent adapter/execution task; weakening the schema here would violate this Task's App identity and legal-stage requirements.
+
+## Fix round 1/5 — DONE
+
+### Changes
+
+- Split the production-release migration sentinel into exact 0013, 0014, and 0015 structural states. Empty databases now apply the full ordered chain, and databases with recorded canonical 0014 advance to 0015. Existing `0014_mini_program_production_target.sql` remains unchanged.
+- Made retries validate and consume the frozen Manifest only; mutable task snapshots and App registries no longer reconstruct or redefine its target tuples.
+- Froze canonical `ReleaseEligibility.plannedTargets` directly, including Candidate-supplemental mini-program work, and made platform flags/DAG nodes agree exactly with that target set.
+- Froze mini-program App ID, release version, version source, description, terminal success condition, and authoritative readback identity into the checksummed plan.
+- Made persisted mini-program App ID immutable during updates and exact during reusable-success lookup; also tightened the coordinator's persisted mini-program identity comparison.
+- Restricted credential references to bounded `.private.json` paths containing a `private` path segment, and restricted review configuration references to bounded identifiers. PEM/JWT/URL/authorization/cookie/JSON-private-key/query/fragment/control/oversize inputs fail closed without echoing their value.
+
+### RED evidence
+
+- `node --test test/orchestration/migration-runner.test.mjs test/orchestration/mini-program-app-registry.test.mjs test/orchestration/version-aggregator.test.mjs test/orchestration/release-coordinator.test.mjs test/orchestration/production-release-persistence.test.mjs`
+  - Exit 1; 64 tests, 56 passed, 8 failed.
+  - Expected failures covered empty/recorded migration sequencing, unsafe references, registry/task drift retry, missing supplemental planned target, missing frozen version/readback identity, and mutable/reusable wrong App ID.
+
+### GREEN evidence
+
+- `node --test test/orchestration/mini-program-app-registry.test.mjs test/orchestration/version-aggregator.test.mjs test/orchestration/production-release-persistence.test.mjs test/orchestration/migration-runner.test.mjs test/orchestration/release-coordinator.test.mjs test/orchestration/release-commands.test.mjs`
+  - Exit 0; 76 passed, 0 failed.
+- Wider related run including the legacy direct executor test: 96 tests, 95 passed, 1 known Task 4 seam failure.
+- `git diff --check -- ':!.data'`
+  - Exit 0.
+
+### Self-review
+
+- Confirmed per-version migration fingerprints validate the attempts table/triggers as well as the version-specific targets table/indexes/triggers.
+- Confirmed the existing 0014 migration was neither modified nor replaced.
+- Confirmed schemaVersion 2 canonical rebuild strips derived mini descriptor fields before registry validation and re-derives them from the frozen version tuple.
+- Confirmed error messages do not contain rejected credential/reference values.
+- Confirmed no `.data` path was read, modified, staged, or deleted; no production or external platform action ran.
+
+### Commit
+
+- Pending at report append time; recorded in the final handoff.
+
+### Concerns
+
+- The sole wider-run failure remains the explicitly deferred Task 4 seam: the old direct executor test constructs a mini-program target without a frozen App descriptor, which the all-platform D1 schema correctly rejects. This round did not weaken the schema or implement the Task 3 adapter/Task 4 executor migration.

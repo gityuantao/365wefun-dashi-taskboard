@@ -8,7 +8,6 @@ const REQUIRED_FIELDS = Object.freeze([
 const COMMAND_FIELDS = new Set([
   "buildCommand", "uploadCommand", "reviewCommand", "releaseCommand", "readbackCommand",
 ]);
-const REFERENCE_FIELDS = new Set(["credentialsPath", "reviewConfigurationRef"]);
 
 function invalid(field, message) {
   throw new DomainError("INVALID_MINI_PROGRAM_APP_CONFIG", message, { field });
@@ -33,10 +32,31 @@ function command(value, field) {
   value.forEach((part) => string(part, field));
 }
 
-function reference(value, field) {
+function safeReference(value, field) {
   string(value, field);
-  if (/\b(?:token|secret|password|private[_-]?key)\s*=/i.test(value)) {
-    invalid(field, `mini-program app config field "${field}" must be a non-secret reference`);
+  if (value.length > 256 || /[\u0000-\u001f\u007f]|[?#]/.test(value)
+    || /(?:https?:\/\/|-----BEGIN|\bBearer\s+|\b(?:authorization|cookie)\s*:|\b(?:token|secret|password|private[_-]?key)\b\s*[:=]|\{[^}]*["']?private[_-]?key)/i.test(value)
+    || /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)) {
+    invalid(field, `mini-program app config field "${field}" must be a safe non-secret reference`);
+  }
+}
+
+function credentialsPath(value, field) {
+  safeReference(value, field);
+  const segments = value.split("/");
+  if (segments.some((segment, index) => segment === ".." || segment === "."
+      || (segment === "" && index !== 0))
+    || value.includes("\\") || !/(?:^|\/)private(?:\/|$)/.test(value)
+    || !/[A-Za-z0-9._-]+\.private\.json$/.test(value)) {
+    invalid(field, `mini-program app config field "${field}" must reference an allowed private credential file`);
+  }
+}
+
+function reviewReference(value, field) {
+  safeReference(value, field);
+  if (value.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value)
+    || value.includes("..") || value.includes("//")) {
+    invalid(field, `mini-program app config field "${field}" must be a bounded identifier`);
   }
 }
 
@@ -63,7 +83,8 @@ export function loadMiniProgramApps(config) {
       if (field === "enabled") {
         if (typeof app[field] !== "boolean") invalid(`${prefix}.${field}`, `mini-program app config field "${prefix}.${field}" must be a boolean`);
       } else if (COMMAND_FIELDS.has(field)) command(app[field], `${prefix}.${field}`);
-      else if (REFERENCE_FIELDS.has(field)) reference(app[field], `${prefix}.${field}`);
+      else if (field === "credentialsPath") credentialsPath(app[field], `${prefix}.${field}`);
+      else if (field === "reviewConfigurationRef") reviewReference(app[field], `${prefix}.${field}`);
       else string(app[field], `${prefix}.${field}`);
     }
     unique(app.id, ids, `${prefix}.id`);

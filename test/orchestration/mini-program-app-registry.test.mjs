@@ -65,3 +65,30 @@ test("mini-program registry rejects duplicate identities, unsupported fields, an
   assert.throws(() => loadMiniProgramApps([app({ reviewConfigurationRef: "token=raw-secret" })]), /reviewConfigurationRef.*reference/i);
   assert.throws(() => loadMiniProgramApps([]), /enabled/i);
 });
+
+test("mini-program registry accepts only private-file credential paths and bounded review identifiers", () => {
+  const invalidCredentials = [
+    "https://example.com/credentials", "token=raw", "Bearer abc.def.ghi",
+    "-----BEGIN PRIVATE KEY-----", '{"private_key":"raw"}', "private/key.json#token",
+    "private/key.json?token=raw", "private/../key.private.json", "private/key.json\nAuthorization: raw",
+    `private/${"a".repeat(300)}.private.json`,
+  ];
+  const invalidReviewRefs = [
+    "https://example.com/review", "abc.def.ghi", "Authorization: Bearer raw", "Cookie: sid=raw",
+    "review/ref#fragment", "review/ref?token=raw", "review/ref\u0000tail", "x".repeat(129),
+  ];
+  for (const credentialsPath of invalidCredentials) {
+    assert.throws(
+      () => loadMiniProgramApps([app({ credentialsPath })]),
+      (error) => error.code === "INVALID_MINI_PROGRAM_APP_CONFIG"
+        && !error.message.includes(credentialsPath),
+    );
+  }
+  for (const reviewConfigurationRef of invalidReviewRefs) {
+    assert.throws(
+      () => loadMiniProgramApps([app({ reviewConfigurationRef })]),
+      (error) => error.code === "INVALID_MINI_PROGRAM_APP_CONFIG"
+        && !error.message.includes(reviewConfigurationRef),
+    );
+  }
+});

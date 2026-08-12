@@ -3,11 +3,11 @@ import {
   freezeManifest,
   loadAllTaskSnapshots,
   loadManifest,
+  validateFrozenManifest,
 } from "../release/version-aggregator.mjs";
 import { classifyCandidateChanges } from "../release/candidate-scope.mjs";
 import { loadAggregate } from "../persistence/d1-aggregate-store.mjs";
 import {
-  assertProductionTargetPlanMatches,
   buildProductionTargetPlan,
 } from "../release/production-target-plan.mjs";
 import { assertProductionPlatformsSupported } from "../release/platform-gate.mjs";
@@ -72,6 +72,12 @@ export async function coordinateReleaseSnapshot({
       error: `production runtime is not ready: ${productionReadiness?.error ?? "invalid configuration"}`,
     };
   }
+  if (existingManifest) {
+    const reasons = validateFrozenManifest(existingManifest);
+    if (reasons.length > 0) {
+      return { status: "rejected", error: `frozen Manifest validation failed: ${reasons.join("; ")}` };
+    }
+  }
   if (!cleanupRetry && !existingManifest && typeof prepareProductionRuntime === "function") {
     try {
       await prepareProductionRuntime();
@@ -103,21 +109,6 @@ export async function coordinateReleaseSnapshot({
     ? versionTaskSnapshots
     : allTaskSnapshots.filter((task) => expectedTaskIds.includes(task.id));
   let productionTargetPlan = existingManifest?.productionTargetPlan;
-  if (!cleanupRetry && existingManifest) {
-    try {
-      const currentPlan = buildProductionTargetPlan({
-        taskSnapshots: releaseTaskSnapshots,
-        taskIds: expectedTaskIds,
-        apps: apps ?? runtime?.iosApps ?? [],
-        miniProgramApps: miniProgramApps ?? runtime?.miniProgramApps ?? [],
-        marketingVersion: String(snapshot.name ?? versionId).replace(/^v(?=\d)/, ""),
-        candidateScope: existingManifest.productionTargetPlan.candidateScope ?? null,
-      });
-      assertProductionTargetPlanMatches(existingManifest.productionTargetPlan, currentPlan);
-    } catch (error) {
-      return { status: "rejected", error: `production target plan validation failed: ${error.message}` };
-    }
-  }
   if (!cleanupRetry && !existingManifest) {
     try {
       const declaredScope = releaseTaskSnapshots.filter((task) => Array.isArray(task.platforms) && task.platforms.length > 0);
@@ -173,6 +164,7 @@ export async function coordinateReleaseSnapshot({
           miniProgramApps: miniProgramApps ?? runtime?.miniProgramApps ?? [],
           marketingVersion: String(snapshot.name ?? versionId).replace(/^v(?=\d)/, ""),
           candidateScope,
+          plannedTargets: eligibility.plannedTargets,
         });
       } catch (error) {
         return { status: "rejected", reasons: [`production target plan validation failed: ${error.message}`] };

@@ -125,11 +125,15 @@ function samePersistedTargetIdentity(descriptor, target) {
   if (!target || target.platform !== descriptor.platform || target.appId !== descriptor.appId) {
     return false;
   }
-  return descriptor.platform !== "ios" || (
-    target.appStoreAppId === descriptor.app.appStoreAppId
-    && target.bundleId === descriptor.app.bundleId
-    && target.marketingVersion === descriptor.app.marketingVersion
-  );
+  if (descriptor.platform === "ios") {
+    return target.appStoreAppId === descriptor.app.appStoreAppId
+      && target.bundleId === descriptor.app.bundleId
+      && target.marketingVersion === descriptor.app.marketingVersion;
+  }
+  if (descriptor.platform === "mini_program") {
+    return target.miniProgramAppId === descriptor.app?.appId;
+  }
+  return true;
 }
 
 function requiredTargets(platforms, apps) {

@@ -326,7 +326,7 @@ test("production target plan freezes exact Candidate paths, per-task evidence, a
 
   const plan = buildProductionTargetPlan({
     taskSnapshots: taskEvidence, taskIds: ["task-a"], apps: [], miniProgramApps,
-    marketingVersion: "1.2.3", candidateScope,
+    marketingVersion: "1.2.3", candidateScope, plannedTargets: ["mini_program", "web"],
   });
 
   assert.equal(plan.schemaVersion, 2);
@@ -337,7 +337,12 @@ test("production target plan freezes exact Candidate paths, per-task evidence, a
     evidenceId: "accept-task-a", commitSha: "b".repeat(40), acceptedCommitSha: "b".repeat(40),
     aggregateVersion: 7, androidDelivery: "web_twa",
   }]);
-  assert.deepEqual(plan.miniProgramApps, miniProgramApps.map(({ enabled, ...entry }) => entry));
+  assert.deepEqual(plan.miniProgramApps, miniProgramApps.map(({ enabled, ...entry }) => ({
+    ...entry,
+    version: "1.2.3",
+    versionSource: "release_snapshot_name",
+    description: `Candidate ${CANDIDATE.candidateCommit}`,
+  })));
   assert.deepEqual(plan.androidTwa, {
     enabled: true,
     sourceDirectory: "apps/android-web-wrapper/",
@@ -348,12 +353,37 @@ test("production target plan freezes exact Candidate paths, per-task evidence, a
   });
   assert.deepEqual(plan.dag, {
     nodes: [
-      { id: "web", platform: "web", appId: "" },
-      { id: "mini_program:wechat", platform: "mini_program", appId: "wechat" },
-      { id: "android_twa", platform: "android_twa", appId: "" },
+      { id: "web", platform: "web", appId: "", successCondition: "authoritative_readback", readbackIdentity: { candidateCommit: CANDIDATE.candidateCommit } },
+      { id: "mini_program:wechat", platform: "mini_program", appId: "wechat", successCondition: "authoritative_live_readback", readbackIdentity: { appId: "wx1fdac5e27c6b5366", version: "1.2.3" } },
+      { id: "android_twa", platform: "android_twa", appId: "", successCondition: "authoritative_live_readback", readbackIdentity: { candidateCommit: CANDIDATE.candidateCommit } },
     ],
     edges: [{ from: "web", to: "android_twa" }],
   });
+});
+
+test("canonical planned targets retain Candidate supplemental mini-program work for a Web task", () => {
+  const candidateScope = {
+    baseCommit: "a".repeat(40), candidateCommit: CANDIDATE.candidateCommit, mappingVersion: 1,
+    changedPaths: ["apps/mp/app.ts"], platforms: ["mini_program"], unsupported: [],
+  };
+  const miniProgramApps = [{
+    id: "wechat", name: "Wechat", enabled: true, appId: "wx1fdac5e27c6b5366",
+    sourceDirectory: "apps/mp", buildCommand: ["npm", "run", "build:mp-weixin"],
+    artifactDirectory: "dist/build/mp-weixin", uploadCommand: ["node", "upload.mjs"],
+    reviewCommand: ["node", "review.mjs"], releaseCommand: ["node", "release.mjs"],
+    readbackCommand: ["node", "readback.mjs"], credentialsPath: "private/wechat.private.json",
+    reviewConfigurationRef: "review/wechat",
+  }];
+  const plan = buildProductionTargetPlan({
+    taskSnapshots: [{ id: "task-web", platforms: ["web"] }], taskIds: ["task-web"],
+    apps: [], miniProgramApps, marketingVersion: "2.0.0", candidateScope,
+    plannedTargets: ["mini_program", "web"],
+  });
+
+  assert.deepEqual(plan.plannedTargets, ["mini_program", "web"]);
+  assert.equal(plan.platforms.mini_program, true);
+  assert.ok(plan.dag.nodes.some(({ id }) => id === "mini_program:wechat"));
+  assert.equal(plan.miniProgramApps[0].appId, "wx1fdac5e27c6b5366");
 });
 
 test("Manifest checksum covers Candidate paths, mapping, App descriptors, and DAG", async (t) => {
@@ -375,9 +405,12 @@ test("Manifest checksum covers Candidate paths, mapping, App descriptors, and DA
       credentialsPath: "private/wechat.private.json", reviewConfigurationRef: "review/wechat",
     }];
     const taskSnapshots = [{ id: "task-a", platforms: ["mini_program"] }];
-    mutator({ candidateScope, miniProgramApps, taskSnapshots });
+    const plannedTargets = ["mini_program"];
+    const releaseIdentity = { marketingVersion: "1.2.3" };
+    mutator({ candidateScope, miniProgramApps, taskSnapshots, plannedTargets, releaseIdentity });
     const plan = buildProductionTargetPlan({
       taskSnapshots, taskIds: ["task-a"], apps: [], miniProgramApps, candidateScope,
+      marketingVersion: releaseIdentity.marketingVersion, plannedTargets: plannedTargets.sort(),
     });
     const result = await freezeManifest({
       db: harness.db, versionId: "version-1", now: NOW,
@@ -396,10 +429,13 @@ test("Manifest checksum covers Candidate paths, mapping, App descriptors, and DA
     await freezeWith(({ candidateScope }) => { candidateScope.changedPaths[0] = "apps/mp/other.ts"; }),
     await freezeWith(({ candidateScope }) => { candidateScope.mappingVersion = 2; }),
     await freezeWith(({ miniProgramApps }) => { miniProgramApps[0].appId = "wx0000000000000000"; }),
-    await freezeWith(({ candidateScope, taskSnapshots }) => {
+    await freezeWith(({ releaseIdentity }) => { releaseIdentity.marketingVersion = "1.2.4"; }),
+    await freezeWith(({ plannedTargets }) => { plannedTargets.push("web"); }),
+    await freezeWith(({ candidateScope, taskSnapshots, plannedTargets }) => {
       candidateScope.platforms.unshift("android_twa");
       candidateScope.changedPaths.unshift("apps/android-web-wrapper/manifest.json");
       taskSnapshots[0].platforms.unshift("android_twa");
+      plannedTargets.push("web");
     }),
   ];
   assert.equal(new Set([baseline, ...variants]).size, variants.length + 1);

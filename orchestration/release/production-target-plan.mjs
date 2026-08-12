@@ -24,6 +24,7 @@ const MINI_PROGRAM_TARGET_FIELDS = Object.freeze([
   "uploadCommand", "reviewCommand", "releaseCommand", "readbackCommand",
   "credentialsPath", "reviewConfigurationRef",
 ]);
+const CANONICAL_TARGETS = Object.freeze(["api", "ios", "mini_program", "web"]);
 
 function invalid(message) {
   throw new DomainError("INVALID_PRODUCTION_TARGET_PLAN", message);
@@ -40,6 +41,7 @@ export function buildProductionTargetPlan({
   marketingVersion,
   miniProgramApps = [],
   candidateScope = null,
+  plannedTargets = null,
 }) {
   const expectedIds = Array.isArray(taskIds) ? taskIds : [];
   const snapshotsById = new Map(taskSnapshots.map((snapshot) => [snapshot?.id, snapshot]));
@@ -64,7 +66,10 @@ export function buildProductionTargetPlan({
     } : {}),
   }));
   let iosApps = [];
-  if (resolved.ios) {
+  const wantsIos = candidateScope && Array.isArray(plannedTargets)
+    ? plannedTargets.includes("ios")
+    : resolved.ios;
+  if (wantsIos) {
     const originals = new Map(apps.map((app) => [app?.id, app]));
     iosApps = enabledIosApps(loadIosApps(apps)).map((app) => {
       const target = {
@@ -88,29 +93,73 @@ export function buildProductionTargetPlan({
     },
     iosApps,
   };
+  if (!Array.isArray(plannedTargets)
+    || plannedTargets.length === 0
+    || plannedTargets.some((target) => !CANONICAL_TARGETS.includes(target))
+    || new Set(plannedTargets).size !== plannedTargets.length
+    || !isDeepStrictEqual([...plannedTargets].sort(), plannedTargets)) {
+    invalid("canonical plannedTargets are required in sorted unique order");
+  }
+  const planned = new Set(plannedTargets);
+  for (const platform of CANONICAL_TARGETS) {
+    const required = resolved[platform];
+    if (required && !planned.has(platform)) {
+      invalid(`canonical plannedTargets omit task platform ${platform}`);
+    }
+  }
   let frozenMiniProgramApps = [];
-  if (resolved.mini_program) {
+  if (planned.has("mini_program")) {
+    if (!nonEmpty(marketingVersion)) invalid("mini-program production target version is required");
     frozenMiniProgramApps = enabledMiniProgramApps(loadMiniProgramApps(miniProgramApps))
-      .map((app) => Object.fromEntries(MINI_PROGRAM_TARGET_FIELDS.map((field) => [field, app[field]])));
+      .map((app) => ({
+        ...Object.fromEntries(MINI_PROGRAM_TARGET_FIELDS.map((field) => [field, app[field]])),
+        version: marketingVersion,
+        versionSource: "release_snapshot_name",
+        description: `Candidate ${candidateScope.candidateCommit}`,
+      }));
   }
   const hasAndroidTwa = candidateScope.platforms?.includes("android_twa")
     || orderedSnapshots.some((snapshot) => snapshot.platforms.includes("android_twa"));
+  if (hasAndroidTwa && !planned.has("web")) {
+    invalid("canonical plannedTargets must project Android TWA to web");
+  }
   const nodes = [];
-  if (resolved.web || hasAndroidTwa) nodes.push({ id: "web", platform: "web", appId: "" });
-  if (resolved.api) nodes.push({ id: "api", platform: "api", appId: "" });
-  for (const app of iosApps) nodes.push({ id: `ios:${app.id}`, platform: "ios", appId: app.id });
-  for (const app of frozenMiniProgramApps) nodes.push({ id: `mini_program:${app.id}`, platform: "mini_program", appId: app.id });
-  if (hasAndroidTwa) nodes.push({ id: "android_twa", platform: "android_twa", appId: "" });
+  if (planned.has("web")) nodes.push({
+    id: "web", platform: "web", appId: "", successCondition: "authoritative_readback",
+    readbackIdentity: { candidateCommit: candidateScope.candidateCommit },
+  });
+  if (planned.has("api")) nodes.push({
+    id: "api", platform: "api", appId: "", successCondition: "authoritative_readback",
+    readbackIdentity: { candidateCommit: candidateScope.candidateCommit },
+  });
+  for (const app of iosApps) nodes.push({
+    id: `ios:${app.id}`, platform: "ios", appId: app.id,
+    successCondition: "authoritative_live_readback",
+    readbackIdentity: {
+      appStoreAppId: app.appStoreAppId, bundleId: app.bundleId, version: app.marketingVersion,
+    },
+  });
+  for (const app of frozenMiniProgramApps) nodes.push({
+    id: `mini_program:${app.id}`, platform: "mini_program", appId: app.id,
+    successCondition: "authoritative_live_readback",
+    readbackIdentity: { appId: app.appId, version: app.version },
+  });
+  if (hasAndroidTwa) nodes.push({
+    id: "android_twa", platform: "android_twa", appId: "",
+    successCondition: "authoritative_live_readback",
+    readbackIdentity: { candidateCommit: candidateScope.candidateCommit },
+  });
   return {
     schemaVersion: 2,
     mappingVersion: candidateScope.mappingVersion,
     candidateScope: structuredClone(candidateScope),
+    plannedTargets: [...plannedTargets],
     taskPlatforms,
     platforms: {
-      web: resolved.web || hasAndroidTwa,
-      api: resolved.api,
-      ios: resolved.ios,
-      mini_program: resolved.mini_program,
+      web: planned.has("web"),
+      api: planned.has("api"),
+      ios: planned.has("ios"),
+      mini_program: planned.has("mini_program"),
       android_twa: hasAndroidTwa,
     },
     iosApps,
@@ -154,9 +203,13 @@ export function validateProductionTargetPlan(plan, taskIds) {
       taskSnapshots: plan?.taskPlatforms?.map(({ taskId, ...snapshot }) => ({ id: taskId, ...snapshot })),
       taskIds,
       apps: plan?.iosApps?.map((app) => ({ ...app, enabled: true })),
-      miniProgramApps: plan?.miniProgramApps?.map((app) => ({ ...app, enabled: true })),
-      marketingVersion: null,
+      miniProgramApps: plan?.miniProgramApps?.map((app) => ({
+        ...Object.fromEntries(MINI_PROGRAM_TARGET_FIELDS.map((field) => [field, app?.[field]])),
+        enabled: true,
+      })),
+      marketingVersion: plan?.miniProgramApps?.[0]?.version ?? null,
       candidateScope: plan?.candidateScope,
+      plannedTargets: plan?.plannedTargets,
     });
     return isDeepStrictEqual(rebuilt, plan) ? [] : ["production target plan is not canonical"];
   } catch (error) {
