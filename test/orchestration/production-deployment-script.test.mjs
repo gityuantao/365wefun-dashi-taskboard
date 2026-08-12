@@ -28,6 +28,9 @@ const baseEnvironment = {
 
 const productionConfig = {
   sshHost: "deploy@prod.example.com",
+  remoteNodePath: "/opt/node/bin/node",
+  remoteBinPath: "/opt/node/bin",
+  currentLinkMode: "shared",
   releaseRoot: "/opt/e365-production",
   repoPath: "/srv/e365.git",
   sharedEnvPath: "/opt/e365-production/shared/.env",
@@ -40,6 +43,64 @@ const productionConfig = {
   buildCommand: ["pnpm", "build"],
   restartCommand: ["pm2", "restart", "e365-api", "e365-worker", "--update-env"],
 };
+
+test("production config requires an absolute remote Node executable", () => {
+  assert.equal(loadProductionDeploymentConfig(productionConfig).remoteNodePath, "/opt/node/bin/node");
+  assert.equal(loadProductionDeploymentConfig(productionConfig).remoteBinPath, "/opt/node/bin");
+  assert.throws(
+    () => loadProductionDeploymentConfig({ ...productionConfig, remoteNodePath: "node" }),
+    /remoteNodePath must be an absolute path/,
+  );
+  assert.throws(
+    () => loadProductionDeploymentConfig({ ...productionConfig, remoteBinPath: "bin" }),
+    /remoteBinPath must be an absolute path/,
+  );
+});
+
+test("shared production topology switches the real current link for every platform", async () => {
+  const effects = [];
+  const deployment = createProductionDeployment({
+    environment: baseEnvironment,
+    config: productionConfig,
+    operations: {
+      runLocal: async () => ({}),
+      runRemote: async (_host, operation, payload) => {
+        effects.push([operation, payload]);
+        if (operation === "read-current") return "/opt/e365-production/releases/old";
+        return { ok: true };
+      },
+      readRemoteState: async () => ({ previousReleasePath: "/opt/e365-production/releases/old" }),
+      writeRemoteStateAtomic: async () => {},
+      probe: async () => ({ ok: true, status: 200 }),
+      now: () => "2026-08-12T00:00:00.000Z",
+    },
+  });
+  await deployment.execute("switch");
+  const switched = effects.find(([operation]) => operation === "switch-current-atomic");
+  assert.equal(switched[1].platform, null);
+});
+
+test("the authoritative API readiness endpoint can supply database and Redis evidence", async () => {
+  const effects = [];
+  const config = { ...productionConfig, databaseReadyCommand: null, redisReadyCommand: null };
+  const deployment = createProductionDeployment({
+    environment: baseEnvironment, config,
+    operations: {
+      runLocal: async () => ({}), runRemote: async () => ({ ok: true }),
+      readRemoteState: async () => ({ previousReleasePath: "/old" }),
+      writeRemoteStateAtomic: async () => {},
+      probe: async (url) => {
+        effects.push(url);
+        return url === config.apiReadyUrl
+          ? { ok: true, status: 200, body: { status: "ok", checks: { db: "ok", redis: "ok" } } }
+          : { ok: true, status: 200 };
+      },
+      now: () => "2026-08-12T00:00:00.000Z",
+    },
+  });
+  assert.deepEqual(await deployment.execute("health"), { ok: true, status: 200 });
+  assert.equal(effects.includes(config.apiReadyUrl), true);
+});
 
 test("production deployment config rejects staging defaults and unsafe commands", () => {
   assert.throws(() => loadProductionDeploymentConfig({ ...productionConfig, publicUrl: "https://test-au.365english.online" }), /staging/i);

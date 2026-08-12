@@ -48,6 +48,14 @@ export const TASK_COMMAND_HANDLERS = {
   test_passed(state) {
     return decideTaskTransition({ from: state, to: "ready_for_release" });
   },
+  approve_for_release(state, parameters) {
+    return decideTaskTransition({
+      from: state,
+      to: "ready_for_release",
+      evidenceId: evidence(parameters),
+      approval: true,
+    });
+  },
   test_failed(state, parameters) {
     return decideTaskTransition({
       from: state,

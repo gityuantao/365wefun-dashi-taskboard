@@ -141,6 +141,21 @@ test("task rejects unknown jumps and terminal-state exits", () => {
   }
 });
 
+test("a release manager can approve an exact task for release with evidence", () => {
+  for (const from of ["waiting_info", "ready_for_development", "acceptance_rejected"]) {
+    assert.equal(decideTaskTransition({
+      from,
+      to: "ready_for_release",
+      evidenceId: "version-release-approval-v1.0.3",
+      approval: true,
+    }).eventType, "task.release_approved");
+  }
+  assert.throws(
+    () => decideTaskTransition({ from: "waiting_info", to: "ready_for_release", approval: true }),
+    /EVIDENCE_REQUIRED/,
+  );
+});
+
 test("any un-terminated task can be canceled", () => {
   for (const from of TASK_STATES.filter((state) => !["published", "canceled"].includes(state))) {
     assert.equal(

@@ -14,6 +14,7 @@ const ACTIVITY_LABELS = {
   "task.development_restarted": "重新开发",
   "task.test_started": "开始测试",
   "task.test_passed": "测试通过",
+  "task.release_approved": "人工批准进入版本发布",
   "task.test_failed": "测试失败，退回待开发",
   "task.acceptance_started": "开始验收",
   "task.acceptance_passed": "验收通过",

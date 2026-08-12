@@ -58,6 +58,8 @@ export async function dispatchCommand({ db, command, now }) {
     from: transition.from,
     to: transition.to,
     ...(command.parameters?.evidenceId ? { evidenceId: command.parameters.evidenceId } : {}),
+    ...(command.parameters?.versionId ? { versionId: command.parameters.versionId } : {}),
+    ...(command.parameters?.snapshotHash ? { snapshotHash: command.parameters.snapshotHash } : {}),
   };
   const event = await createDomainEvent({
     id: `evt-${command.id}`,

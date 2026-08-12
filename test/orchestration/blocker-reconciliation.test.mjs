@@ -55,3 +55,15 @@ test("success before the blocker, snapshot-only readiness, and non-ready aggrega
   assert.deepEqual(result.resolved, []);
   assert.equal((await harness.db.prepare("SELECT status FROM blockers WHERE id='rework'").first()).status, "open");
 });
+
+test("an audited release approval satisfies an older rework blocker", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedReadyTask(harness.db);
+  await harness.db.prepare("UPDATE orchestration_events SET type='task.release_approved' WHERE id='success'").run();
+
+  const result = await resolveSatisfiedReworkBlockers({
+    db: harness.db, taskId: "task-1", now: NOW, dryRun: false,
+  });
+  assert.deepEqual(result.resolved, [{ blockerId: "rework", evidenceId: "success" }]);
+});

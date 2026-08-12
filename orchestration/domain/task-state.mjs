@@ -105,7 +105,7 @@ function requireEvidence(transition, evidenceId) {
   }
 }
 
-export function decideTaskTransition({ from, to, evidenceId }) {
+export function decideTaskTransition({ from, to, evidenceId, approval = false }) {
   assertKnownStates(from, to);
   if (from === to) {
     throw invalidTransition(from, to);
@@ -116,6 +116,16 @@ export function decideTaskTransition({ from, to, evidenceId }) {
     }
     requireEvidence("canceled", evidenceId);
     return { from, to, eventType: "task.canceled" };
+  }
+  if (approval === true && to === "ready_for_release" && !TERMINAL_STATES.has(from)) {
+    if (typeof evidenceId !== "string" || evidenceId.trim() === "") {
+      throw new DomainError(
+        "EVIDENCE_REQUIRED",
+        "Manual release approval requires a non-empty evidenceId",
+        { from, to },
+      );
+    }
+    return { from, to, eventType: "task.release_approved" };
   }
   const transition = TASK_TRANSITIONS.get(`${from}:${to}`);
   if (!transition) {

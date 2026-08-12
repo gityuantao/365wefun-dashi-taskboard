@@ -8,7 +8,8 @@ export async function resolveSatisfiedReworkBlockers({ db, taskId, now, dryRun =
       WHERE object_type='task' AND object_id=? AND type='rework_budget' AND status='open'
       ORDER BY created_at,id`).bind(taskId).all(),
     db.prepare(`SELECT id,occurred_at FROM orchestration_events
-      WHERE aggregate_type='task' AND aggregate_id=? AND type='task.test_passed'
+      WHERE aggregate_type='task' AND aggregate_id=?
+        AND type IN ('task.test_passed','task.release_approved')
       ORDER BY occurred_at DESC,sequence DESC`).bind(taskId).all(),
   ]);
   const eligible = [];

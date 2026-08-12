@@ -38,16 +38,24 @@ function productionValue(value, label) {
 
 export function loadProductionDeploymentConfig(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("production config must be an object");
+  const remoteNodePath = productionValue(input.remoteNodePath, "remoteNodePath");
+  if (!path.posix.isAbsolute(remoteNodePath)) throw new Error("remoteNodePath must be an absolute path");
+  const remoteBinPath = productionValue(input.remoteBinPath, "remoteBinPath");
+  if (!path.posix.isAbsolute(remoteBinPath)) throw new Error("remoteBinPath must be an absolute path");
+  const currentLinkMode = input.currentLinkMode === "shared" ? "shared" : "per-platform";
   return {
     sshHost: productionValue(input.sshHost, "sshHost"),
+    remoteNodePath,
+    remoteBinPath,
+    currentLinkMode,
     releaseRoot: productionValue(input.releaseRoot, "releaseRoot"),
     repoPath: productionValue(input.repoPath, "repoPath"),
     sharedEnvPath: productionValue(input.sharedEnvPath, "sharedEnvPath"),
     publicUrl: productionValue(input.publicUrl, "publicUrl"),
     adminUrl: productionValue(input.adminUrl, "adminUrl"),
     apiReadyUrl: productionValue(input.apiReadyUrl, "apiReadyUrl"),
-    databaseReadyCommand: command(input.databaseReadyCommand, "databaseReadyCommand"),
-    redisReadyCommand: command(input.redisReadyCommand, "redisReadyCommand"),
+    databaseReadyCommand: input.databaseReadyCommand == null ? null : command(input.databaseReadyCommand, "databaseReadyCommand"),
+    redisReadyCommand: input.redisReadyCommand == null ? null : command(input.redisReadyCommand, "redisReadyCommand"),
     installCommand: command(input.installCommand, "installCommand"),
     buildCommand: command(input.buildCommand, "buildCommand"),
     restartCommand: command(input.restartCommand, "restartCommand"),
@@ -84,15 +92,15 @@ const fs=require('node:fs');const cp=require('node:child_process');const p=requi
 const [operation,encoded]=process.argv.slice(1);const x=JSON.parse(Buffer.from(encoded,'base64url').toString());
 const out=v=>process.stdout.write(typeof v==='string'?v:JSON.stringify(v));
 const atomicLink=(target,link)=>{fs.mkdirSync(p.dirname(link),{recursive:true});const t=link+'.tmp-'+process.pid;try{fs.unlinkSync(t)}catch{}fs.symlinkSync(target,t);fs.renameSync(t,link)};
-const run=cmd=>{const r=cp.spawnSync(cmd[0],cmd.slice(1),{stdio:['ignore','ignore','pipe'],cwd:x.cwd,env:{PATH:process.env.PATH,RELEASE_ID:x.releaseId||'',GIT_SHA:x.candidateCommit||''},encoding:'utf8'});if(r.status!==0)throw new Error('remote command failed: '+String(r.stderr||'').slice(0,1000))};
+const run=cmd=>{const r=cp.spawnSync(cmd[0],cmd.slice(1),{stdio:['ignore','ignore','pipe'],cwd:x.cwd,env:{PATH:(x.remoteBinPath?x.remoteBinPath+':':'')+(process.env.PATH||''),RELEASE_ID:x.releaseId||'',GIT_SHA:x.candidateCommit||''},encoding:'utf8'});if(r.status!==0)throw new Error('remote command failed: '+String(r.stderr||'').slice(0,1000))};
 if(operation==='preflight'){fs.mkdirSync(p.join(x.releaseRoot,'releases'),{recursive:true,mode:0o755});fs.mkdirSync(p.join(x.releaseRoot,'state'),{recursive:true,mode:0o700});out({ok:true})}
-else if(operation==='read-current'){try{out(fs.realpathSync(p.join(x.releaseRoot,'current-'+x.platform)))}catch{out('')}}
+else if(operation==='read-current'){try{out(fs.realpathSync(p.join(x.releaseRoot,x.platform?'current-'+x.platform:'current')))}catch{out('')}}
 else if(operation==='prepare-immutable-release'){const marker=p.join(x.releasePath,'.release-identity.json');if(!fs.existsSync(x.releasePath)){const temp=x.releasePath+'.prepare-'+process.pid;fs.mkdirSync(temp,{recursive:false,mode:0o755});fs.writeFileSync(p.join(temp,'.release-identity.json'),JSON.stringify(x.identity)+'\n',{mode:0o600,flag:'wx'});try{fs.renameSync(temp,x.releasePath)}catch(e){fs.rmSync(temp,{recursive:true,force:true});if(!fs.existsSync(x.releasePath))throw e}}const actual=JSON.parse(fs.readFileSync(marker,'utf8'));if(JSON.stringify(actual)!==JSON.stringify(x.identity))throw new Error('immutable release identity mismatch');out({ok:true})}
 else if(operation==='inspect-immutable-release'){const f=p.join(x.releasePath,'release-metadata.json');if(!fs.existsSync(f))out({complete:false});else{const actual=JSON.parse(fs.readFileSync(f,'utf8'));if(JSON.stringify(actual)!==JSON.stringify(x.identity))throw new Error('completed release identity mismatch');out({complete:true})}}
 else if(operation==='link-shared-env'){const f=p.join(x.releasePath,'.env');if(fs.existsSync(f)){if(fs.realpathSync(f)!==fs.realpathSync(x.envPath))throw new Error('shared env link mismatch')}else fs.symlinkSync(x.envPath,f);out({ok:true})}
 else if(operation==='write-release-metadata'){const f=p.join(x.releasePath,'release-metadata.json');if(fs.existsSync(f)){const actual=JSON.parse(fs.readFileSync(f,'utf8'));if(JSON.stringify(actual)!==JSON.stringify(x.metadata))throw new Error('release metadata mismatch')}else{fs.writeFileSync(f+'.tmp',JSON.stringify(x.metadata)+'\n',{mode:0o600,flag:'wx'});fs.renameSync(f+'.tmp',f)}out({ok:true})}
 else if(operation==='read-release-metadata'){out(JSON.parse(fs.readFileSync(p.join(x.releasePath,'release-metadata.json'),'utf8')))}
-else if(operation==='switch-current-atomic'||operation==='restore-current-atomic'){atomicLink(x.releasePath,p.join(x.releaseRoot,'current-'+x.platform));out({ok:true})}
+else if(operation==='switch-current-atomic'||operation==='restore-current-atomic'){atomicLink(x.releasePath,p.join(x.releaseRoot,x.platform?'current-'+x.platform:'current'));out({ok:true})}
 else if(operation==='restart'||operation==='ready-command'){run(x.command);out({ok:true})}
 else if(operation==='read-state'){try{out(JSON.parse(fs.readFileSync(x.path,'utf8')))}catch(e){if(e.code==='ENOENT')out(null);else throw e}}
 else if(operation==='write-state-atomic'){fs.mkdirSync(p.dirname(x.path),{recursive:true,mode:0o700});const f=x.path+'.tmp-'+process.pid;fs.writeFileSync(f,JSON.stringify(x.value)+'\n',{mode:0o600,flag:'wx'});fs.renameSync(f,x.path);out({ok:true})}
@@ -101,15 +109,19 @@ else throw new Error('unsupported remote operation');`;
 function defaultOperations() {
   return {
     runLocal: (file, args, options) => execFileAsync(file, args, { encoding: "utf8", maxBuffer: 20 * 1024 * 1024, ...options }),
-    runRemote: async (host, operation, payload) => {
-      const { stdout } = await execFileAsync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", host, "node", "-e", PRODUCTION_REMOTE_SOURCE, operation, Buffer.from(JSON.stringify(payload)).toString("base64url")], { encoding: "utf8", maxBuffer: 20 * 1024 * 1024 });
+    runRemote: async (host, operation, payload, remoteNodePath) => {
+      const { stdout } = await execFileAsync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", host, remoteNodePath, "-e", PRODUCTION_REMOTE_SOURCE, operation, Buffer.from(JSON.stringify(payload)).toString("base64url")], { encoding: "utf8", maxBuffer: 20 * 1024 * 1024 });
       const value = stdout.trim();
       if (!value) return null;
       try { return JSON.parse(value); } catch { return value; }
     },
     probe: async (url) => {
       const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
-      return { ok: response.ok, status: response.status };
+      let body = null;
+      if (url.includes("/health/ready")) {
+        try { body = await response.json(); } catch {}
+      }
+      return { ok: response.ok, status: response.status, body };
     },
     now: () => new Date().toISOString(),
   };
@@ -122,12 +134,16 @@ export function createProductionDeployment({ environment, config, operations = d
   const releaseId = `${identity.versionId}-${identity.manifestChecksum}-${identity.platform}-${suffix}`.replace(/[^A-Za-z0-9._-]/g, "-");
   const releasePath = path.posix.join(target.releaseRoot, "releases", releaseId);
   const statePath = path.posix.join(target.releaseRoot, "state", `${identity.platform}.json`);
+  const currentPlatform = target.currentLinkMode === "shared" ? null : identity.platform;
   let previousReleasePath = null;
+  const runRemote = (operation, payload) => operations.runRemote(
+    target.sshHost, operation, payload, target.remoteNodePath,
+  );
 
   const readRemoteState = operations.readRemoteState
-    ?? ((host, file) => operations.runRemote(host, "read-state", { path: file }));
+    ?? ((_host, file) => runRemote("read-state", { path: file }));
   const writeRemoteStateAtomic = operations.writeRemoteStateAtomic
-    ?? ((host, file, value) => operations.runRemote(host, "write-state-atomic", { path: file, value }));
+    ?? ((_host, file, value) => runRemote("write-state-atomic", { path: file, value }));
 
   async function writeState(values) {
     const state = {
@@ -168,13 +184,13 @@ export function createProductionDeployment({ environment, config, operations = d
         };
       }
       if (mode === "preflight") {
-        await operations.runRemote(target.sshHost, "preflight", { releaseRoot: target.releaseRoot, platform: identity.platform });
+        await runRemote("preflight", { releaseRoot: target.releaseRoot, platform: identity.platform });
         return { ok: true };
       }
       if (mode === "upload") {
         const releaseIdentity = { versionId: identity.versionId, candidateCommit: identity.candidateCommit, manifestChecksum: identity.manifestChecksum, artifactIdentity: identity.artifactIdentity, platform: identity.platform, releaseId };
-        await operations.runRemote(target.sshHost, "prepare-immutable-release", { releasePath, identity: releaseIdentity });
-        const inspection = await operations.runRemote(target.sshHost, "inspect-immutable-release", { releasePath, identity: releaseIdentity });
+        await runRemote("prepare-immutable-release", { releasePath, identity: releaseIdentity });
+        const inspection = await runRemote("inspect-immutable-release", { releasePath, identity: releaseIdentity });
         if (inspection?.complete === true) {
           const existingState = await readRemoteState(target.sshHost, statePath);
           return {
@@ -190,11 +206,11 @@ export function createProductionDeployment({ environment, config, operations = d
           if (verified?.stdout && verified.stdout.trim() !== identity.candidateCommit) throw new Error("detached worktree Candidate mismatch");
           await operations.runLocal(target.installCommand[0], target.installCommand.slice(1), { cwd: worktree });
           await operations.runLocal(target.buildCommand[0], target.buildCommand.slice(1), { cwd: worktree });
-          previousReleasePath = await operations.runRemote(target.sshHost, "read-current", { releaseRoot: target.releaseRoot, platform: identity.platform });
+          previousReleasePath = await runRemote("read-current", { releaseRoot: target.releaseRoot, platform: currentPlatform });
           await operations.runLocal("rsync", ["-az", "--delete", "--exclude", ".git", "--exclude", ".env*", "--exclude", ".release-identity.json", "--exclude", "release-metadata.json", `${worktree}/`, `${target.sshHost}:${releasePath}/`]);
-          await operations.runRemote(target.sshHost, "link-shared-env", { releasePath, envPath: target.sharedEnvPath });
+          await runRemote("link-shared-env", { releasePath, envPath: target.sharedEnvPath });
           const metadata = releaseIdentity;
-          await operations.runRemote(target.sshHost, "write-release-metadata", { releasePath, metadata });
+          await runRemote("write-release-metadata", { releasePath, metadata });
           await writeState({ status: "uploaded", previousReleasePath, currentReleasePath: releasePath });
           return { object: releasePath, etag: identity.artifactIdentity?.digest ?? identity.manifestChecksum, externalRequestId: identity.idempotencyKey || `release:${releaseId}` };
         } finally {
@@ -204,16 +220,16 @@ export function createProductionDeployment({ environment, config, operations = d
       }
       if (mode === "switch") {
         const existing = await readRemoteState(target.sshHost, statePath);
-        previousReleasePath = existing?.previousReleasePath ?? await operations.runRemote(target.sshHost, "read-current", { releaseRoot: target.releaseRoot, platform: identity.platform });
-        await operations.runRemote(target.sshHost, "switch-current-atomic", { releaseRoot: target.releaseRoot, releasePath, previousReleasePath, platform: identity.platform });
+        previousReleasePath = existing?.previousReleasePath ?? await runRemote("read-current", { releaseRoot: target.releaseRoot, platform: currentPlatform });
+        await runRemote("switch-current-atomic", { releaseRoot: target.releaseRoot, releasePath, previousReleasePath, platform: currentPlatform });
         try {
-          await operations.runRemote(target.sshHost, "restart", { command: target.restartCommand, releaseId, candidateCommit: identity.candidateCommit, cwd: releasePath });
+          await runRemote("restart", { command: target.restartCommand, releaseId, candidateCommit: identity.candidateCommit, cwd: releasePath, remoteBinPath: target.remoteBinPath });
         } catch (error) {
           let rollbackObservation = { currentReleasePath: previousReleasePath, restored: false, observedAt: operations.now() };
           if (previousReleasePath) {
             try {
-              await operations.runRemote(target.sshHost, "restore-current-atomic", { releaseRoot: target.releaseRoot, releasePath: previousReleasePath, platform: identity.platform });
-              await operations.runRemote(target.sshHost, "restart", { command: target.restartCommand, releaseId: "rollback", candidateCommit: null, cwd: previousReleasePath });
+              await runRemote("restore-current-atomic", { releaseRoot: target.releaseRoot, releasePath: previousReleasePath, platform: currentPlatform });
+              await runRemote("restart", { command: target.restartCommand, releaseId: "rollback", candidateCommit: null, cwd: previousReleasePath, remoteBinPath: target.remoteBinPath });
               rollbackObservation = { ...rollbackObservation, restored: true };
             } catch {
               rollbackObservation = { ...rollbackObservation, error: "rollback restart failed" };
@@ -229,16 +245,22 @@ export function createProductionDeployment({ environment, config, operations = d
         const existing = await readRemoteState(target.sshHost, statePath);
         previousReleasePath = existing?.previousReleasePath ?? null;
         const probes = await Promise.all([target.publicUrl, target.adminUrl, target.apiReadyUrl].map((url) => operations.probe(url)));
-        const database = await operations.runRemote(target.sshHost, "ready-command", { kind: "database", command: target.databaseReadyCommand, cwd: releasePath });
-        const redis = await operations.runRemote(target.sshHost, "ready-command", { kind: "redis", command: target.redisReadyCommand, cwd: releasePath });
+        const apiProbe = probes[2];
+        const endpointChecks = apiProbe?.body?.checks;
+        const database = target.databaseReadyCommand
+          ? await runRemote("ready-command", { kind: "database", command: target.databaseReadyCommand, cwd: releasePath, remoteBinPath: target.remoteBinPath })
+          : { ok: endpointChecks?.db === "ok" };
+        const redis = target.redisReadyCommand
+          ? await runRemote("ready-command", { kind: "redis", command: target.redisReadyCommand, cwd: releasePath, remoteBinPath: target.remoteBinPath })
+          : { ok: endpointChecks?.redis === "ok" };
         const healthy = probes.every((probe) => probe?.ok === true) && database?.ok === true && redis?.ok === true;
         if (!healthy) {
           const failedObservation = { healthStatus: "unhealthy", probes, database, redis, observedAt: operations.now() };
           let rollbackObservation = { currentReleasePath: previousReleasePath, restored: false, observedAt: operations.now() };
           if (previousReleasePath) {
             try {
-              await operations.runRemote(target.sshHost, "restore-current-atomic", { releaseRoot: target.releaseRoot, releasePath: previousReleasePath, platform: identity.platform });
-              await operations.runRemote(target.sshHost, "restart", { command: target.restartCommand, releaseId: "rollback", candidateCommit: null, cwd: previousReleasePath });
+              await runRemote("restore-current-atomic", { releaseRoot: target.releaseRoot, releasePath: previousReleasePath, platform: currentPlatform });
+              await runRemote("restart", { command: target.restartCommand, releaseId: "rollback", candidateCommit: null, cwd: previousReleasePath, remoteBinPath: target.remoteBinPath });
               rollbackObservation = { ...rollbackObservation, restored: true };
             } catch (rollbackError) {
               rollbackObservation = { ...rollbackObservation, restored: false, error: "rollback restart failed" };
@@ -254,8 +276,8 @@ export function createProductionDeployment({ environment, config, operations = d
       }
       const state = await readRemoteState(target.sshHost, statePath);
       if (!state || state.status !== "published") throw new Error("authoritative production state is not published");
-      const currentReleasePath = await operations.runRemote(target.sshHost, "read-current", { releaseRoot: target.releaseRoot, platform: identity.platform });
-      const metadata = await operations.runRemote(target.sshHost, "read-release-metadata", { releasePath: currentReleasePath });
+      const currentReleasePath = await runRemote("read-current", { releaseRoot: target.releaseRoot, platform: currentPlatform });
+      const metadata = await runRemote("read-release-metadata", { releasePath: currentReleasePath });
       if (
         currentReleasePath !== releasePath
         || metadata?.candidateCommit !== identity.candidateCommit
