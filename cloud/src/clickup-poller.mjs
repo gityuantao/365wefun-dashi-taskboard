@@ -1064,7 +1064,7 @@ async function handleStatusDrivenFlow(
       return;
     }
     const retryStaging = recovery.kind === "staging_infrastructure";
-    if (!retryStaging) await clearOrdinaryDevelopmentFailures(env.DB, snapshot.id);
+    if (!retryStaging) await clearFailedDevelopmentJobsForManualRetry(env.DB, snapshot.id);
     const commandId = retryStaging
       ? "poller-retry-staging-" + snapshot.id + "-" + (aggregate.version + 1)
       : "poller-rejected-to-dev-" + snapshot.id + "-" + (aggregate.version + 1);
