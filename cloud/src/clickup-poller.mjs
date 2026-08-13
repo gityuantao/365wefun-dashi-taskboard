@@ -832,6 +832,12 @@ export async function pollClickUpOnce(env, {
         && change.from === "ready_for_development"
         && change.to === "developing"
       ));
+    const manualDevelopmentReset = confirmed?.status === "developing"
+      && changes.some((change) => (
+        change.field === "status"
+        && change.from === "developing"
+        && change.to === "ready_for_development"
+      ));
 
     // 仅接受已确认的 waiting_info -> analyzing/developing 状态变化作为显式恢复。
     if (aggregate.state === "waiting_info") {
@@ -868,12 +874,15 @@ export async function pollClickUpOnce(env, {
       ));
     await handleStatusDrivenFlow(env, snapshot, now, commands, config, {
       manualDevelopmentStart,
+      manualDevelopmentReset,
       explicitRejectedDevelopmentRecovery,
       explicitRejectedTestRecovery,
     });
     await ensureInboxAnalysis(env, snapshot, now, commands, config);
     await ensureExternalTaskImport(env, snapshot, now, commands, config);
-    await ensureStateJob(env, snapshot, now, currentDevVersion);
+    if (!manualDevelopmentReset) {
+      await ensureStateJob(env, snapshot, now, currentDevVersion);
+    }
     await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });
     if (snapshot.status === "ready_for_release") {
       await resolveSatisfiedReworkBlockers({ db: env.DB, taskId: snapshot.id, now, dryRun: false });
@@ -964,12 +973,34 @@ async function handleStatusDrivenFlow(
   config,
   {
     manualDevelopmentStart = false,
+    manualDevelopmentReset = false,
     explicitRejectedDevelopmentRecovery = false,
     explicitRejectedTestRecovery = false,
   } = {},
 ) {
 
   let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  if (
+    manualDevelopmentReset
+    && aggregate.state === "developing"
+    && snapshot.status === "ready_for_development"
+  ) {
+    const resetId = `poller-reset-development-${snapshot.id}-${aggregate.version + 1}`;
+    if (!(await loadCommandResult(env.DB, resetId))) {
+      commands.push(await runCommand(env, parseCommandEnvelope({
+        id: resetId,
+        type: "development_failed",
+        aggregateType: "task",
+        aggregateId: snapshot.id,
+        expectedVersion: aggregate.version + 1,
+        actorId: "system-poller",
+        issuedAt: now,
+        reason: "user moved a stranded development task back to 待开发",
+        parameters: { evidenceId: `manual-development-reset-${snapshot.id}-${now}` },
+      }), now, config));
+    }
+    aggregate = await loadAggregate(env.DB, "task", snapshot.id);
+  }
   if (
     manualDevelopmentStart
     && aggregate.state === "developing"

@@ -1475,6 +1475,34 @@ test("manual retry clears a failed job when the aggregate is already developing"
   assert.ok(queued);
 });
 
+test("moving a stranded developing task back to 待开发 resets it for an explicit retry", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await dispatchTask(harness, "stranded-analysis-start", "start_analysis", 1);
+  await dispatchTask(harness, "stranded-analysis-done", "analysis_completed", 2);
+  await dispatchTask(harness, "stranded-development-start", "start_development", 3);
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1", listId: "901616314492", status: "developing",
+      targetVersion: "1.0.1", assignee: null, updatedAt: "2026-08-03T22:02:00.000Z",
+      fieldsHash: "stranded-developing",
+    },
+    readAt: "2026-08-03T22:02:00.000Z",
+  });
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]);
+
+  await pollClickUpOnce(env, { now: NOW });
+
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "ready_for_development");
+  const queued = await harness.db.prepare(
+    "SELECT COUNT(*) AS count FROM runner_jobs WHERE command_id = 'auto-develop-task-1' AND status = 'queued'",
+  ).first();
+  assert.equal(queued.count, 0, "reset alone must not start development until the explicit 开发中 transition");
+});
+
 test("a stale developing ClickUp snapshot does not release an ordinary failure block", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
