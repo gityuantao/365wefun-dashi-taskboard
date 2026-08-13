@@ -313,7 +313,7 @@ export function createOrchestratorLifecycle({
   }
 
   function canClaim() {
-    return acceptingClaims;
+    return acceptingClaims && activeJobs.size === 0 && pendingClaims.size === 0;
   }
 
   function runJob(job, execute) {
@@ -327,7 +327,7 @@ export function createOrchestratorLifecycle({
   }
 
   async function claimAndRun({ claim, reconcile, execute }) {
-    if (!acceptingClaims) return null;
+    if (!canClaim()) return null;
     const attempt = (async () => {
       const job = await claim();
       if (!job) return null;

@@ -78,6 +78,30 @@ test("a claim finishing during shutdown is reconciled and never executed", async
   assert.deepEqual(events, ["reconciled:job-race"]);
 });
 
+test("lifecycle permits only one active runner job", async () => {
+  const lifecycle = createOrchestratorLifecycle();
+  let finish;
+  const blocked = new Promise((resolve) => { finish = resolve; });
+
+  const first = await lifecycle.claimAndRun({
+    claim: async () => ({ id: "job-1" }),
+    execute: async () => blocked,
+  });
+
+  assert.equal(first.id, "job-1");
+  assert.equal(lifecycle.canClaim(), false);
+  const second = await lifecycle.claimAndRun({
+    claim: async () => ({ id: "job-2" }),
+    execute: async () => {},
+  });
+  assert.equal(second, null);
+
+  finish();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(lifecycle.canClaim(), true);
+  await lifecycle.shutdown();
+});
+
 test("lifecycle closes resources only after a SIGTERM-delayed Codex child closes", async () => {
   const events = [];
   const child = mockChild(events);
