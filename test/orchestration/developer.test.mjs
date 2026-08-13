@@ -485,6 +485,8 @@ test("development passes the 影响平台 field into the prompt", async (t) => {
   });
   assert.equal(result.status, "completed");
   assert.match(prompt, /影响平台（ClickUp 字段）：小程序、安卓/);
+  assert.match(prompt, /不表示每个平台都必须修改/);
+  assert.match(prompt, /先复现并定位一个最小根因/);
 });
 
 test("Codex process failure preserves active development for bounded runner retry", async (t) => {

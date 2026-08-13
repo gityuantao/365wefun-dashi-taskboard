@@ -10,7 +10,7 @@ const DEFAULT_EXIT_CLOSE_GRACE_MS = 2_000;
 const REQUIRED_ROLE_POLICIES = Object.freeze({
   analysis: Object.freeze({ model: "gpt-5.6-terra", reasoningEffort: "high" }),
   version_assignment: Object.freeze({ model: "gpt-5.6-terra", reasoningEffort: "medium" }),
-  development: Object.freeze({ model: "gpt-5.6-sol", reasoningEffort: "xhigh" }),
+  development: Object.freeze({ model: "gpt-5.6-sol", reasoningEffort: "high" }),
   acceptance: Object.freeze({ model: "gpt-5.6-sol", reasoningEffort: "high" }),
 });
 

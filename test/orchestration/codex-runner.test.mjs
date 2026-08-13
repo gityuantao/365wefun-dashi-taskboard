@@ -112,7 +112,7 @@ test("production Codex adapter forwards comment images into spawned CLI argument
       codexBin: "codex-production",
       codexTimeoutMinutes: 20,
       codexRolePolicies: {
-        development: { model: "gpt-5.6-sol", reasoningEffort: "xhigh" },
+        development: { model: "gpt-5.6-sol", reasoningEffort: "high" },
       },
     },
     spawnImpl: (_bin, value) => {
@@ -134,7 +134,7 @@ test("production Codex adapter forwards comment images into spawned CLI argument
   assert.deepEqual(args, [
     "exec",
     "--model", "gpt-5.6-sol",
-    "-c", 'model_reasoning_effort="xhigh"',
+    "-c", 'model_reasoning_effort="high"',
     "--image", "/tmp/clickup-comment.png",
   ]);
 });
@@ -146,7 +146,7 @@ test("job-scoped audit survives an exception after every role returns", async ()
   const cases = [
     { role: "analysis", model: "gpt-5.6-terra", reasoningEffort: "high" },
     { role: "version_assignment", model: "gpt-5.6-terra", reasoningEffort: "medium" },
-    { role: "development", model: "gpt-5.6-sol", reasoningEffort: "xhigh" },
+    { role: "development", model: "gpt-5.6-sol", reasoningEffort: "high" },
     { role: "acceptance", model: "gpt-5.6-sol", reasoningEffort: "high" },
   ];
   for (const aiExecution of cases) {
