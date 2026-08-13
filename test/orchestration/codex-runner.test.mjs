@@ -139,6 +139,32 @@ test("production Codex adapter forwards comment images into spawned CLI argument
   ]);
 });
 
+test("production development normalizes the legacy xhigh policy to high", async () => {
+  const { createProductionCodexAdapter } = await import(
+    "../../orchestration/runner/codex-runner.mjs"
+  );
+  const child = mockChild();
+  let args;
+  const codex = createProductionCodexAdapter({
+    runtime: {
+      repoPath: "/tmp/production-repo",
+      codexRolePolicies: {
+        development: { model: "gpt-5.6-sol", reasoningEffort: "xhigh" },
+      },
+    },
+    spawnImpl: (_bin, value) => {
+      args = value;
+      return child;
+    },
+  });
+
+  const promise = codex.run({ prompt: "fix", workdir: "/tmp/worktree", role: "development" });
+  child.emit("close", 0);
+  await promise;
+
+  assert.ok(args.includes('model_reasoning_effort="high"'));
+});
+
 test("job-scoped audit survives an exception after every role returns", async () => {
   const runner = await import("../../orchestration/runner/codex-runner.mjs");
   assert.equal(typeof runner.createAuditedCodex, "function");

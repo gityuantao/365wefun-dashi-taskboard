@@ -29,9 +29,12 @@ function resolveRolePolicy(runtime, role) {
       `Missing Codex role policy for ${role}`,
     );
   }
+  const legacyDevelopmentEffort = role === "development"
+    && configured.reasoningEffort === "xhigh"
+    && required.reasoningEffort === "high";
   if (
     configured.model !== required.model
-    || configured.reasoningEffort !== required.reasoningEffort
+    || (configured.reasoningEffort !== required.reasoningEffort && !legacyDevelopmentEffort)
   ) {
     throw new DomainError(
       "UNSUPPORTED_CODEX_ROLE_POLICY",
