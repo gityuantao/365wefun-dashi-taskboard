@@ -487,7 +487,7 @@ async function reconcileManualTestPassed(env, snapshot, now, commands, config) {
   }), now, config));
 }
 
-async function ensureStateJob(env, snapshot, now, currentDevVersion) {
+async function ensureStateJob(env, snapshot, now, currentDevVersion, config) {
   const aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   let jobType = jobTypeForState(aggregate.state ?? snapshot.status);
   let acceptedResult = null;
@@ -583,7 +583,25 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
            AND json_extract(result, '$.retryable') = 1`,
       ).bind(`auto-develop-${snapshot.id}`).first();
       const retryLimit = Number(env.CLICKUP_DEVELOPMENT_RETRY_LIMIT ?? 3);
-      if (Number(attempts?.count ?? 0) >= retryLimit) return;
+      if (Number(attempts?.count ?? 0) >= retryLimit) {
+        if (aggregate.state === "developing") {
+          const commandId = `poller-development-retries-exhausted-${snapshot.id}-${aggregate.version + 1}`;
+          if (!(await loadCommandResult(env.DB, commandId))) {
+            await runCommand(env, parseCommandEnvelope({
+              id: commandId,
+              type: "development_failed",
+              aggregateType: "task",
+              aggregateId: snapshot.id,
+              expectedVersion: aggregate.version + 1,
+              actorId: "system-poller",
+              issuedAt: now,
+              reason: "development infrastructure retries exhausted",
+              parameters: { evidenceId: ordinaryFailure.id },
+            }), now, config);
+          }
+        }
+        return;
+      }
     }
   }
 
@@ -818,7 +836,7 @@ export async function pollClickUpOnce(env, {
       await handleStatusDrivenFlow(env, snapshot, now, commands, config);
       await ensureInboxAnalysis(env, snapshot, now, commands, config);
       await ensureExternalTaskImport(env, snapshot, now, commands, config);
-      await ensureStateJob(env, snapshot, now, currentDevVersion);
+      await ensureStateJob(env, snapshot, now, currentDevVersion, config);
       if (snapshot.status === "ready_for_release") {
         await resolveSatisfiedReworkBlockers({ db: env.DB, taskId: snapshot.id, now, dryRun: false });
       }
@@ -881,7 +899,7 @@ export async function pollClickUpOnce(env, {
     await ensureInboxAnalysis(env, snapshot, now, commands, config);
     await ensureExternalTaskImport(env, snapshot, now, commands, config);
     if (!manualDevelopmentReset) {
-      await ensureStateJob(env, snapshot, now, currentDevVersion);
+      await ensureStateJob(env, snapshot, now, currentDevVersion, config);
     }
     await saveSnapshot(env.DB, { type: "task", snapshot, readAt: now });
     if (snapshot.status === "ready_for_release") {

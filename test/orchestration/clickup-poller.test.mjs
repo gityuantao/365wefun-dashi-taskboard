@@ -1338,7 +1338,7 @@ test("poller retries legacy codex exited null timeout failures", async (t) => {
   assert.ok(queued, "legacy orchestrator timeout should be retried");
 });
 
-test("poller stops retrying development infrastructure after three failed attempts", async (t) => {
+test("poller returns development to 待开发 after infrastructure retries are exhausted", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
   await dispatchTask(harness, "bounded-analysis-start", "start_analysis", 1);
@@ -1368,7 +1368,7 @@ test("poller stops retrying development infrastructure after three failed attemp
     "SELECT id FROM runner_jobs WHERE command_id = 'auto-develop-task-1' AND status = 'queued'",
   ).first();
   assert.equal(queued, null);
-  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "developing");
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "ready_for_development");
 });
 
 test("poller retries a development-order waiting job after the retry window", async (t) => {
