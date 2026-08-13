@@ -1426,6 +1426,43 @@ test("moving an ordinarily failed task from 待开发 to 开发中 allows one ma
   assert.equal(queuedAfterRepeatPoll.count, 1, "unchanged status must not add another retry");
 });
 
+test("manual retry clears a failed job when the aggregate is already developing", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await dispatchTask(harness, "split-analysis-start", "start_analysis", 1);
+  await dispatchTask(harness, "split-analysis-done", "analysis_completed", 2);
+  await dispatchTask(harness, "split-development-start", "start_development", 3);
+  await harness.db.prepare(
+    `INSERT INTO runner_jobs (id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at)
+     VALUES ('split-failed', 'auto-develop-task-1', 'develop', ?, 'h', 'failed', ?, ?, ?)`,
+  ).bind(
+    JSON.stringify({ taskId: "task-1", aggregateVersion: 3 }),
+    JSON.stringify({ status: "failed", error: "orchestrator stopped" }),
+    "2026-08-03T22:00:00.000Z",
+    "2026-08-03T22:01:00.000Z",
+  ).run();
+  await saveSnapshot(harness.db, {
+    type: "task",
+    snapshot: {
+      id: "task-1", listId: "901616314492", status: "ready_for_development",
+      targetVersion: "1.0.1", assignee: null, updatedAt: "2026-08-03T22:02:00.000Z",
+      fieldsHash: "manual-ready",
+    },
+    readAt: "2026-08-03T22:02:00.000Z",
+  });
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "开发中", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]);
+
+  await pollClickUpOnce(env, { now: NOW });
+
+  assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "developing");
+  const queued = await harness.db.prepare(
+    "SELECT id FROM runner_jobs WHERE command_id = 'auto-develop-task-1' AND status = 'queued'",
+  ).first();
+  assert.ok(queued);
+});
+
 test("a stale developing ClickUp snapshot does not release an ordinary failure block", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

@@ -966,6 +966,13 @@ async function handleStatusDrivenFlow(
   let aggregate = await loadAggregate(env.DB, "task", snapshot.id);
   if (
     manualDevelopmentStart
+    && aggregate.state === "developing"
+    && snapshot.status === "developing"
+  ) {
+    await clearOrdinaryDevelopmentFailures(env.DB, snapshot.id);
+  }
+  if (
+    manualDevelopmentStart
     && aggregate.state === "ready_for_development"
     && snapshot.status === "developing"
   ) {
