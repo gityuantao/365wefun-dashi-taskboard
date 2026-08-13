@@ -50,6 +50,26 @@ test("runCodex streams output and resolves the exit code", async () => {
     "--skill", "/skills/manage-taskboard",
   ]);
   assert.equal(calls[0].options.cwd, "/tmp");
+  assert.equal(calls[0].options.detached, true);
+});
+
+test("runCodex terminates the detached process group", async () => {
+  const child = mockChild();
+  child.pid = 4242;
+  const signals = [];
+  const promise = runCodex({
+    workdir: "/tmp",
+    prompt: "stop descendants",
+    timeoutMinutes: 0.0001,
+    abortGraceMs: 100,
+    killProcessGroup: (pid, signal) => signals.push([pid, signal]),
+    spawnImpl: () => child,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.deepEqual(signals, [[4242, "SIGTERM"]]);
+  child.emit("close", null);
+  await promise;
 });
 
 test("runCodex attaches every comment image before an optional skill", async () => {

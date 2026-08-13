@@ -60,6 +60,7 @@ export function runCodex({
   abortGraceMs = DEFAULT_ABORT_GRACE_MS,
   abortForceCloseMs = DEFAULT_ABORT_FORCE_CLOSE_MS,
   exitCloseGraceMs = DEFAULT_EXIT_CLOSE_GRACE_MS,
+  killProcessGroup = (pid, signalName) => process.kill(-pid, signalName),
 }) {
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new DomainError("INVALID_PROMPT", "Codex prompt must be a non-empty string");
@@ -106,6 +107,7 @@ export function runCodex({
       child = spawnImpl(codexBin, args, {
         cwd: workdir,
         stdio: ["pipe", "pipe", "pipe"],
+        detached: true,
       });
     } catch (error) {
       reject(new DomainError("SPAWN_FAILED", `Failed to spawn Codex: ${error.message}`));
@@ -147,10 +149,18 @@ export function runCodex({
         clearTimeout(timer);
         timer = null;
       }
-      child.kill("SIGTERM");
+      try {
+        killProcessGroup(child.pid, "SIGTERM");
+      } catch {
+        child.kill("SIGTERM");
+      }
       if (settled) return;
       abortGraceTimer = setTimeout(() => {
-        child.kill("SIGKILL");
+        try {
+          killProcessGroup(child.pid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
         if (settled) return;
         abortForceCloseTimer = setTimeout(() => {
           fail(new DomainError(
