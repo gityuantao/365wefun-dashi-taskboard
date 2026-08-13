@@ -301,11 +301,17 @@ export async function buildTaskDetail(db, taskId) {
   const rawStatus = aggregateRow?.state ?? snapshotRow.status;
   const status = rawStatus === "accepting" ? "developing" : rawStatus;
 
-  const [analyzeJob, developJob, acceptJob, timeline] = await Promise.all([
+  const [analyzeJob, developJob, acceptJob, timeline, runnerJobs] = await Promise.all([
     latestJob(db, taskId, "analyze"),
     latestJob(db, taskId, "develop"),
     latestJob(db, taskId, "accept"),
     loadTimeline(db, taskId),
+    db.prepare(`
+      SELECT id, job_type, status, created_at, claimed_at, completed_at, result
+      FROM runner_jobs
+      WHERE json_extract(payload, '$.taskId') = ?
+      ORDER BY created_at DESC LIMIT 10
+    `).bind(taskId).all(),
   ]);
   const analysisSummary = analyzeJob?.result?.summary ?? null;
 
@@ -323,6 +329,15 @@ export async function buildTaskDetail(db, taskId) {
     changeSummary: developJob?.result?.changeSummary ?? null,
     prUrl: prUrlOf(developJob?.result),
     acceptanceResult: acceptJob?.result?.result ?? null,
+    jobs: (runnerJobs.results ?? []).map((job) => ({
+      id: job.id,
+      type: job.job_type,
+      status: job.status,
+      createdAt: job.created_at,
+      claimedAt: job.claimed_at,
+      completedAt: job.completed_at,
+      result: job.result ? JSON.parse(job.result) : null,
+    })),
     timeline,
   };
 }
