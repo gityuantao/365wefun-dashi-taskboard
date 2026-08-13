@@ -969,6 +969,7 @@ async function handleStatusDrivenFlow(
     && aggregate.state === "developing"
     && snapshot.status === "developing"
   ) {
+    await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind("acceptance-paused-" + snapshot.id).run();
     await clearOrdinaryDevelopmentFailures(env.DB, snapshot.id);
   }
   if (
