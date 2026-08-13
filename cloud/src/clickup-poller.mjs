@@ -566,7 +566,9 @@ async function ensureStateJob(env, snapshot, now, currentDevVersion) {
     if (ordinaryFailure && productRework.findings?.length === 0) {
       let retryable = false;
       try {
-        retryable = JSON.parse(ordinaryFailure.result ?? "{}").retryable === true;
+        const parsedFailure = JSON.parse(ordinaryFailure.result ?? "{}");
+        retryable = parsedFailure.retryable === true
+          || String(parsedFailure.error ?? "").includes("codex exited null:");
       } catch {}
       if (!retryable) return;
       const attempts = await env.DB.prepare(

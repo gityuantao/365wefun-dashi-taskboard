@@ -1297,6 +1297,35 @@ test("poller retries a retryable development infrastructure failure after backof
   assert.equal((await loadAggregate(harness.db, "task", "task-1")).state, "developing");
 });
 
+test("poller retries legacy codex exited null timeout failures", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await dispatchTask(harness, "legacy-timeout-analysis-start", "start_analysis", 1);
+  await dispatchTask(harness, "legacy-timeout-analysis-done", "analysis_completed", 2);
+  await harness.db.prepare(
+    `INSERT INTO runner_jobs (
+      id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at
+    ) VALUES (?, ?, 'develop', ?, 'h', 'failed', ?, ?, ?)`,
+  ).bind(
+    "task-1-develop-2",
+    "auto-develop-task-1",
+    JSON.stringify({ taskId: "task-1", aggregateVersion: 2 }),
+    JSON.stringify({ status: "failed", error: "codex exited null: Reading prompt from stdin" }),
+    "2026-08-03T22:00:00.000Z",
+    "2026-08-03T22:20:00.000Z",
+  ).run();
+  const env = await makeEnv(harness, [
+    sandboxTask({ status: "待开发", version: "1.0.1" }),
+  ], [{ id: "v1", name: "1.0.1", status: { status: "进行中" } }]);
+
+  await pollClickUpOnce(env, { now: NOW });
+
+  const queued = await harness.db.prepare(
+    "SELECT id FROM runner_jobs WHERE command_id = ? AND status = 'queued'",
+  ).bind("auto-develop-task-1").first();
+  assert.ok(queued, "legacy orchestrator timeout should be retried");
+});
+
 test("poller stops retrying development infrastructure after three failed attempts", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());
