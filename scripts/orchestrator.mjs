@@ -650,7 +650,7 @@ async function tick() {
     } catch (error) {
       log(`outbox error: ${error.message}`);
     }
-    for (const jobType of ["assign_version", "analyze", "develop", "accept", "stage_task"]) {
+    for (const jobType of ["stage_task", "accept", "develop", "analyze", "assign_version"]) {
       if (!lifecycle.canClaim()) break;
       try {
         await lifecycle.claimAndRun({

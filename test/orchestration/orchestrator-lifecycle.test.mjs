@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 
 import {
   createOrchestratorLifecycle,
   guardDurableMethods,
   runCodex,
 } from "../../orchestration/runner/codex-runner.mjs";
+
+test("orchestrator drains staging and acceptance before claiming new development", () => {
+  const source = readFileSync(new URL("../../scripts/orchestrator.mjs", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /for \(const jobType of \["stage_task", "accept", "develop", "analyze", "assign_version"\]\)/,
+  );
+});
 
 function mockChild(events) {
   const child = new EventEmitter();
