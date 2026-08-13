@@ -293,6 +293,28 @@ test("runCodex waits for child close before reporting a timed-out run", async ()
   assert.equal(result.aborted, false);
 });
 
+test("runCodex terminates a child that produces no output before the idle deadline", async () => {
+  const child = mockChild();
+  child.pid = 4242;
+  const signals = [];
+  const promise = runCodex({
+    workdir: "/tmp",
+    prompt: "do work",
+    timeoutMinutes: 1,
+    idleTimeoutMinutes: 0.0001,
+    abortGraceMs: 100,
+    killProcessGroup: (pid, signal) => signals.push([pid, signal]),
+    spawnImpl: () => child,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.deepEqual(signals, [[4242, "SIGTERM"]]);
+  child.emit("close", null);
+  const result = await promise;
+  assert.equal(result.idleTimedOut, true);
+  assert.equal(result.timedOut, false);
+});
+
 test("runCodex escalates a timed-out child and does not settle before termination failure", async () => {
   const child = mockChild();
   const signals = [];

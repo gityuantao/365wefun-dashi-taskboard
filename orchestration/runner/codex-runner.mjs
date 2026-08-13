@@ -55,6 +55,7 @@ export function runCodex({
   skillPath,
   imagePaths = [],
   timeoutMinutes = DEFAULT_TIMEOUT_MINUTES,
+  idleTimeoutMinutes = 10,
   codexBin = process.env.CODEX_BIN ?? "codex",
   model,
   modelReasoningEffort,
@@ -70,6 +71,9 @@ export function runCodex({
   }
   if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0) {
     throw new DomainError("INVALID_TIMEOUT", "timeoutMinutes must be a positive number");
+  }
+  if (!Number.isFinite(idleTimeoutMinutes) || idleTimeoutMinutes <= 0) {
+    throw new DomainError("INVALID_IDLE_TIMEOUT", "idleTimeoutMinutes must be a positive number");
   }
   if (!Number.isFinite(abortGraceMs) || abortGraceMs < 0
     || !Number.isFinite(abortForceCloseMs) || abortForceCloseMs < 0) {
@@ -120,6 +124,7 @@ export function runCodex({
     let stderr = "";
     let settled = false;
     let timer;
+    let idleTimer;
     let abortGraceTimer;
     let abortForceCloseTimer;
     let exitCloseTimer;
@@ -128,6 +133,7 @@ export function runCodex({
     let terminationError = null;
     const cleanup = () => {
       if (timer) clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
       if (abortGraceTimer) clearTimeout(abortGraceTimer);
       if (abortForceCloseTimer) clearTimeout(abortForceCloseTimer);
       if (exitCloseTimer) clearTimeout(exitCloseTimer);
@@ -175,8 +181,13 @@ export function runCodex({
       }, abortGraceMs);
     };
     const abort = () => requestTermination("abort");
-    child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
-    child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => requestTermination("idle_timeout"), idleTimeoutMinutes * 60_000);
+    };
+    child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); resetIdleTimer(); });
+    child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); resetIdleTimer(); });
+    resetIdleTimer();
     timer = setTimeout(() => {
       requestTermination("timeout");
     }, timeoutMinutes * 60_000);
@@ -184,6 +195,7 @@ export function runCodex({
       finish({
         exitCode: code ?? exitedCode ?? null,
         timedOut: terminationMode === "timeout",
+        idleTimedOut: terminationMode === "idle_timeout",
         aborted: terminationMode === "abort",
         stdout,
         stderr,
@@ -198,6 +210,7 @@ export function runCodex({
         finish({
           exitCode: code,
           timedOut: terminationMode === "timeout",
+          idleTimedOut: terminationMode === "idle_timeout",
           aborted: terminationMode === "abort",
           stdout,
           stderr,
@@ -232,6 +245,7 @@ export function createProductionCodexAdapter({ runtime, runCodexImpl = runCodex,
         model: policy.model,
         modelReasoningEffort: policy.reasoningEffort,
         timeoutMinutes: runtime.codexTimeoutMinutes ?? 20,
+        idleTimeoutMinutes: runtime.codexIdleTimeoutMinutes ?? 10,
         codexBin: runtime.codexBin ?? "codex",
         signal,
         abortGraceMs: runtime.codexAbortGraceMs ?? 2_000,
