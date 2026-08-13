@@ -102,6 +102,24 @@ test("restart recovery may requeue a live claim only when it is explicitly recon
   assert.deepEqual(row, { status: "queued", device_id: null });
 });
 
+test("supervised device restart requeues its own live claims", async (t) => {
+  const harness = await createCloudWorkerHarness();
+  t.after(() => harness.dispose());
+  await seedJob(harness);
+  await claimJob(harness.db, { deviceId: "device-1", jobType: "analyze", now: NOW });
+
+  const recovered = await recoverRunnerJobs(harness.db, {
+    now: NOW,
+    stoppedDeviceId: "device-1",
+  });
+
+  assert.equal(recovered.requeued, 1);
+  const row = await harness.db.prepare(
+    "SELECT status, device_id FROM runner_jobs WHERE id = ?",
+  ).bind("job-1").first();
+  assert.deepEqual(row, { status: "queued", device_id: null });
+});
+
 test("assertJobClaim rejects an expired or superseded fencing token before a side effect", async (t) => {
   const harness = await createCloudWorkerHarness();
   t.after(() => harness.dispose());

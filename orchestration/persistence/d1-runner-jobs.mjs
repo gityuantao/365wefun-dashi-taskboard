@@ -126,18 +126,22 @@ export async function reconcileJobClaim(db, {
 export async function recoverRunnerJobs(db, {
   now = new Date().toISOString(),
   reconciledJobIds = [],
+  stoppedDeviceId = null,
 } = {}) {
   const ids = [...new Set(reconciledJobIds.filter((id) => typeof id === "string" && id !== ""))];
   const explicit = ids.length > 0
     ? ` OR id IN (${ids.map(() => "?").join(", ")})`
     : "";
+  const stoppedDevice = typeof stoppedDeviceId === "string" && stoppedDeviceId !== ""
+    ? " OR device_id = ?"
+    : "";
   const updated = await db
     .prepare(
       `UPDATE runner_jobs
        SET status = 'queued', device_id = NULL, claimed_at = NULL
-       WHERE status = 'claimed' AND (expires_at <= ?${explicit})`,
+       WHERE status = 'claimed' AND (expires_at <= ?${explicit}${stoppedDevice})`,
     )
-    .bind(now, ...ids)
+    .bind(now, ...ids, ...(stoppedDevice ? [stoppedDeviceId] : []))
     .run();
   return { requeued: updated.meta?.changes ?? 0 };
 }

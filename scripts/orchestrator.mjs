@@ -421,8 +421,12 @@ const handlers = {
 };
 
 async function recoverOrphanedLeases() {
-  // 启动恢复只回收已过期租约；未过期的 live claim 由持有者继续执行。
-  return recoverRunnerJobs(db, { now: new Date().toISOString() });
+  // The supervisor runs one process for this device. On restart, any claim still
+  // owned by the same device is orphaned even if its lease has not expired yet.
+  return recoverRunnerJobs(db, {
+    now: new Date().toISOString(),
+    stoppedDeviceId: runtime.deviceId,
+  });
 }
 
 async function ensureVersionActive(versionId, now) {
