@@ -207,6 +207,14 @@ async function seedInfrastructureRejectedTask(harness, {
     "infra-fingerprint-1",
   ).run();
   await harness.db.prepare(
+    `INSERT INTO runner_jobs (id, command_id, job_type, payload, payload_hash, status, result, created_at, completed_at)
+     VALUES ('split-invalid-context', 'auto-develop-task-1', 'develop', '{}', 'invalid', 'failed', ?, ?, ?)`,
+  ).bind(
+    JSON.stringify({ status: "failed", classification: "invalid_context", error: "stale context" }),
+    "2026-08-03T22:01:00.000Z",
+    "2026-08-03T22:01:30.000Z",
+  ).run();
+  await harness.db.prepare(
     `INSERT INTO runner_jobs (id, command_id, job_type, payload, payload_hash, status, result, created_at)
      VALUES ('acceptance-paused-task-1', 'auto-develop-task-1', 'develop', '{}', 'paused', 'failed', '{}', ?)`,
   ).bind("2026-08-03T22:01:30.000Z").run();

@@ -234,6 +234,12 @@ async function clearOrdinaryDevelopmentFailures(db, taskId) {
     .run();
 }
 
+async function clearFailedDevelopmentJobsForManualRetry(db, taskId) {
+  await db.prepare(
+    `DELETE FROM runner_jobs WHERE command_id = ? AND status = 'failed'`,
+  ).bind(`auto-develop-${taskId}`).run();
+}
+
 async function loadAnalysisCriteria(db, taskId) {
   const row = await db
     .prepare(
@@ -970,7 +976,7 @@ async function handleStatusDrivenFlow(
     && snapshot.status === "developing"
   ) {
     await env.DB.prepare("DELETE FROM runner_jobs WHERE id = ?").bind("acceptance-paused-" + snapshot.id).run();
-    await clearOrdinaryDevelopmentFailures(env.DB, snapshot.id);
+    await clearFailedDevelopmentJobsForManualRetry(env.DB, snapshot.id);
   }
   if (
     manualDevelopmentStart
