@@ -5,6 +5,7 @@ import { DomainError } from "../domain/errors.mjs";
 const DEFAULT_TIMEOUT_MINUTES = 90;
 const DEFAULT_ABORT_GRACE_MS = 2_000;
 const DEFAULT_ABORT_FORCE_CLOSE_MS = 1_000;
+const DEFAULT_EXIT_CLOSE_GRACE_MS = 2_000;
 
 const REQUIRED_ROLE_POLICIES = Object.freeze({
   analysis: Object.freeze({ model: "gpt-5.6-terra", reasoningEffort: "high" }),
@@ -58,6 +59,7 @@ export function runCodex({
   signal,
   abortGraceMs = DEFAULT_ABORT_GRACE_MS,
   abortForceCloseMs = DEFAULT_ABORT_FORCE_CLOSE_MS,
+  exitCloseGraceMs = DEFAULT_EXIT_CLOSE_GRACE_MS,
 }) {
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new DomainError("INVALID_PROMPT", "Codex prompt must be a non-empty string");
@@ -115,12 +117,15 @@ export function runCodex({
     let timer;
     let abortGraceTimer;
     let abortForceCloseTimer;
+    let exitCloseTimer;
+    let exitedCode;
     let terminationMode = null;
     let terminationError = null;
     const cleanup = () => {
       if (timer) clearTimeout(timer);
       if (abortGraceTimer) clearTimeout(abortGraceTimer);
       if (abortForceCloseTimer) clearTimeout(abortForceCloseTimer);
+      if (exitCloseTimer) clearTimeout(exitCloseTimer);
       signal?.removeEventListener?.("abort", abort);
     };
     const finish = (result) => {
@@ -164,13 +169,29 @@ export function runCodex({
     }, timeoutMinutes * 60_000);
     child.on("close", (code) => {
       finish({
-        exitCode: code,
+        exitCode: code ?? exitedCode ?? null,
         timedOut: terminationMode === "timeout",
         aborted: terminationMode === "abort",
         stdout,
         stderr,
         ...(terminationError ? { terminationError: terminationError.message } : {}),
       });
+    });
+    child.on("exit", (code) => {
+      exitedCode = code;
+      exitCloseTimer = setTimeout(() => {
+        child.stdout?.destroy?.();
+        child.stderr?.destroy?.();
+        finish({
+          exitCode: code,
+          timedOut: terminationMode === "timeout",
+          aborted: terminationMode === "abort",
+          stdout,
+          stderr,
+          forcedPipeClose: true,
+          ...(terminationError ? { terminationError: terminationError.message } : {}),
+        });
+      }, exitCloseGraceMs);
     });
     child.on("error", (error) => {
       if (terminationMode) {

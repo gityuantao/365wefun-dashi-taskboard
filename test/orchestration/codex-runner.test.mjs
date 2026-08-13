@@ -188,6 +188,28 @@ test("runCodex preserves non-zero exits", async () => {
   assert.match(result.stderr, /boom/);
 });
 
+test("runCodex settles when the child exits but inherited pipes never close", async () => {
+  const child = mockChild();
+  let stdoutDestroyed = false;
+  let stderrDestroyed = false;
+  child.stdout.destroy = () => { stdoutDestroyed = true; };
+  child.stderr.destroy = () => { stderrDestroyed = true; };
+  const promise = runCodex({
+    workdir: "/tmp",
+    prompt: "descendant inherited pipes",
+    exitCloseGraceMs: 5,
+    spawnImpl: () => child,
+  });
+
+  child.emit("exit", 0);
+  const result = await promise;
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.forcedPipeClose, true);
+  assert.equal(stdoutDestroyed, true);
+  assert.equal(stderrDestroyed, true);
+});
+
 test("runCodex rejects a non-abort child error immediately", async () => {
   const child = mockChild();
   const promise = runCodex({
